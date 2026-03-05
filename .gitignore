@@ -1,163 +1,38 @@
-# ===========================
-# Environment & Secrets
-# ===========================
-.env
-.env.local
-.env.*.local
-*.pem
-*.key
-secrets/
-credentials.json
-
-# ===========================
-# Dependencies
-# ===========================
-
-# Node.js
-node_modules/
+# Logs
+logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-.venv/
-env/
-.Python
-pip-log.txt
-pip-delete-this-directory.txt
-*.egg-info/
-.eggs/
-dist/
-build/
+node_modules
+dist
+dist-ssr
+*.local
 
-# Go
-vendor/
-
-# Rust
-target/
-
-# Java
-*.class
-*.jar
-*.war
-.gradle/
-build/
-
-# ===========================
-# Build Outputs
-# ===========================
-dist/
-build/
-out/
-*.min.js
-*.min.css
-.next/
-.nuxt/
-.output/
-
-# ===========================
-# IDE & Editors
-# ===========================
-
-# VS Code
-.vscode/
-*.code-workspace
-
-# JetBrains (IntelliJ, PyCharm, WebStorm)
-.idea/
-*.iml
-*.iws
-*.ipr
-
-# Vim
-*.swp
-*.swo
-*~
-
-# Emacs
-*~
-\#*\#
-.#*
-
-# Sublime Text
-*.sublime-project
-*.sublime-workspace
-
-# ===========================
-# OS Generated
-# ===========================
-
-# macOS
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
 .DS_Store
-.AppleDouble
-.LSOverride
-._*
-.Spotlight-V100
-.Trashes
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# Windows
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build / cache
+build
+coverage
+.cache
+.vite
+
+# System files
 Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-*.lnk
-
-# Linux
-*~
-
-# ===========================
-# Testing & Coverage
-# ===========================
-coverage/
-.coverage
-htmlcov/
-.nyc_output/
-*.lcov
-.pytest_cache/
-.tox/
-nosetests.xml
-coverage.xml
-
-# ===========================
-# Logs & Temp Files
-# ===========================
-logs/
-*.log
-tmp/
-temp/
-*.tmp
-*.temp
-*.cache
-
-# ===========================
-# Database
-# ===========================
-*.sqlite
-*.sqlite3
-*.db
-*.sql.gz
-
-# ===========================
-# Docker (local volumes)
-# ===========================
-docker-data/
-.docker/
-
-# ===========================
-# Misc
-# ===========================
-.vercel
-.netlify
-.serverless/
-*.bak
-*.backup
-
-# ===========================
-# Project Specific
-# ===========================
-# Add project-specific ignores below
