@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { clamp, genId } from "../utils/helpers";
+import { genId } from "../utils/helpers";
 
 async function fetchJson(url, opts = {}) {
   const res = await fetch(url, {
