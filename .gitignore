@@ -36,3 +36,6 @@ coverage
 
 # System files
 Thumbs.db
+
+car_face_auth/venv
+car_face_auth/venv/
