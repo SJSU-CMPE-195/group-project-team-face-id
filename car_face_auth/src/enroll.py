@@ -29,19 +29,25 @@ def main():
     samples_needed = 10
     collected_embeddings = []
     
-    app = FaceAnalysis(name="buffalo_s")
+    print("Loading InsightFace model.")
+    app = FaceAnalysis(name="buffalo_s", allowed_modules=["detection", "recognition"], providers=["CPUExecutionProvider"],)
     app.prepare(ctx_id=-1, det_size=(320, 320))
+    print("Model loaded.")
 
+    print("Starting camera...")
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Cannot open camera")
         return
+    print("Camera opened successfully.")
+
+    cv2.namedWindow("Enroll User", cv2.WINDOW_NORMAL)
     
     print("\nEnrollment started.")
     print("Instructions:")
     print("1. Make sure only one face is visible in the camera.")
     print("2. Press 's' to save a sample when your face is detected.")
-    print("3. Press 'q' to quit early (you need at least 10 samples to enroll).")
+    print("3. Press 'q' to quit early (you need at least 10 samples to enroll).\n")
 
     while len(collected_embeddings) < samples_needed:
         ret, frame = cap.read()
@@ -50,20 +56,13 @@ def main():
             break
 
         frame = cv2.resize(frame, (640, 480))
-        faces = app.get(frame)
-        status_text = f"Samples: {len(collected_embeddings)}/{samples_needed}"
+        display_frame = frame.copy()
 
-        if len(faces) == 1:
-            face = faces[0]
-            x1,y1,x2,y2 = face.bbox.astype(int)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        elif len(faces) == 0:
-            cv2.putText(frame, "No face detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        else:
-            cv2.putText(frame, "Multiple faces detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        status_text = f"Samples: {len(collected_embeddings)}/{samples_needed}, press 's' to save, 'q' to quit"
         
-        cv2.putText(frame, status_text, (20,70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(display_frame, status_text, (20,70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.imshow("Enroll User", display_frame)
+
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord("q"):
@@ -71,13 +70,18 @@ def main():
             break
 
         if key == ord("s"):
+            print("Processing captured frame...")
+            faces = app.get(frame)
+
             if len(faces) == 1:
                 embedding = faces[0].embedding.astype(np.float32)
                 collected_embeddings.append(embedding)
                 print(f"Sample {len(collected_embeddings)}/{samples_needed} collected.")
+            elif len(faces) == 0:
+                print("No face detected. Please try again.")
             else:
-                print("Sample not saved")
-        
+                print("Multiple faces detected. Please ensure only one face is visible.")
+
     cap.release()
     cv2.destroyAllWindows()
 
