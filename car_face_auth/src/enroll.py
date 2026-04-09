@@ -21,7 +21,7 @@ def save_database(db):
         pickle.dump(db, f)
 
 def main():
-    user_name = input("Enter use name to enroll: ").strip()
+    user_name = input("Enter user's name to enroll: ").strip()
     if not user_name:
         print("User name cannot be empty.")
         return
