@@ -4,7 +4,9 @@ import { genId } from "../utils/helpers";
 
 export default function useAppState() {
   const [mode, setMode] = useState(() => localStorage.getItem("mode") || "sim");
-  const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem("baseUrl") || "http://192.168.4.1");
+  const [baseUrl, setBaseUrl] = useState(
+    () => localStorage.getItem("baseUrl") || "http://192.168.4.1:5000"
+  );
   const [tab, setTab] = useState("control");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
@@ -41,6 +43,9 @@ export default function useAppState() {
 
   const [settings, setSettings] = useState(sim.settings);
 
+  const [deviceUsers, setDeviceUsers] = useState([]);
+  const [deviceLogs, setDeviceLogs] = useState([]);
+
   useEffect(() => {
     localStorage.setItem("mode", mode);
     localStorage.setItem("baseUrl", baseUrl);
@@ -75,5 +80,9 @@ export default function useAppState() {
     setName,
     settings,
     setSettings,
+    deviceUsers,
+    setDeviceUsers,
+    deviceLogs,
+    setDeviceLogs,
   };
 }

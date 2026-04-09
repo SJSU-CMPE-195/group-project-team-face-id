@@ -1,10 +1,10 @@
 import React from "react";
 import Toast from "./components/Toast";
-import Header from "./components/Header";
+import SidebarNav from "./components/SidebarNav";
+import TopBar from "./components/TopBar";
 import Overview from "./components/Overview";
 import StatusPanel from "./components/StatusPanel";
 import ConnectionPanel from "./components/ConnectionPanel";
-import Tabs from "./components/Tabs";
 import ControlTab from "./components/ControlTab";
 import UsersTab from "./components/UsersTab";
 import LogsTab from "./components/LogsTab";
@@ -18,44 +18,57 @@ export default function App() {
   const actions = useAppActions(state);
 
   const locked = state.mode === "sim" ? state.sim.locked : state.status.lockState === "locked";
+  const online = state.status.online;
 
   return (
-    <div className="min-h-screen bg-neutral-50 text-neutral-900">
+    <div className="flex min-h-screen text-slate-100">
       <Toast toast={state.toast} />
+      <SidebarNav tab={state.tab} setTab={state.setTab} />
 
-      <div className="mx-auto max-w-5xl px-4 py-6 md:px-8">
-        <Header busy={state.busy} onRefresh={actions.refresh} />
-        <Overview mode={state.mode} sim={state.sim} status={state.status} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar
+          tab={state.tab}
+          mode={state.mode}
+          locked={locked}
+          online={online}
+          busy={state.busy}
+          onRefresh={actions.refresh}
+        />
 
-        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-          <div className="md:col-span-2">
-            <StatusPanel
-              locked={locked}
-              busy={state.busy}
-              doUnlock={actions.doUnlock}
-              doLockSim={actions.doLockSim}
-              mode={state.mode}
-              sim={state.sim}
-              status={state.status}
-            />
-          </div>
+        <main className="flex-1 overflow-y-auto px-5 py-6 md:px-8">
+          {state.tab === "control" && (
+            <>
+              <ControlTab />
+              <div id="panel-status" className="mt-8 scroll-mt-6 space-y-5">
+                <Overview mode={state.mode} sim={state.sim} status={state.status} />
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                  <div className="lg:col-span-2">
+                    <StatusPanel
+                      locked={locked}
+                      busy={state.busy}
+                      doUnlock={actions.doUnlock}
+                      doLockSim={actions.doLockSim}
+                      mode={state.mode}
+                      sim={state.sim}
+                      status={state.status}
+                    />
+                  </div>
+                  <ConnectionPanel
+                    mode={state.mode}
+                    setMode={state.setMode}
+                    baseUrl={state.baseUrl}
+                    setBaseUrl={state.setBaseUrl}
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
-          <ConnectionPanel
-            mode={state.mode}
-            setMode={state.setMode}
-            baseUrl={state.baseUrl}
-            setBaseUrl={state.setBaseUrl}
-          />
-        </div>
-
-        <Tabs tab={state.tab} setTab={state.setTab} />
-
-        <div className="mt-4">
-          {state.tab === "control" && <ControlTab busy={state.busy} doUnlock={actions.doUnlock} setTab={state.setTab} />}
           {state.tab === "users" && (
             <UsersTab
               mode={state.mode}
               sim={state.sim}
+              deviceUsers={state.deviceUsers}
               name={state.name}
               setName={state.setName}
               busy={state.busy}
@@ -63,21 +76,42 @@ export default function App() {
               delUser={actions.delUser}
             />
           )}
-          {state.tab === "logs" && <LogsTab mode={state.mode} sim={state.sim} clearLogs={() => state.setSim((s) => ({ ...s, logs: [] }))} />}
+
+          {state.tab === "logs" && (
+            <LogsTab
+              mode={state.mode}
+              sim={state.sim}
+              deviceLogs={state.deviceLogs}
+              clearLogs={() => state.setSim((s) => ({ ...s, logs: [] }))}
+            />
+          )}
+
           {state.tab === "settings" && (
             <SettingsTab
-              mode={state.mode}
               settings={state.settings}
               setSettings={state.setSettings}
               busy={state.busy}
               saveSettings={actions.saveSettings}
             />
           )}
-        </div>
 
-        <div className="mt-10 text-xs text-neutral-500">
-          <Badge>v1 UI</Badge> <span className="mx-2">•</span> Local-first (LAN) <span className="mx-2">•</span> Demo-ready
-        </div>
+          <footer className="mt-10 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-slate-500">
+            <Badge>v1 UI</Badge>
+            <span className="text-slate-600">•</span>
+            <span>DNA Builder–inspired layout</span>
+            <span className="text-slate-600">•</span>
+            <span>Local-first (LAN)</span>
+            <span className="text-slate-600">•</span>
+            <a
+              href="https://github.com/SJSU-CMPE-195/group-project-team-face-id"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-slate-500 transition hover:text-violet-400 hover:underline"
+            >
+              Open on GitHub
+            </a>
+          </footer>
+        </main>
       </div>
     </div>
   );
