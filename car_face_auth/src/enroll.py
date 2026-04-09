@@ -54,7 +54,7 @@ def main():
         status_text = f"Samples: {len(collected_embeddings)}/{samples_needed}"
 
         if len(faces) == 1:
-            faces = faces[0]
+            face = faces[0]
             x1,y1,x2,y2 = face.bbox.astype(int)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -84,4 +84,14 @@ def main():
     if not collected_embeddings:
         print("No samples collected. Nothing saved.")
         return
+    
+    db = load_database()
+    db[user_name] = collected_embeddings
+    save_database(db)
+
+    print(f"\nEnrollment complete for '{user_name}'. {len(collected_embeddings)} samples saved.")
+    print(f"Database file : {EMBEDDINGS_FILE}")
+
+if __name__ == "__main__":
+    main()
 
