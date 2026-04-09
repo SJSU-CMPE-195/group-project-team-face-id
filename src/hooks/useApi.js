@@ -26,6 +26,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         delUser: (id) =>
           fetchJson(`${clean}/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
         logs: () => fetchJson(`${clean}/api/logs`),
+        getSettings: () => fetchJson(`${clean}/api/settings`),
         saveSettings: (s) =>
           fetchJson(`${clean}/api/settings`, { method: "POST", body: JSON.stringify(s) }),
       };

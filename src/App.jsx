@@ -56,6 +56,7 @@ export default function App() {
             <UsersTab
               mode={state.mode}
               sim={state.sim}
+              deviceUsers={state.deviceUsers}
               name={state.name}
               setName={state.setName}
               busy={state.busy}
@@ -63,10 +64,16 @@ export default function App() {
               delUser={actions.delUser}
             />
           )}
-          {state.tab === "logs" && <LogsTab mode={state.mode} sim={state.sim} clearLogs={() => state.setSim((s) => ({ ...s, logs: [] }))} />}
+          {state.tab === "logs" && (
+            <LogsTab
+              mode={state.mode}
+              sim={state.sim}
+              deviceLogs={state.deviceLogs}
+              clearLogs={() => state.setSim((s) => ({ ...s, logs: [] }))}
+            />
+          )}
           {state.tab === "settings" && (
             <SettingsTab
-              mode={state.mode}
               settings={state.settings}
               setSettings={state.setSettings}
               busy={state.busy}

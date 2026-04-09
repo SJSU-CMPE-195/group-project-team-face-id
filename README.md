@@ -27,7 +27,7 @@ src/
 | **ConnectionPanel** | `components/ConnectionPanel.jsx` | Mode toggle, base URL input, demo story |
 | **Tabs** | `components/Tabs.jsx` | Navigation tabs for content sections |
 | **ControlTab** | `components/ControlTab.jsx` | Camera placeholder and quick action buttons |
-| **UsersTab** | `components/UsersTab.jsx` | Enroll/remove users (sim mode only) |
+| **UsersTab** | `components/UsersTab.jsx` | Enroll/remove users (sim or device API) |
 | **LogsTab** | `components/LogsTab.jsx` | Event log viewer with clear button |
 | **SettingsTab** | `components/SettingsTab.jsx` | Core settings (re-lock, liveness, lockout) |
 
@@ -65,25 +65,37 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-## Local Backend + SQLite DB
+## Device mode 
 
-This project now includes a local backend and SQLite database for device mode.
+The canonical store is **SQLite on the Pi** (`db.py` / `db_api.py`). The React app talks to the Pi over HTTP using the same routes as before (`/api/status`, `/api/users`, …).
 
-```bash
-# terminal 1: start backend API + DB
-npm run server
+### On the Pi
 
-# terminal 2: start frontend
-npm run dev
-```
+1. Initialize the database (creates tables under `FACEID_DB_PATH`, default `/home/pi/faceid/faceid.db`):
 
-Then in UI:
+   ```bash
+   python db.py
+   ```
 
-- switch mode to `device`
-- set Base URL to `http://localhost:3001`
-- click refresh
+2. Install Flask and start the device API (listens on `0.0.0.0`, port **5000** by default):
 
-### API Endpoints (implemented)
+   ```bash
+   pip install -r requirements-pi-device-api.txt
+   python pi_device_api.py
+   ```
+
+   Optional environment variables:
+
+   - `FACEID_DB_PATH` — SQLite file path (default: `/home/pi/faceid/faceid.db`)
+   - `PORT` — HTTP port (default: `5000`)
+
+### In the UI
+
+- Switch mode to **device**
+- Set **Base URL** to your Pi, e.g. `http://192.168.4.1:5000` (no trailing slash)
+- Refresh
+
+### HTTP routes (implemented in `pi_device_api.py`)
 
 - `GET /api/status`
 - `POST /api/unlock`
@@ -91,16 +103,9 @@ Then in UI:
 - `POST /api/users`
 - `DELETE /api/users/:id`
 - `GET /api/logs`
+- `GET /api/settings`
 - `POST /api/settings`
 
-### Database Notes
+### Schema (see `db.py`)
 
-- DB file: `server/face-lock.db`
-- Engine: SQLite (local/offline)
-- Tables include:
-  - `users`
-  - `face_embeddings` (for encrypted embedding payload storage)
-  - `auth_attempts`
-  - `device_state`
-  - `settings`
-  - `event_logs`
+- `users`, `auth_logs`, `settings`, `device_state`

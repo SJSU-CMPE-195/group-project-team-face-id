@@ -4,18 +4,7 @@ import Input from "./Input";
 import Switch from "./Switch";
 import Btn from "./Btn";
 
-export default function SettingsTab({ mode, settings, setSettings, busy, saveSettings }) {
-  if (mode === "device") {
-    return (
-      <Card>
-        <div className="text-sm font-semibold">Settings (Device API mode)</div>
-        <div className="mt-2 text-sm text-neutral-600">
-          Implement <code>POST /api/settings</code> on Pi. Validate on device.
-        </div>
-      </Card>
-    );
-  }
-
+export default function SettingsTab({ settings, setSettings, busy, saveSettings }) {
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
       <Card>

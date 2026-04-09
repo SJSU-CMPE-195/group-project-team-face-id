@@ -11,6 +11,11 @@ node_modules
 dist
 dist-ssr
 *.local
+__pycache__/
+*.py[cod]
+
+# Legacy Node dev DB folder (optional — remove folder locally if unused)
+server/
 
 # Editor directories and files
 .vscode/*
@@ -39,7 +44,3 @@ Thumbs.db
 package-lock.json
 package.json
 
-# Local SQLite database files
-server/*.db
-server/*.db-wal
-server/*.db-shm
