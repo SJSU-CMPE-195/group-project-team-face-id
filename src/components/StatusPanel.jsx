@@ -7,13 +7,15 @@ export default function StatusPanel({ locked, busy, doUnlock, doLockSim, mode, s
   return (
     <>
       <Card>
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <div className="text-xs text-neutral-500">Current state</div>
-            <div className="mt-1 text-lg font-semibold">{locked ? "Locked" : "Unlocked"}</div>
-            <div className="mt-2 text-sm text-neutral-600">Tap to unlock (demo). In Device API mode this sends a command to your Pi.</div>
+            <div className="text-xs font-medium uppercase tracking-wider text-slate-500">Current state</div>
+            <div className="mt-1 text-xl font-bold text-slate-50">{locked ? "Locked" : "Unlocked"}</div>
+            <div className="mt-2 max-w-md text-sm text-slate-400">
+              Unlock sends a command to your Pi in Device mode. Lock (sim) is simulation-only for safety.
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {locked ? (
               <Btn disabled={busy} onClick={doUnlock}>
                 Unlock
@@ -31,14 +33,14 @@ export default function StatusPanel({ locked, busy, doUnlock, doLockSim, mode, s
         <Card>
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-xs text-neutral-500">Battery</div>
-              <div className="mt-1 text-lg font-semibold">{mode === "sim" ? sim.battery : status.battery}%</div>
+              <div className="text-xs font-medium uppercase tracking-wider text-slate-500">Battery</div>
+              <div className="mt-1 text-lg font-bold text-slate-100">{mode === "sim" ? sim.battery : status.battery}%</div>
             </div>
             <Badge>Demo</Badge>
           </div>
-          <div className="mt-3 h-2 w-full rounded-full bg-neutral-100">
+          <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-dna-bg">
             <div
-              className="h-2 rounded-full bg-neutral-900"
+              className="h-full rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-500 transition-[width] duration-300"
               style={{ width: `${mode === "sim" ? sim.battery : status.battery}%` }}
             />
           </div>
@@ -46,12 +48,12 @@ export default function StatusPanel({ locked, busy, doUnlock, doLockSim, mode, s
         <Card>
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-xs text-neutral-500">Signal</div>
-              <div className="mt-1 text-lg font-semibold">{mode === "sim" ? sim.signal : status.signal}/5</div>
+              <div className="text-xs font-medium uppercase tracking-wider text-slate-500">Signal</div>
+              <div className="mt-1 text-lg font-bold text-slate-100">{mode === "sim" ? sim.signal : status.signal}/5</div>
             </div>
             <Badge>{status.online ? "Online" : "Offline"}</Badge>
           </div>
-          <div className="mt-2 text-sm text-neutral-600">Use same Wi-Fi router, or Pi hotspot later.</div>
+          <div className="mt-2 text-sm text-slate-400">Same LAN as the Pi, or Pi hotspot when available.</div>
         </Card>
       </div>
     </>
