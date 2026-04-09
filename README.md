@@ -64,3 +64,43 @@ npm run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+## Local Backend + SQLite DB
+
+This project now includes a local backend and SQLite database for device mode.
+
+```bash
+# terminal 1: start backend API + DB
+npm run server
+
+# terminal 2: start frontend
+npm run dev
+```
+
+Then in UI:
+
+- switch mode to `device`
+- set Base URL to `http://localhost:3001`
+- click refresh
+
+### API Endpoints (implemented)
+
+- `GET /api/status`
+- `POST /api/unlock`
+- `GET /api/users`
+- `POST /api/users`
+- `DELETE /api/users/:id`
+- `GET /api/logs`
+- `POST /api/settings`
+
+### Database Notes
+
+- DB file: `server/face-lock.db`
+- Engine: SQLite (local/offline)
+- Tables include:
+  - `users`
+  - `face_embeddings` (for encrypted embedding payload storage)
+  - `auth_attempts`
+  - `device_state`
+  - `settings`
+  - `event_logs`

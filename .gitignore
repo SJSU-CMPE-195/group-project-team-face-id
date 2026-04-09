@@ -36,3 +36,10 @@ coverage
 
 # System files
 Thumbs.db
+package-lock.json
+package.json
+
+# Local SQLite database files
+server/*.db
+server/*.db-wal
+server/*.db-shm
