@@ -15,3 +15,73 @@ def load_database():
             return pickle.load(f)
     return {}
 
+def save_database(db):
+    EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(EMBEDDINGS_FILE, "wb") as f:
+        pickle.dump(db, f)
+
+def main():
+    user_name = input("Enter use name to enroll: ").strip()
+    if not user_name:
+        print("User name cannot be empty.")
+        return
+    
+    samples_needed = 10
+    collected_embeddings = []
+    
+    app = FaceAnalysis(name="buffalo_s")
+    app.prepare(ctx_id=-1, det_size=(320, 320))
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Cannot open camera")
+        return
+    
+    print("\nEnrollment started.")
+    print("Instructions:")
+    print("1. Make sure only one face is visible in the camera.")
+    print("2. Press 's' to save a sample when your face is detected.")
+    print("3. Press 'q' to quit early (you need at least 10 samples to enroll).")
+
+    while len(collected_embeddings) < samples_needed:
+        ret, frame = cap.read()
+        if not ret:
+            print("Can't receive frame (stream end?). Exiting ...")
+            break
+
+        frame = cv2.resize(frame, (640, 480))
+        faces = app.get(frame)
+        status_text = f"Samples: {len(collected_embeddings)}/{samples_needed}"
+
+        if len(faces) == 1:
+            faces = faces[0]
+            x1,y1,x2,y2 = face.bbox.astype(int)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        elif len(faces) == 0:
+            cv2.putText(frame, "No face detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            cv2.putText(frame, "Multiple faces detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        cv2.putText(frame, status_text, (20,70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord("q"):
+            print("Enrollment cancelled.")
+            break
+
+        if key == ord("s"):
+            if len(faces) == 1:
+                embedding = faces[0].embedding.astype(np.float32)
+                collected_embeddings.append(embedding)
+                print(f"Sample {len(collected_embeddings)}/{samples_needed} collected.")
+            else:
+                print("Sample not saved")
+        
+    cap.release()
+    cv2.destroyAllWindows()
+
+    if not collected_embeddings:
+        print("No samples collected. Nothing saved.")
+        return
+
