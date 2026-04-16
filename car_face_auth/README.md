@@ -1,11 +1,11 @@
-# 🚗 Facial Recognition Vehicle Access System
+# Facial Recognition Vehicle Access System
 
-## 📌 Project Description  
+## Project Description  
 This project implements a facial-recognition-based vehicle access system using a Raspberry Pi and camera module. The system identifies authorized users in real time and simulates unlocking a vehicle when a valid face is detected with high confidence.
 
 ---
 
-## 🔍 Proof of Concept Scope  
+##  Proof of Concept Scope  
 The Proof of Concept demonstrates:
 - Real-time face detection  
 - Face embedding generation  
@@ -20,7 +20,7 @@ The Proof of Concept demonstrates:
 
 ---
 
-## ⚙️ Prerequisites  
+## Prerequisites  
 - Python 3.8+  
 - Raspberry Pi (or PC for development)  
 - Camera (Pi Camera Module or USB webcam)  
@@ -37,7 +37,7 @@ The Proof of Concept demonstrates:
 
 ---
 
-## 🛠️ Installation  
+## Installation  
 
 ### 1. Clone the repository
 ```bash
@@ -65,7 +65,7 @@ pip install -r requirements.txt
 
 Make sure your camera is properly connected and accessible.
 
-▶️ Running the PoC
+Running the PoC
 Step 1: Enroll a User
 python enroll.py
 Enter a username
@@ -73,7 +73,8 @@ The system captures multiple frames
 Face embeddings are stored locally
 Step 2: Run Live Verification
 python verify_live.py
-✅ Expected Output
+
+Expected Output
 Face bounding boxes
 Similarity score
 Status messages:
