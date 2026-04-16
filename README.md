@@ -164,6 +164,7 @@ python enroll.py
 
 - Enter a username when prompted.  
 - The system captures multiple frames and stores face embeddings locally.
+- If error occurs such as "Unable to import dependency onnxruntime", you need to run 'pip install onnxruntime' in the venv.
 
 **2. Live verification**
 
