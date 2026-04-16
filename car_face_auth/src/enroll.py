@@ -1,13 +1,16 @@
+#Doesn't show bbox for now
 import os
-import pickle 
+import pickle
 from pathlib import Path
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
 
+
 DATA_DIR = Path("data")
 EMBEDDINGS_DIR = DATA_DIR / "embeddings"
 EMBEDDINGS_FILE = EMBEDDINGS_DIR / "face_embeddings.pkl"
+
 
 def load_database():
     if EMBEDDINGS_FILE.exists():
@@ -25,10 +28,11 @@ def main():
     if not user_name:
         print("User name cannot be empty.")
         return
-    
+   
     samples_needed = 10
     collected_embeddings = []
-    
+    enrollment_cancelled = False
+   
     print("Loading InsightFace model.")
     app = FaceAnalysis(name="buffalo_s", allowed_modules=["detection", "recognition"], providers=["CPUExecutionProvider"],)
     app.prepare(ctx_id=-1, det_size=(320, 320))
@@ -42,12 +46,13 @@ def main():
     print("Camera opened successfully.")
 
     cv2.namedWindow("Enroll User", cv2.WINDOW_NORMAL)
-    
+   
     print("\nEnrollment started.")
     print("Instructions:")
     print("1. Make sure only one face is visible in the camera.")
     print("2. Press 's' to save a sample when your face is detected.")
     print("3. Press 'q' to quit early (you need at least 10 samples to enroll).\n")
+
 
     while len(collected_embeddings) < samples_needed:
         ret, frame = cap.read()
@@ -59,14 +64,15 @@ def main():
         display_frame = frame.copy()
 
         status_text = f"Samples: {len(collected_embeddings)}/{samples_needed}, press 's' to save, 'q' to quit"
-        
+       
         cv2.putText(display_frame, status_text, (20,70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.imshow("Enroll User", display_frame)
 
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord("q"):
-            print("Enrollment cancelled.")
+            print("Enrollment cancelled. No samples saved.")
+            enrollment_cancelled = True
             break
 
         if key == ord("s"):
@@ -85,10 +91,13 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
 
-    if not collected_embeddings:
-        print("No samples collected. Nothing saved.")
+    if enrollment_cancelled:
         return
-    
+
+    if len(collected_embeddings) < samples_needed:
+        print("Not enough samples collected. No samples saved.")
+        return
+   
     db = load_database()
     db[user_name] = collected_embeddings
     save_database(db)
@@ -98,4 +107,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
