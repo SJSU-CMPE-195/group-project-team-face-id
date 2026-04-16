@@ -1,11 +1,11 @@
 ## Team members
 
-| Name | SJSU Email |
-|------|------------|
-| Taanish Patel | [taanish.patel@sjsu.edu](mailto:taanish.patel@sjsu.edu) |(Github:@pateltaanish)
-| Adam Mejia | [adam.mejia@sjsu.edu](mailto:adam.mejia@sjsu.edu) |(Github:@AdamMejia)
-| Nick Thi | [nicholas.thi@sjsu.edu](mailto:nicholas.thi@sjsu.edu) |(Github:@nicholastee22)
-| Greg Lu | [greg.lu@sjsu.edu](mailto:greg.lu@sjsu.edu) | (Github: @vvv017)
+| Name | SJSU Email | GitHub |
+|------|------------|--------|
+| Taanish Patel | [taanish.patel@sjsu.edu](mailto:taanish.patel@sjsu.edu) | [@pateltaanish](https://github.com/pateltaanish) |
+| Adam Mejia | [adam.mejia@sjsu.edu](mailto:adam.mejia@sjsu.edu) | [@AdamMejia](https://github.com/AdamMejia) |
+| Nick Thi | [nicholas.thi@sjsu.edu](mailto:nicholas.thi@sjsu.edu) | [@nicholastee22](https://github.com/nicholastee22) |
+| Greg Lu | [greg.lu@sjsu.edu](mailto:greg.lu@sjsu.edu) | [@vvv017](https://github.com/vvv017) |
 
 **Project advisor:** Eric Vanuska
 
