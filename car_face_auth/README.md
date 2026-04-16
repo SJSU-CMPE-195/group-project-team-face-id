@@ -32,6 +32,9 @@ The Proof of Concept demonstrates:
 - insightface  
 - onnxruntime (or onnxruntime-gpu)  
 
+### !!! Note: You will need to switch to the Machine-Learning branch and cd into car_face_auth for this to work !!!
+
+
 ---
 
 ## 🛠️ Installation  
@@ -41,7 +44,10 @@ The Proof of Concept demonstrates:
 git clone <your-repo-url>
 cd <your-repo-name>
 
-!!!Note: You will need to switch to the Machine-Learning branch and cd into car_face_auth for this to work !!!
+1.5 Switch into Machine-Learning branch and cd into car_face_auth
+
+git checkout Machine-Learning
+cd car_face_auth
 
 2. Create a virtual environment
 python -m venv venv
@@ -75,6 +81,7 @@ ACCESS PENDING
 ACCESS GRANTED
 
 The system uses a rolling window of frames to improve stability and reduce false positives.
+```
 
 🎥 Demo
 Part 1: Enrollment
@@ -86,7 +93,7 @@ Part 2: Terminal Response for Enrollment
 Part 3: Verify Live
 ![Demo](images/demo1.png)
 
-🧠 Technical Stack
+## Technical Stack
 Language: Python
 Computer Vision: OpenCV
 Face Recognition: InsightFace (Buffalo_s)
@@ -94,7 +101,8 @@ Numerical Computing: NumPy
 Runtime: ONNX Runtime
 Hardware: Raspberry Pi + Camera
 Storage: Pickle (embeddings database)
-🚀 What's Next (195B)
+
+## What's Next (195B)
 Integrate physical door lock and ignition system
 Improve robustness to lighting and head movement
 Implement anti-spoofing protection
