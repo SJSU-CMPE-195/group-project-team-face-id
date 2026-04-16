@@ -1,110 +1,17 @@
-# 🚗 Facial Recognition Vehicle Access System
+# Car face auth (Python PoC)
 
-## 📌 Project Description  
-This project implements a facial-recognition-based vehicle access system using a Raspberry Pi and camera module. The system identifies authorized users in real time and simulates unlocking a vehicle when a valid face is detected with high confidence.
+Raspberry Pi / desktop facial recognition enrollment and live verification live in this folder.
 
----
+**Full documentation** (repo overview, frontend UI, installation, and running the PoC) is in the [root README](../README.md).
 
-## 🔍 Proof of Concept Scope  
-The Proof of Concept demonstrates:
-- Real-time face detection  
-- Face embedding generation  
-- Identity verification using a local database  
-- Confidence-based access decisions with a rolling window  
+**Quick reference**
 
-**Not included yet:**
-- Physical door lock / ignition control  
-- Multi-user robustness testing  
-- Anti-spoofing (photo/video protection)  
-- Full vehicle system integration  
-
----
-
-## ⚙️ Prerequisites  
-- Python 3.8+  
-- Raspberry Pi (or PC for development)  
-- Camera (Pi Camera Module or USB webcam)  
-- Virtual environment (recommended)  
-
-### Required Libraries
-- opencv-python  
-- numpy  
-- insightface  
-- onnxruntime (or onnxruntime-gpu)  
-
-### !!! Note: You will need to switch to the Machine-Learning branch and cd into car_face_auth for this to work !!!
-
-
----
-
-## 🛠️ Installation  
-
-### 1. Clone the repository
 ```bash
-git clone <your-repo-url>
-cd <your-repo-name>
-
-1.5 Switch into Machine-Learning branch and cd into car_face_auth
-
-git checkout Machine-Learning
+git checkout Machine-Learning   # branch that carries this PoC
 cd car_face_auth
-
-2. Create a virtual environment
 python -m venv venv
-
-Activate it:
-
-# Mac/Linux
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-3. Install dependencies
+# activate venv, then:
 pip install -r requirements.txt
-4. Connect your camera
-
-Make sure your camera is properly connected and accessible.
-
-▶️ Running the PoC
-Step 1: Enroll a User
 python enroll.py
-Enter a username
-The system captures multiple frames
-Face embeddings are stored locally
-Step 2: Run Live Verification
 python verify_live.py
-✅ Expected Output
-Face bounding boxes
-Similarity score
-Status messages:
-ACCESS PENDING
-ACCESS GRANTED
-
-The system uses a rolling window of frames to improve stability and reduce false positives.
 ```
-
-🎥 Demo
-Part 1: Enrollment
-![Demo](images/demo2.png)
-
-Part 2: Terminal Response for Enrollment
-![Demo](images/demo1.5.png)
-
-Part 3: Verify Live
-![Demo](images/demo1.png)
-
-## Technical Stack
-Language: Python
-Computer Vision: OpenCV
-Face Recognition: InsightFace (Buffalo_s)
-Numerical Computing: NumPy
-Runtime: ONNX Runtime
-Hardware: Raspberry Pi + Camera
-Storage: Pickle (embeddings database)
-
-## What's Next (195B)
-Integrate physical door lock and ignition system
-Improve robustness to lighting and head movement
-Implement anti-spoofing protection
-Optimize performance for Raspberry Pi
-Conduct user testing and evaluate system accuracy
