@@ -7,6 +7,9 @@ export default function useAppState() {
   const [baseUrl, setBaseUrl] = useState(
     () => localStorage.getItem("baseUrl") || "http://192.168.4.1:5000"
   );
+  const [faceApiUrl, setFaceApiUrl] = useState(
+    () => localStorage.getItem("faceApiUrl") || "http://127.0.0.1:8765"
+  );
   const [tab, setTab] = useState("control");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
@@ -49,8 +52,9 @@ export default function useAppState() {
   useEffect(() => {
     localStorage.setItem("mode", mode);
     localStorage.setItem("baseUrl", baseUrl);
+    localStorage.setItem("faceApiUrl", faceApiUrl);
     localStorage.setItem("sim", JSON.stringify(sim));
-  }, [mode, baseUrl, sim]);
+  }, [mode, baseUrl, faceApiUrl, sim]);
 
   const api = useApi(mode, baseUrl, sim, setSim);
 
@@ -64,6 +68,8 @@ export default function useAppState() {
     setMode,
     baseUrl,
     setBaseUrl,
+    faceApiUrl,
+    setFaceApiUrl,
     tab,
     setTab,
     busy,
