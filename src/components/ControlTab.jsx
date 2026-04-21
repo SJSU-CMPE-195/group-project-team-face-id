@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Card from "./Card";
 import Btn from "./Btn";
 import { ScanFace } from "lucide-react";
+import { isFaceAccessAllowed } from "../utils/helpers";
 
 const WINDOW_SIZE = 10;
 const MIN_MATCHES = 6;
@@ -30,23 +31,34 @@ function formatFetchError(data, status, statusText) {
   return `HTTP ${status} ${statusText}`;
 }
 
-export default function ControlTab({ faceApiUrl, popToast, busy }) {
+export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnlock, popToast, busy }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const historyRef = useRef([]);
   const inFlightRef = useRef(false);
   const accessGrantedRef = useRef(false);
+  const blockedRecognitionRef = useRef([]);
+  const accessDeniedHandledRef = useRef(false);
   const intervalRef = useRef(null);
+  const postUnlockIntervalRef = useRef(null);
+  const doUnlockRef = useRef(doUnlock);
+  const stopCameraRef = useRef(null);
 
   const [camOn, setCamOn] = useState(false);
   const [statusLine, setStatusLine] = useState("Camera off");
   const [enrolledHint, setEnrolledHint] = useState("");
   const [apiError, setApiError] = useState(null);
+  const [postUnlockCountdown, setPostUnlockCountdown] = useState(null);
 
   const cleanApi = (faceApiUrl || "").trim().replace(/\/$/, "");
 
   const stopCamera = useCallback(() => {
+    if (postUnlockIntervalRef.current) {
+      clearInterval(postUnlockIntervalRef.current);
+      postUnlockIntervalRef.current = null;
+    }
+    setPostUnlockCountdown(null);
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -58,12 +70,25 @@ export default function ControlTab({ faceApiUrl, popToast, busy }) {
     if (videoRef.current) videoRef.current.srcObject = null;
     setCamOn(false);
     historyRef.current = [];
+    blockedRecognitionRef.current = [];
     accessGrantedRef.current = false;
+    accessDeniedHandledRef.current = false;
     setStatusLine("Camera off");
     setApiError(null);
   }, []);
 
+  useEffect(() => {
+    stopCameraRef.current = stopCamera;
+  }, [stopCamera]);
+
   const startCamera = useCallback(async () => {
+    if (postUnlockIntervalRef.current) {
+      clearInterval(postUnlockIntervalRef.current);
+      postUnlockIntervalRef.current = null;
+    }
+    setPostUnlockCountdown(null);
+    accessDeniedHandledRef.current = false;
+    blockedRecognitionRef.current = [];
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
@@ -82,6 +107,10 @@ export default function ControlTab({ faceApiUrl, popToast, busy }) {
   }, [popToast]);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
+
+  useEffect(() => {
+    doUnlockRef.current = doUnlock;
+  }, [doUnlock]);
 
   useEffect(() => {
     if (!cleanApi) {
@@ -154,18 +183,48 @@ export default function ControlTab({ faceApiUrl, popToast, busy }) {
         } else if (faceCount > 1) {
           hist.push({ matched: false, user: null });
         } else {
-          hist.push({ matched: !!data.matched, user: data.user || null });
+          const allowed =
+            !!data.matched && isFaceAccessAllowed(data.user, faceAccessAllowed);
+          hist.push({ matched: allowed, user: data.user || null });
         }
         while (hist.length > WINDOW_SIZE) hist.shift();
 
         const { granted, candidateUser, candidateCount } = evaluateWindow(hist);
 
-        if (faceCount === 1) {
-          setStatusLine(
-            data.matched
-              ? `Match: ${data.user} (score ${data.score}) · stable ${candidateCount}/${WINDOW_SIZE}`
-              : `No match · closest ${data.user ?? "—"} (${data.score}) · ${candidateCount}/${WINDOW_SIZE}`,
+        const br = blockedRecognitionRef.current;
+        if (faceCount === 1 && data.matched && !isFaceAccessAllowed(data.user, faceAccessAllowed)) {
+          br.push({ user: data.user });
+        } else {
+          br.push(null);
+        }
+        while (br.length > WINDOW_SIZE) br.shift();
+        const blockedHits = br.filter(Boolean);
+        const blockedStable = blockedHits.length >= MIN_MATCHES;
+        const deniedUser = blockedHits.length ? blockedHits[blockedHits.length - 1].user : null;
+
+        if (blockedStable && !accessDeniedHandledRef.current) {
+          accessDeniedHandledRef.current = true;
+          popToast(
+            "err",
+            "Access denied",
+            `${deniedUser ?? "This user"} has no access permission. Turn it on under Users → Access authorization.`,
           );
+          stopCameraRef.current?.();
+          return;
+        }
+
+        if (faceCount === 1) {
+          if (data.matched && !isFaceAccessAllowed(data.user, faceAccessAllowed)) {
+            setStatusLine(
+              `Recognized ${data.user} (score ${data.score}) · access off — enable in Users tab · ${candidateCount}/${WINDOW_SIZE}`,
+            );
+          } else {
+            setStatusLine(
+              data.matched
+                ? `Match: ${data.user} (score ${data.score}) · stable ${candidateCount}/${WINDOW_SIZE}`
+                : `No match · closest ${data.user ?? "—"} (${data.score}) · ${candidateCount}/${WINDOW_SIZE}`,
+            );
+          }
         } else if (faceCount === 0) {
           setStatusLine("No face detected");
         } else {
@@ -174,7 +233,37 @@ export default function ControlTab({ faceApiUrl, popToast, busy }) {
 
         if (granted && !accessGrantedRef.current) {
           accessGrantedRef.current = true;
-          popToast("ok", "Recognition stable", `${candidateUser} — use Unlock in the panel below when ready.`);
+          const unlock = doUnlockRef.current;
+          if (typeof unlock === "function") {
+            void unlock({ suppressSuccessToast: true }).then((ok) => {
+              if (ok) {
+                popToast("ok", "Device unlock", "Verified — device unlock.");
+                setPostUnlockCountdown(3);
+                let step = 0;
+                if (postUnlockIntervalRef.current) {
+                  clearInterval(postUnlockIntervalRef.current);
+                  postUnlockIntervalRef.current = null;
+                }
+                postUnlockIntervalRef.current = setInterval(() => {
+                  step += 1;
+                  if (step >= 3) {
+                    if (postUnlockIntervalRef.current) {
+                      clearInterval(postUnlockIntervalRef.current);
+                      postUnlockIntervalRef.current = null;
+                    }
+                    setPostUnlockCountdown(null);
+                    stopCameraRef.current?.();
+                  } else {
+                    setPostUnlockCountdown(3 - step);
+                  }
+                }, 1000);
+              } else {
+                accessGrantedRef.current = false;
+              }
+            });
+          } else {
+            popToast("ok", "Device unlock", "Verified — device unlock.");
+          }
         }
         if (!granted) accessGrantedRef.current = false;
       } catch (e) {
@@ -191,7 +280,7 @@ export default function ControlTab({ faceApiUrl, popToast, busy }) {
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
-  }, [camOn, cleanApi, popToast]);
+  }, [camOn, cleanApi, faceAccessAllowed, popToast]);
 
   return (
     <div className="flex justify-center pt-1">
@@ -204,8 +293,9 @@ export default function ControlTab({ faceApiUrl, popToast, busy }) {
             <div className="mt-4 sm:mt-0">
               <div className="text-lg font-semibold text-slate-100">Face scan</div>
               <div className="mt-1 text-sm text-slate-400">
-                Uses your browser camera. Recognition runs on the Face API (same embedding DB as{" "}
-                <span className="font-mono text-xs text-slate-500">enroll.py</span>).
+                Turn on the camera below. When the match is stable and your user is authorized, the app calls{" "}
+                <span className="text-slate-300">Unlock</span>, shows{" "}
+                <span className="text-slate-300">Device unlock</span>, then stops the camera after a 3-second countdown.
               </div>
             </div>
           </div>
@@ -218,11 +308,11 @@ export default function ControlTab({ faceApiUrl, popToast, busy }) {
           <div className="mt-4 flex flex-wrap justify-center gap-2 sm:justify-start">
             {!camOn ? (
               <Btn disabled={busy} onClick={startCamera}>
-                Turn on camera
+                {"Turn on camera & scan"}
               </Btn>
             ) : (
               <Btn variant="secondary" disabled={busy} onClick={stopCamera}>
-                Turn off camera
+                Stop camera
               </Btn>
             )}
           </div>
@@ -235,6 +325,11 @@ export default function ControlTab({ faceApiUrl, popToast, busy }) {
               <div className="mt-1 text-amber-400/90">Set Face API URL in Connection to enable recognition.</div>
             )}
             {apiError ? <div className="mt-1 text-rose-400/90">{apiError}</div> : null}
+            {postUnlockCountdown != null ? (
+              <div className="mt-2 text-sm font-medium text-violet-300/95">
+                Stopping camera in {postUnlockCountdown}…
+              </div>
+            ) : null}
           </div>
         </Card>
       </div>

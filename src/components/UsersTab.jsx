@@ -3,7 +3,8 @@ import Card from "./Card";
 import Badge from "./Badge";
 import Input from "./Input";
 import Btn from "./Btn";
-import { fmt } from "../utils/helpers";
+import { fmt, isFaceAccessAllowed } from "../utils/helpers";
+import Switch from "./Switch";
 
 const SAMPLES_NEEDED = 10;
 
@@ -18,6 +19,8 @@ export default function UsersTab({
   delUser,
   faceApiUrl,
   popToast,
+  faceAccessAllowed = {},
+  setFaceAccessAllowed,
 }) {
   const users = mode === "device" ? deviceUsers : sim.users;
   const cleanApi = (faceApiUrl || "").trim().replace(/\/$/, "");
@@ -160,6 +163,7 @@ export default function UsersTab({
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
       popToast("ok", "Face enrolled", `${data.user} — ${data.samples} samples saved to local DB.`);
+      setFaceAccessAllowed((prev) => ({ ...prev, [data.user]: true }));
       setEnrollSession(null);
       setEnrollCount(0);
       stopEnrollCamera();
@@ -292,20 +296,55 @@ export default function UsersTab({
         </Card>
       </div>
 
-      <Card>
-        <div className="text-sm font-semibold text-slate-100">Checklist</div>
-        <div className="mt-3 space-y-2 text-sm text-slate-400">
-          <div className="flex gap-2">
-            <span className="text-violet-400">▸</span> Even lighting
+      <div className="flex flex-col gap-3">
+        <Card>
+          <div className="text-sm font-semibold text-slate-100">Checklist</div>
+          <div className="mt-3 space-y-2 text-sm text-slate-400">
+            <div className="flex gap-2">
+              <span className="text-violet-400">▸</span> Even lighting
+            </div>
+            <div className="flex gap-2">
+              <span className="text-violet-400">▸</span> {SAMPLES_NEEDED} samples, slight angle changes
+            </div>
+            <div className="flex gap-2">
+              <span className="text-fuchsia-400">▸</span> One face in frame per capture
+            </div>
           </div>
-          <div className="flex gap-2">
-            <span className="text-violet-400">▸</span> {SAMPLES_NEEDED} samples, slight angle changes
+        </Card>
+
+        <Card>
+          <div className="text-sm font-semibold text-slate-100">Access authorization</div>
+          <div className="mt-1 text-xs text-slate-400">
+            Only users with access <span className="text-slate-300">on</span> count toward unlock on the Control face scan. Stored in this browser (
+            <span className="font-mono text-[11px]">localStorage</span>).
           </div>
-          <div className="flex gap-2">
-            <span className="text-fuchsia-400">▸</span> One face in frame per capture
+          <div className="mt-4 space-y-2">
+            {!cleanApi ? (
+              <div className="text-sm text-slate-500">Set Face API to list local face templates.</div>
+            ) : localFaceNames.length === 0 ? (
+              <div className="text-sm text-slate-500">No faces in local DB yet.</div>
+            ) : (
+              localFaceNames.map((n) => (
+                <div
+                  key={n}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-dna-bg px-3 py-2.5"
+                >
+                  <span className="truncate text-sm font-medium text-slate-100">{n}</span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-[11px] uppercase tracking-wide text-slate-500">
+                      {isFaceAccessAllowed(n, faceAccessAllowed) ? "allowed" : "blocked"}
+                    </span>
+                    <Switch
+                      checked={isFaceAccessAllowed(n, faceAccessAllowed)}
+                      onChange={(allowed) => setFaceAccessAllowed((prev) => ({ ...prev, [n]: allowed }))}
+                    />
+                  </div>
+                </div>
+              ))
+            )}
           </div>
-        </div>
-      </Card>
+        </Card>
+      </div>
     </div>
   );
 }

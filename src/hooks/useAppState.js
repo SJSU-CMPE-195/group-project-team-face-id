@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useApi from "./useApi";
 import { genId } from "../utils/helpers";
 
@@ -49,6 +49,17 @@ export default function useAppState() {
   const [deviceUsers, setDeviceUsers] = useState([]);
   const [deviceLogs, setDeviceLogs] = useState([]);
 
+  const [faceAccessAllowed, setFaceAccessAllowed] = useState(() => {
+    try {
+      const raw = localStorage.getItem("faceAccessAllowed");
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const toastDismissRef = useRef(null);
+
   useEffect(() => {
     localStorage.setItem("mode", mode);
     localStorage.setItem("baseUrl", baseUrl);
@@ -56,11 +67,29 @@ export default function useAppState() {
     localStorage.setItem("sim", JSON.stringify(sim));
   }, [mode, baseUrl, faceApiUrl, sim]);
 
+  useEffect(() => {
+    localStorage.setItem("faceAccessAllowed", JSON.stringify(faceAccessAllowed));
+  }, [faceAccessAllowed]);
+
+  useEffect(
+    () => () => {
+      if (toastDismissRef.current) clearTimeout(toastDismissRef.current);
+    },
+    [],
+  );
+
   const api = useApi(mode, baseUrl, sim, setSim);
 
-  const popToast = (type, title, msg) => {
+  const popToast = (type, title, msg, durationMs = 5600) => {
+    if (toastDismissRef.current) {
+      clearTimeout(toastDismissRef.current);
+      toastDismissRef.current = null;
+    }
     setToast({ id: genId("t"), type, title, msg });
-    setTimeout(() => setToast(null), 2500);
+    toastDismissRef.current = setTimeout(() => {
+      toastDismissRef.current = null;
+      setToast(null);
+    }, durationMs);
   };
 
   return {
@@ -90,5 +119,7 @@ export default function useAppState() {
     setDeviceUsers,
     deviceLogs,
     setDeviceLogs,
+    faceAccessAllowed,
+    setFaceAccessAllowed,
   };
 }

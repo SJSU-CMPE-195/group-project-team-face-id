@@ -38,30 +38,31 @@ export default function App() {
         <main className="flex-1 overflow-y-auto px-5 py-6 md:px-8">
           {state.tab === "control" && (
             <>
-              <ControlTab faceApiUrl={state.faceApiUrl} popToast={state.popToast} busy={state.busy} />
-              <div id="panel-status" className="mt-8 scroll-mt-6 space-y-5">
+              <ControlTab
+                faceApiUrl={state.faceApiUrl}
+                faceAccessAllowed={state.faceAccessAllowed}
+                doUnlock={actions.doUnlock}
+                popToast={state.popToast}
+                busy={state.busy}
+              />
+              <div id="panel-status" className="mt-8 scroll-mt-6 space-y-3">
                 <Overview mode={state.mode} sim={state.sim} status={state.status} />
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-                  <div className="lg:col-span-2">
-                    <StatusPanel
-                      locked={locked}
-                      busy={state.busy}
-                      doUnlock={actions.doUnlock}
-                      doLockSim={actions.doLockSim}
-                      mode={state.mode}
-                      sim={state.sim}
-                      status={state.status}
-                    />
-                  </div>
-                  <ConnectionPanel
-                    mode={state.mode}
-                    setMode={state.setMode}
-                    baseUrl={state.baseUrl}
-                    setBaseUrl={state.setBaseUrl}
-                    faceApiUrl={state.faceApiUrl}
-                    setFaceApiUrl={state.setFaceApiUrl}
-                  />
-                </div>
+                <StatusPanel
+                  locked={locked}
+                  busy={state.busy}
+                  doLockSim={actions.doLockSim}
+                  mode={state.mode}
+                  sim={state.sim}
+                  status={state.status}
+                />
+                <ConnectionPanel
+                  mode={state.mode}
+                  setMode={state.setMode}
+                  baseUrl={state.baseUrl}
+                  setBaseUrl={state.setBaseUrl}
+                  faceApiUrl={state.faceApiUrl}
+                  setFaceApiUrl={state.setFaceApiUrl}
+                />
               </div>
             </>
           )}
@@ -78,6 +79,8 @@ export default function App() {
               delUser={actions.delUser}
               faceApiUrl={state.faceApiUrl}
               popToast={state.popToast}
+              faceAccessAllowed={state.faceAccessAllowed}
+              setFaceAccessAllowed={state.setFaceAccessAllowed}
             />
           )}
 

@@ -50,14 +50,17 @@ export default function useAppActions(state) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, baseUrl]);
 
-  const doUnlock = async () => {
+  const doUnlock = async (opts = {}) => {
+    const suppressSuccessToast = !!opts.suppressSuccessToast;
     setBusy(true);
     try {
       await api.unlock();
-      await refresh();
-      popToast("ok", "Unlocked", "Device reports unlocked.");
+      await refresh({ silent: true });
+      if (!suppressSuccessToast) popToast("ok", "Unlocked", "Device reports unlocked.");
+      return true;
     } catch (e) {
       popToast("err", "Unlock failed", e.message);
+      return false;
     } finally {
       setBusy(false);
     }
