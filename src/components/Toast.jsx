@@ -5,16 +5,16 @@ export default function Toast({ toast }) {
 
   const ringClass =
     toast.type === "err"
-      ? "ring-red-200"
+      ? "border-rose-500/40 ring-1 ring-rose-500/30"
       : toast.type === "ok"
-      ? "ring-emerald-200"
-      : "ring-neutral-200";
+      ? "border-violet-500/40 ring-1 ring-violet-500/25"
+      : "border-white/10 ring-1 ring-white/10";
 
   return (
-    <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2">
-      <div className={`rounded-2xl px-4 py-3 shadow-lg ring-1 ${ringClass}`}>
-        <div className="text-sm font-semibold">{toast.title}</div>
-        {toast.msg ? <div className="mt-1 text-xs text-neutral-600">{toast.msg}</div> : null}
+    <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 px-4">
+      <div className={`rounded-xl bg-dna-surface px-4 py-3 shadow-panel backdrop-blur-md ${ringClass}`}>
+        <div className="text-sm font-semibold text-slate-50">{toast.title}</div>
+        {toast.msg ? <div className="mt-1 text-xs text-slate-400">{toast.msg}</div> : null}
       </div>
     </div>
   );

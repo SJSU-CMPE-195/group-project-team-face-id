@@ -1,26 +1,28 @@
 import React from "react";
 import Card from "./Card";
-import Btn from "./Btn";
+import { ScanFace } from "lucide-react";
 
-export default function ControlTab({ busy, doUnlock, setTab }) {
+export default function ControlTab() {
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-      <Card>
-        <div className="text-sm font-semibold">Face scan</div>
-        <div className="mt-1 text-xs text-neutral-600">v1 placeholder. Later: show camera preview + recognition result.</div>
-        <div className="mt-4 rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm">
-          Camera area (UI only)
-        </div>
-      </Card>
-
-      <Card>
-        <div className="text-sm font-semibold">Quick actions</div>
-        <div className="mt-3 grid gap-2">
-          <Btn disabled={busy} onClick={doUnlock}>Unlock</Btn>
-          <Btn variant="secondary" disabled={busy} onClick={() => setTab("users")}>Go to Users</Btn>
-          <Btn variant="secondary" disabled={busy} onClick={() => setTab("logs")}>Go to Logs</Btn>
-        </div>
-      </Card>
+    <div className="flex justify-center pt-1">
+      <div className="w-full max-w-4xl xl:max-w-5xl">
+        <Card>
+          <div className="flex flex-col items-center text-center sm:flex-row sm:items-start sm:text-left">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10 sm:mr-4">
+              <ScanFace className="h-6 w-6 text-violet-400" strokeWidth={1.75} />
+            </div>
+            <div className="mt-4 sm:mt-0">
+              <div className="text-lg font-semibold text-slate-100">Face scan</div>
+              <div className="mt-1 text-sm text-slate-400">
+                Live preview and match result from the Pi will appear here.
+              </div>
+            </div>
+          </div>
+          <div className="mt-6 flex min-h-[min(52vh,520px)] w-full items-center justify-center rounded-2xl border border-dashed border-white/10 bg-dna-bg text-slate-500">
+            <span className="text-sm">Camera preview area</span>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }

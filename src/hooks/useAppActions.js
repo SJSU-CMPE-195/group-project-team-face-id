@@ -13,14 +13,30 @@ export default function useAppActions(state) {
     name,
     setName,
     settings,
+    setSettings,
+    setDeviceUsers,
+    setDeviceLogs,
   } = state;
 
-  const refresh = async () => {
+  const refresh = async (opts = {}) => {
+    const silent = !!opts.silent;
     setBusy(true);
     try {
       const s = await api.status();
       setStatus(s);
-      popToast("ok", "Refreshed", mode === "device" ? `Connected to ${baseUrl}` : "Simulation updated");
+      if (mode === "device") {
+        const [users, logs, remoteSettings] = await Promise.all([
+          api.users(),
+          api.logs(),
+          api.getSettings(),
+        ]);
+        setDeviceUsers(users);
+        setDeviceLogs(logs);
+        setSettings((prev) => ({ ...prev, ...remoteSettings }));
+      }
+      if (!silent) {
+        popToast("ok", "Refreshed", mode === "device" ? `Connected to ${baseUrl}` : "Simulation updated");
+      }
     } catch (e) {
       setStatus((p) => ({ ...p, online: false }));
       popToast("err", "Connection failed", e.message);
@@ -63,6 +79,7 @@ export default function useAppActions(state) {
     try {
       await api.addUser(n);
       setName("");
+      if (mode === "device") await refresh({ silent: true });
       popToast("ok", "Enrolled", `Added ${n}`);
     } catch (e) {
       popToast("err", "Enroll failed", e.message);
@@ -76,6 +93,7 @@ export default function useAppActions(state) {
     setBusy(true);
     try {
       await api.delUser(id);
+      if (mode === "device") await refresh({ silent: true });
       popToast("ok", "Removed", "User deleted.");
     } catch (e) {
       popToast("err", "Delete failed", e.message);
@@ -88,6 +106,7 @@ export default function useAppActions(state) {
     setBusy(true);
     try {
       await api.saveSettings(settings);
+      if (mode === "device") await refresh({ silent: true });
       popToast("ok", "Saved", "Settings updated.");
     } catch (e) {
       popToast("err", "Save failed", e.message);
