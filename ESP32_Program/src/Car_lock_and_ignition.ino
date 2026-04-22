@@ -1,3 +1,8 @@
+// ==============================
+// Face ID Car Demo - ESP32 Motor Controller
+// Python <-> ESP32 serial protocol
+// ==============================
+
 // DC Motor A pins (ignition)
 const int ENA = 14;
 const int IN1 = 26;
@@ -8,39 +13,49 @@ const int ENB = 15;
 const int IN3 = 18;
 const int IN4 = 19;
 
-const int LOCK_SPEED = 150;    // speed of lock motor 0-255
-const int LOCK_TIME  = 400;    // ms to run lock motor
+const int LOCK_SPEED = 255;   // 0-255
+const int LOCK_TIME  = 1200;  // ms to run lock motor
 
 int currentSpeed = 200;
 bool motorRunning = false;
 bool forward = true;
 bool locked = false;
 
+// ------------------------------
+// Function declarations
+// ------------------------------
+void motorOn();
+void motorOff();
+void lockMotor(bool lockDirection);
+String getStatus();
+void processCommand(String cmd);
+
+// ------------------------------
+// Setup
+// ------------------------------
 void setup() {
   Serial.begin(115200);
 
-  // Motor A
+  // Motor A (ignition)
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
   ledcAttach(ENA, 1000, 8);
 
-  // Motor B
+  // Motor B (lock)
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
   ledcAttach(ENB, 1000, 8);
 
-  // Make sure lock motor is stopped
+  // Make sure both motors are stopped at boot
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  ledcWrite(ENA, 0);
+
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
   ledcWrite(ENB, 0);
 
-  Serial.println("Commands:");
-  Serial.println("  on       - turn motor on");
-  Serial.println("  off      - turn motor off");
-  Serial.println("  flip     - reverse direction");
-  Serial.println("  speed X  - set speed 0-255");
-  Serial.println("  lock     - lock");
-  Serial.println("  unlock   - unlock");
+  Serial.println("READY");
 }
 
 void motorOn() {
@@ -51,6 +66,7 @@ void motorOn() {
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, HIGH);
   }
+
   ledcWrite(ENA, currentSpeed);
   motorRunning = true;
 }
@@ -70,55 +86,105 @@ void lockMotor(bool lockDirection) {
     digitalWrite(IN3, LOW);
     digitalWrite(IN4, HIGH);
   }
+
   ledcWrite(ENB, LOCK_SPEED);
   delay(LOCK_TIME);
-  // Stop after set time
+
+  // Stop lock motor
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
   ledcWrite(ENB, 0);
 }
 
-void loop() {
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
+// ------------------------------
+// Status string for Python
+// ------------------------------
+String getStatus() {
+  String status = "STATUS:";
+  status += "MOTOR=";
+  status += (motorRunning ? "ON" : "OFF");
+  status += ",DIR=";
+  status += (forward ? "FORWARD" : "REVERSE");
+  status += ",SPEED=";
+  status += String(currentSpeed);
+  status += ",LOCK=";
+  status += (locked ? "LOCKED" : "UNLOCKED");
+  return status;
+}
 
-    if (cmd == "on") {
+// ------------------------------
+// Command processor
+// ------------------------------
+void processCommand(String cmd) {
+  cmd.trim();
+  cmd.toUpperCase();
+
+  if (cmd == "STATUS") {
+    Serial.println(getStatus());
+  }
+
+  else if (cmd == "START" || cmd == "ON") {
+    motorOn();
+    Serial.println("OK:START");
+  }
+
+  else if (cmd == "STOP" || cmd == "OFF") {
+    motorOff();
+    Serial.println("OK:STOP");
+  }
+
+  else if (cmd == "FLIP") {
+    forward = !forward;
+
+    // If motor is already running, re-apply direction immediately
+    if (motorRunning) {
       motorOn();
-      Serial.println(forward ? "Motor ON — forward" : "Motor ON — reverse");
+    }
 
-    } else if (cmd == "off") {
-      motorOff();
-      Serial.println("Motor OFF");
+    Serial.print("OK:DIR=");
+    Serial.println(forward ? "FORWARD" : "REVERSE");
+  }
 
-    } else if (cmd == "flip") {
-      forward = !forward;
-      Serial.println(forward ? "Direction: forward" : "Direction: reverse");
-      if (motorRunning) motorOn();
+  else if (cmd.startsWith("SPEED ")) {
+    String valuePart = cmd.substring(6);
+    int val = valuePart.toInt();
 
-    } else if (cmd.startsWith("speed ")) {
-      int val = cmd.substring(6).toInt();
-      if (val >= 0 && val <= 255) {
-        currentSpeed = val;
-        Serial.print("Speed set to: ");
-        Serial.println(currentSpeed);
-        if (motorRunning) ledcWrite(ENA, currentSpeed);
-      } else {
-        Serial.println("Speed must be 0-255");
+    // toInt() returns 0 for invalid text too, so handle carefully
+    if ((valuePart == "0") || (val > 0 && val <= 255)) {
+      currentSpeed = val;
+
+      if (motorRunning) {
+        ledcWrite(ENA, currentSpeed);
       }
 
-    } else if (cmd == "lock") {
-      lockMotor(true);
-      locked = true;
-      Serial.println("Locked");
-
-    } else if (cmd == "unlock") {
-      lockMotor(false);
-      locked = false;
-      Serial.println("Unlocked");
-
+      Serial.print("OK:SPEED=");
+      Serial.println(currentSpeed);
     } else {
-      Serial.println("Unknown command. Use: on, off, flip, speed X, lock, unlock");
+      Serial.println("ERROR:BAD_SPEED");
     }
+  }
+
+  else if (cmd == "LOCK") {
+    Serial.println("OK:LOCK");
+    lockMotor(true);
+    locked = true;
+  }
+
+  else if (cmd == "UNLOCK") {
+    Serial.println("OK:UNLOCK");
+    lockMotor(false);
+    locked = false;
+  }
+
+  else {
+    Serial.println("ERROR:UNKNOWN_COMMAND");
+  }
+}
+
+// Main loop
+void loop() {
+  if (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    processCommand(cmd);
   }
 }
