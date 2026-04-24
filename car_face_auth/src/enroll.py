@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
+from picamera2 import Picamera2
 
 
 DATA_DIR = Path("data")
@@ -44,13 +45,11 @@ def setup_model():
 
 
 def setup_camera():
-    """Open the default camera."""
+    """Open the Pi camera via picamera2."""
     print("Starting camera...")
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Cannot open camera")
-        return None
-
+    cap = Picamera2()
+    cap.configure(cap.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
+    cap.start()
     print("Camera opened successfully.")
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     return cap
@@ -74,12 +73,8 @@ def collect_embeddings(app, cap):
     enrollment_cancelled = False
 
     while len(collected_embeddings) < SAMPLES_NEEDED:
-        ret, frame = cap.read()
-        if not ret:
-            print("Can't receive frame (stream end?). Exiting...")
-            break
-
-        frame = cv2.resize(frame, (640, 480))
+        frame = cap.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         display_frame = frame.copy()
 
         status_text = (
@@ -141,7 +136,7 @@ def main():
     print_instructions()
     collected_embeddings, enrollment_cancelled = collect_embeddings(app, cap)
 
-    cap.release()
+    cap.stop()
     cv2.destroyAllWindows()
 
     if enrollment_cancelled:

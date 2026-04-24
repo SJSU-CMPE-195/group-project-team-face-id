@@ -169,7 +169,7 @@ def main():
             access_granted = True
             granted_user = candidate_user
             print(f"ACCESS GRANTED: {granted_user}")
-            print("Unlocking...")
+            print("Unlocked.")
             send_command(ser, "UNLOCK")
             ignition_prompt = True
 
@@ -208,6 +208,9 @@ def main():
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord("q"):
+            send_command(ser, "STOP")
+            send_command(ser, "LOCK")
+            print("Ignition turned off. Locked.")
             print("Verification ended.")
             break
 
@@ -215,9 +218,11 @@ def main():
             if ignition_prompt and not ignition_running:
                 if current_matched and access_granted:
                     send_command(ser, "START")
+                    send_command(ser, "LOCK")
                     ignition_running = True
                     ignition_prompt = False
                     print("IGNITION STARTED")
+                    print("Locked.")
                 else:
                     print("Waiting for authorized user to start ignition.")
 
