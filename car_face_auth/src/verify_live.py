@@ -1,4 +1,4 @@
-"""Verify a live face against enrolled users using webcam input."""
+"""Verify a live face against enrolled users using Raspberry Pi camera input."""
 
 from collections import Counter, deque
 import pickle
@@ -7,6 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
+from picamera2 import Picamera2
 
 DATA_DIR = Path("data")
 EMBEDDINGS_FILE = DATA_DIR / "embeddings" / "face_embeddings.pkl"
@@ -76,15 +77,16 @@ def setup_model():
 
 
 def setup_camera():
-    """Open the default webcam."""
+    """Open the Raspberry Pi camera using Picamera2."""
     print("Opening camera.")
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Cannot open camera")
-        return None
-
+    picam2 = Picamera2()
+    config = picam2.create_preview_configuration(
+        main={"size": (640, 480), "format": "RGB888"}
+    )
+    picam2.configure(config)
+    picam2.start()
     print("Camera opened successfully")
-    return cap
+    return picam2
 
 
 def process_single_face(face, database, history):
@@ -185,7 +187,7 @@ def reset_verification(history):
 
 
 def main():
-    """Run live face verification using the webcam."""
+    """Run live face verification using the Raspberry Pi camera."""
     database = load_database()
     if not database:
         print("No enrolled users found. Please run enroll.py first")
@@ -194,9 +196,7 @@ def main():
     print("Loaded enrolled users:", list(database.keys()))
 
     app = setup_model()
-    cap = setup_camera()
-    if cap is None:
-        return
+    picam2 = setup_camera()
 
     history = deque(maxlen=WINDOW_SIZE)
     access_granted = False
@@ -207,58 +207,61 @@ def main():
     print("Press 'q' to quit")
     print("Press 'r' to reset access state and rolling window\n")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Could not read frame.")
-            break
+    try:
+        while True:
+            frame = picam2.capture_array()
+            if frame is None:
+                print("Could not read frame.")
+                break
 
-        frame = cv2.resize(frame, (640, 480))
-        display_frame = frame.copy()
+            # Convert Picamera2 RGB output to BGR for OpenCV/InsightFace usage
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            display_frame = frame.copy()
 
-        faces = app.get(frame)
-        live_label = "No face detected"
-        live_color = (0, 0, 255)
-
-        if len(faces) == 1:
-            face = faces[0]
-            live_label, live_color = process_single_face(face, database, history)
-            draw_face_box(display_frame, face, live_color)
-        elif len(faces) > 1:
-            live_label = "Multiple faces detected"
+            faces = app.get(frame)
+            live_label = "No face detected"
             live_color = (0, 0, 255)
 
-        granted, candidate_user, candidate_count = evaluate_window(
-            history,
-            MIN_MATCHES,
-        )
+            if len(faces) == 1:
+                face = faces[0]
+                live_label, live_color = process_single_face(face, database, history)
+                draw_face_box(display_frame, face, live_color)
+            elif len(faces) > 1:
+                live_label = "Multiple faces detected"
+                live_color = (0, 0, 255)
 
-        if granted and not access_granted:
-            access_granted = True
-            granted_user = candidate_user
-            print(f"ACCESS GRANTED: {granted_user}")
+            granted, candidate_user, candidate_count = evaluate_window(
+                history,
+                MIN_MATCHES,
+            )
 
-        draw_status_text(
-            display_frame,
-            live_label,
-            live_color,
-            candidate_count,
-            candidate_user,
-            access_granted,
-            granted_user,
-        )
+            if granted and not access_granted:
+                access_granted = True
+                granted_user = candidate_user
+                print(f"ACCESS GRANTED: {granted_user}")
 
-        cv2.imshow(WINDOW_NAME, display_frame)
-        key = cv2.waitKey(1) & 0xFF
+            draw_status_text(
+                display_frame,
+                live_label,
+                live_color,
+                candidate_count,
+                candidate_user,
+                access_granted,
+                granted_user,
+            )
 
-        if key == ord("q"):
-            print("Verification ended.")
-            break
-        if key == ord("r"):
-            access_granted, granted_user = reset_verification(history)
+            cv2.imshow(WINDOW_NAME, display_frame)
+            key = cv2.waitKey(1) & 0xFF
 
-    cap.release()
-    cv2.destroyAllWindows()
+            if key == ord("q"):
+                print("Verification ended.")
+                break
+            if key == ord("r"):
+                access_granted, granted_user = reset_verification(history)
+
+    finally:
+        picam2.stop()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
