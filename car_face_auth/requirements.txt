@@ -2,3 +2,5 @@ insightface
 opencv-python
 numpy
 pyserial
+onnxruntime
+picamera2

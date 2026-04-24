@@ -7,6 +7,7 @@ from collections import deque, Counter
 import serial
 import serial.tools.list_ports
 import time
+from picamera2 import Picamera2
 
 DATA_DIR = Path("data")
 EMBEDDINGS_FILE = DATA_DIR / "embeddings" / "face_embeddings.pkl"
@@ -103,10 +104,9 @@ def main():
     print("Model Loaded.")
 
     print("Opening Camera.")
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Cannot open camera")
-        return
+    cap = Picamera2()
+    cap.configure(cap.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
+    cap.start()
     print("Camera opened successfully")
 
     threshold = 0.45
@@ -127,12 +127,8 @@ def main():
     print("Press 'i' to start ignition (once access is granted)\n")
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Could not read frame.")
-            break
-
-        frame = cv2.resize(frame, (640, 480))
+        frame = cap.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         display_frame = frame.copy()
 
         faces = app.get(frame)
@@ -238,7 +234,7 @@ def main():
 
     if ser:
         ser.close()
-    cap.release()
+    cap.stop()
     cv2.destroyAllWindows()
 
 
