@@ -6,53 +6,69 @@ import Input from "./Input";
 
 export default function ConnectionPanel({ mode, setMode, baseUrl, setBaseUrl, faceApiUrl, setFaceApiUrl }) {
   return (
-    <Card>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+    <Card contentClassName="p-5 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-slate-100">Connection</div>
-          <div className="mt-1 text-xs text-slate-400">
-            Simulation vs Pi device API (<span className="font-mono text-[11px]">pi_device_api.py</span>), plus local Face
-            API for browser scan.
-          </div>
+          <h2 className="text-base font-semibold text-slate-100">Connection</h2>
+          <p className="mt-1 max-w-xl text-sm text-slate-400">
+            Pi runs <span className="font-mono text-xs text-slate-500">pi_device_api.py</span>. This browser uses a separate Face API for the camera
+            above.
+          </p>
         </div>
         <Badge>LAN</Badge>
       </div>
 
-      <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2 lg:gap-6">
-        <div className="rounded-xl border border-white/[0.06] bg-dna-bg/50 p-4">
+      <div className="mt-6 grid gap-5 md:grid-cols-2 md:gap-6">
+        <div className="rounded-xl border border-white/[0.08] bg-dna-bg/40 p-4">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-sm font-medium text-slate-200">Device API mode</span>
+            <span className="text-sm font-medium text-slate-200">Device API</span>
             <Switch checked={mode === "device"} onChange={(v) => setMode(v ? "device" : "sim")} />
           </div>
-          <div className={`mt-4 space-y-2 ${mode === "device" ? "" : "opacity-50"}`}>
-            <label className="text-xs font-medium uppercase tracking-wider text-slate-500">Base URL</label>
+          <div className={`mt-4 space-y-2 ${mode === "device" ? "" : "pointer-events-none opacity-45"}`}>
+            <label className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Base URL</label>
             <Input
               disabled={mode !== "device"}
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               placeholder="http://192.168.4.1:5000"
             />
-            <p className="text-xs text-slate-500">Pi IP and Flask port (default 5000).</p>
+            <p className="text-xs text-slate-500">Pi address and port (default 5000).</p>
           </div>
         </div>
 
-        <div className="rounded-xl border border-white/[0.06] bg-dna-bg/50 p-4">
-          <div className="text-xs font-medium uppercase tracking-wider text-slate-500">Face API (InsightFace)</div>
-          <p className="mt-2 text-xs leading-relaxed text-slate-400">
-            Browser camera posts frames here. Run from <span className="font-mono text-[11px] text-slate-500">car_face_auth</span>:{" "}
-            <code className="block mt-1 break-all rounded-lg bg-black/30 px-2 py-1.5 font-mono text-[10px] text-slate-400">
+        <div className="rounded-xl border border-white/[0.08] bg-dna-bg/40 p-4">
+          <div className="text-sm font-medium text-slate-200">Face API</div>
+          <p className="mt-1 text-xs text-slate-500">InsightFace endpoint for enroll / verify from this page.</p>
+          <div className="mt-3">
+            <label className="sr-only" htmlFor="face-api-url">
+              Face API URL
+            </label>
+            <Input
+              id="face-api-url"
+              value={faceApiUrl}
+              onChange={(e) => setFaceApiUrl(e.target.value)}
+              placeholder="http://127.0.0.1:8765"
+            />
+          </div>
+          <details className="mt-3 rounded-lg border border-white/[0.06] bg-black/20 px-3 py-2 text-xs text-slate-400">
+            <summary className="cursor-pointer select-none text-slate-300 outline-none hover:text-slate-200">
+              Run Face API locally
+            </summary>
+            <p className="mt-2 text-slate-500">
+              From <span className="font-mono text-[11px] text-slate-500">car_face_auth</span> with venv active:
+            </p>
+            <code className="mt-1 block break-all rounded-md bg-black/40 px-2 py-2 font-mono text-[10px] leading-relaxed text-slate-400">
               python -m uvicorn src.api_server:app --host 127.0.0.1 --port 8765
             </code>
-          </p>
-          <div className="mt-3">
-            <Input value={faceApiUrl} onChange={(e) => setFaceApiUrl(e.target.value)} placeholder="http://127.0.0.1:8765" />
-          </div>
+          </details>
         </div>
       </div>
 
-      <div className="mt-4 rounded-xl border border-violet-500/20 bg-violet-500/[0.07] px-4 py-3 text-sm text-slate-300">
-        <span className="font-medium text-violet-300/90">Flow:</span> pair → enroll → unlock → logs
-      </div>
+      <p className="mt-5 border-t border-white/[0.06] pt-4 text-center text-xs text-slate-500">
+        <span className="text-violet-400/90">Flow</span>
+        <span className="mx-1.5 text-slate-600">·</span>
+        pair → enroll → unlock → logs
+      </p>
     </Card>
   );
 }

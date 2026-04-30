@@ -4,8 +4,8 @@ import Btn from "./Btn";
 
 export default function StatusPanel({ locked, busy, doUnlock, doLockSim }) {
   return (
-    <Card>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <Card contentClassName="p-5 sm:p-6">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-xs font-medium uppercase tracking-wider text-slate-500">Current state</div>
           <div className="mt-1 text-xl font-bold text-slate-50">{locked ? "Locked" : "Unlocked"}</div>

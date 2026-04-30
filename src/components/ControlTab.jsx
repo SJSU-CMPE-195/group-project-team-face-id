@@ -283,20 +283,18 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
   }, [camOn, cleanApi, faceAccessAllowed, popToast]);
 
   return (
-    <div className="flex justify-center pt-1">
-      <div className="w-full max-w-4xl xl:max-w-5xl">
-        <Card>
-          <div className="flex flex-col items-center text-center sm:flex-row sm:items-start sm:text-left">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10 sm:mr-4">
-              <ScanFace className="h-6 w-6 text-violet-400" strokeWidth={1.75} />
+    <div className="w-full pt-1">
+      <Card contentClassName="p-5 sm:p-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10">
+              <ScanFace className="h-5 w-5 text-violet-400" strokeWidth={1.75} />
             </div>
-            <div className="mt-4 sm:mt-0">
-              <div className="text-lg font-semibold text-slate-100">Face scan</div>
-              <div className="mt-1 text-sm text-slate-400">
-                Turn on the camera below. When the match is stable and your user is authorized, the app calls{" "}
-                <span className="text-slate-300">Unlock</span>, shows{" "}
-                <span className="text-slate-300">Device unlock</span>, then stops the camera after a 3-second countdown.
-              </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-lg font-semibold tracking-tight text-slate-100">Face scan</div>
+              <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
+                Enable the camera for live verification. With a stable match and access allowed, the app unlocks the device,
+                then stops the camera after a short countdown.
+              </p>
             </div>
           </div>
 
@@ -317,12 +315,12 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
             )}
           </div>
 
-          <div className="mt-4 rounded-xl border border-white/10 bg-dna-bg px-4 py-3 text-left text-xs text-slate-400">
+          <div className="mt-4 rounded-xl border border-white/[0.08] bg-dna-bg/60 px-4 py-3 text-left text-xs text-slate-400">
             <div className="font-medium text-slate-200">{statusLine}</div>
             {cleanApi ? (
               <div className="mt-1">{enrolledHint}</div>
             ) : (
-              <div className="mt-1 text-amber-400/90">Set Face API URL in Connection to enable recognition.</div>
+              <div className="mt-1 text-amber-400/90">Add the Face API URL under Connection below.</div>
             )}
             {apiError ? <div className="mt-1 text-rose-400/90">{apiError}</div> : null}
             {postUnlockCountdown != null ? (
@@ -332,7 +330,6 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
             ) : null}
           </div>
         </Card>
-      </div>
     </div>
   );
 }
