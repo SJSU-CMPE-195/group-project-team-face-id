@@ -41,6 +41,7 @@ coverage
 
 # System files
 Thumbs.db
-package-lock.json
-package.json
 
+car_face_auth/venv
+car_face_auth/venv/
+car_face_auth/data/embeddings/face_embeddings.pkl
