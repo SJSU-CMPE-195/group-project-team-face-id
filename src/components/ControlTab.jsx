@@ -285,11 +285,11 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
   return (
     <div className="w-full pt-1">
       <Card contentClassName="p-5 sm:p-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+          <div className="flex flex-col items-center text-center">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10">
               <ScanFace className="h-5 w-5 text-violet-400" strokeWidth={1.75} />
             </div>
-            <div className="min-w-0 flex-1">
+            <div className="mt-4 min-w-0 max-w-lg">
               <div className="text-lg font-semibold tracking-tight text-slate-100">Face scan</div>
               <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
                 Enable the camera for live verification. With a stable match and access allowed, the app unlocks the device,
@@ -298,12 +298,12 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
             </div>
           </div>
 
-          <div className="mt-6 overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+          <div className="mx-auto mt-6 max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-black/40">
             <video ref={videoRef} className="aspect-video w-full object-cover" playsInline muted />
             <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
           </div>
 
-          <div className="mt-4 flex flex-wrap justify-center gap-2 sm:justify-start">
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
             {!camOn ? (
               <Btn disabled={busy} onClick={startCamera}>
                 {"Turn on camera & scan"}
@@ -315,7 +315,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
             )}
           </div>
 
-          <div className="mt-4 rounded-xl border border-white/[0.08] bg-dna-bg/60 px-4 py-3 text-left text-xs text-slate-400">
+          <div className="mx-auto mt-4 max-w-2xl rounded-xl border border-white/[0.08] bg-dna-bg/60 px-4 py-3 text-center text-xs text-slate-400">
             <div className="font-medium text-slate-200">{statusLine}</div>
             {cleanApi ? (
               <div className="mt-1">{enrolledHint}</div>

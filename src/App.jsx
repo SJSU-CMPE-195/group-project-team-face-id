@@ -100,7 +100,7 @@ export default function App() {
             />
           )}
 
-          <footer className="mt-10 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-slate-500">
+          <footer className="mt-10 flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center text-xs text-slate-500">
             <Badge>v1 UI</Badge>
             <span className="text-slate-600">•</span>
             <span>DNA Builder–inspired layout</span>
