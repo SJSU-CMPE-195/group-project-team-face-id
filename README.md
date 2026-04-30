@@ -300,3 +300,11 @@ See the **Browser + local Face API** subsection under [Frontend](#frontend-react
 - Anti-spoofing  
 - Raspberry Pi performance tuning  
 - User testing and accuracy evaluation  
+
+---
+
+## Hardware integration (ESP32)
+
+Firmware and setup notes live under **`ESP32_Program`** (see branch **`Hardware-Integration`** on GitHub):
+
+https://github.com/SJSU-CMPE-195/group-project-team-face-id/tree/Hardware-Integration/ESP32_Program
