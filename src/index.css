@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --dna-bg: #13141a;
+  --dna-sidebar: #16181f;
+  --dna-surface: #1c1e28;
+  --dna-surface-hover: #232530;
+}
+
+html[data-theme="light"] {
+  --dna-bg: #f1f5f9;
+  --dna-sidebar: #e2e8f0;
+  --dna-surface: #ffffff;
+  --dna-surface-hover: #f8fafc;
+}
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply m-0 min-h-screen bg-dna-bg text-slate-100;
+  }
+
+  html[data-theme="light"] body {
+    @apply text-slate-900;
+  }
+
+  #root {
+    @apply min-h-screen;
+  }
+}
+
+/* Light mode: flip common slate foregrounds (keep .text-white on colored buttons) */
+html[data-theme="light"] .text-slate-50,
+html[data-theme="light"] .text-slate-100 {
+  @apply text-slate-900;
+}
+
+html[data-theme="light"] .text-slate-200 {
+  @apply text-slate-800;
+}
+
+html[data-theme="light"] .text-slate-300 {
+  @apply text-slate-700;
+}
+
+html[data-theme="light"] .text-slate-400 {
+  @apply text-slate-600;
+}
+
+html[data-theme="light"] .text-slate-500 {
+  @apply text-slate-600;
+}
+
+html[data-theme="light"] .border-white\/10 {
+  border-color: rgb(15 23 42 / 0.12) !important;
+}
+
+html[data-theme="light"] .border-white\/\[0\.06\] {
+  border-color: rgb(15 23 42 / 0.1) !important;
+}
+
+html[data-theme="light"] .border-white\/\[0\.08\] {
+  border-color: rgb(15 23 42 / 0.12) !important;
+}
+
+html[data-theme="light"] .border-slate-600\/50,
+html[data-theme="light"] .border-slate-600\/60,
+html[data-theme="light"] .border-slate-600\/80 {
+  border-color: rgb(148 163 184 / 0.45) !important;
+}
+
+html[data-theme="light"] .bg-slate-950\/35,
+html[data-theme="light"] .bg-slate-950\/40,
+html[data-theme="light"] .bg-slate-950\/50 {
+  background-color: rgb(241 245 249 / 0.85) !important;
+}
+
+html[data-theme="light"] .bg-slate-800\/70,
+html[data-theme="light"] .bg-slate-800\/90 {
+  background-color: rgb(226 232 240 / 0.95) !important;
+}
+
+html[data-theme="light"] .bg-slate-800 {
+  background-color: rgb(226 232 240) !important;
+}
+
+html[data-theme="light"] .bg-slate-700 {
+  background-color: rgb(203 213 225) !important;
+}
+
+html[data-theme="light"] .hover\:bg-slate-800:hover {
+  background-color: rgb(203 213 225) !important;
+}
+
+html[data-theme="light"] .hover\:bg-white\/\[0\.06\]:hover {
+  background-color: rgb(15 23 42 / 0.06) !important;
+}

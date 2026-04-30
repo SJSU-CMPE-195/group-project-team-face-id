@@ -1,0 +1,47 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+__pycache__/
+*.py[cod]
+
+# Legacy Node dev DB folder (optional — remove folder locally if unused)
+server/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build / cache
+build
+coverage
+.cache
+.vite
+
+# System files
+Thumbs.db
+
+car_face_auth/venv
+car_face_auth/venv/
+car_face_auth/data/embeddings/face_embeddings.pkl
