@@ -71,8 +71,10 @@ export default function UsersTab({
       });
       enrollStreamRef.current = stream;
       if (enrollVideoRef.current) {
+        const ready = new Promise((res) => enrollVideoRef.current.addEventListener('loadedmetadata', res, { once: true }));
         enrollVideoRef.current.srcObject = stream;
-        await enrollVideoRef.current.play();
+        await ready;
+        await enrollVideoRef.current.play().catch((e) => { if (e.name !== 'AbortError') throw e; });
       }
       setEnrollCamOn(true);
     } catch (e) {

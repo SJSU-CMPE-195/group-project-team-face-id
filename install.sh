@@ -4,8 +4,9 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DB_DIR="/home/pi/faceid"
+DB_DIR="$HOME/faceid"
 SYSTEMD_DIR="/etc/systemd/system"
+CURRENT_USER="$(whoami)"
 
 echo "=== FaceID install script ==="
 echo "Project: $PROJECT_DIR"
@@ -20,27 +21,80 @@ echo "[2/6] Initializing SQLite database..."
 FACEID_DB_PATH="$DB_DIR/faceid.db" python3 "$PROJECT_DIR/db.py"
 
 # ── 3. Install Python dependencies ───────────────────────────────────────────
-echo "[3/6] Installing Pi device API dependencies..."
-pip3 install -r "$PROJECT_DIR/requirements-pi-device-api.txt"
+API_VENV="$PROJECT_DIR/venv"
+FACE_VENV="$PROJECT_DIR/car_face_auth/venv"
+
+echo "[3/6] Installing system prerequisites..."
+sudo apt-get install -y python3-full python3-venv libcap-dev python3-libcamera
+
+echo "      Installing Pi device API dependencies..."
+if [ ! -d "$API_VENV" ]; then
+    python3 -m venv "$API_VENV"
+fi
+"$API_VENV/bin/pip" install -r "$PROJECT_DIR/requirements-pi-device-api.txt"
 
 echo "      Installing face recognition dependencies..."
-pip3 install -r "$PROJECT_DIR/car_face_auth/requirements.txt"
+if [ ! -d "$FACE_VENV" ]; then
+    python3 -m venv --system-site-packages "$FACE_VENV"
+fi
+"$FACE_VENV/bin/pip" install -r "$PROJECT_DIR/car_face_auth/requirements.txt"
 
 # ── 4. Add pi user to required groups (serial/GPIO/video) ────────────────────
-echo "[4/6] Adding pi user to dialout, video, gpio groups..."
-sudo usermod -aG dialout,video,gpio pi
+echo "[4/6] Adding $CURRENT_USER to dialout, video, gpio groups..."
+sudo usermod -aG dialout,video,gpio "$CURRENT_USER"
 
 # ── 5. Copy and enable systemd services ──────────────────────────────────────
 echo "[5/6] Installing systemd services..."
 
-# Patch the project path into the service files before copying
-sed "s|/home/pi/faceid/group-project-team-face-id-main|$PROJECT_DIR|g" \
-    "$PROJECT_DIR/systemd/faceid-api.service" \
-    | sudo tee "$SYSTEMD_DIR/faceid-api.service" > /dev/null
+# Generate service files with properly quoted paths (avoids spaces-in-path issues)
+sudo tee "$SYSTEMD_DIR/faceid-api.service" > /dev/null <<EOF
+[Unit]
+Description=FaceID Device API (Flask)
+After=network.target
+Wants=network.target
 
-sed "s|/home/pi/faceid/group-project-team-face-id-main|$PROJECT_DIR|g" \
-    "$PROJECT_DIR/systemd/faceid-verify.service" \
-    | sudo tee "$SYSTEMD_DIR/faceid-verify.service" > /dev/null
+[Service]
+Type=simple
+User=$CURRENT_USER
+WorkingDirectory=$PROJECT_DIR
+Environment=FACEID_DB_PATH=$DB_DIR/faceid.db
+Environment=PORT=5000
+ExecStartPre="$API_VENV/bin/python" "$PROJECT_DIR/db.py"
+ExecStart="$API_VENV/bin/python" "$PROJECT_DIR/pi_device_api.py"
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee "$SYSTEMD_DIR/faceid-verify.service" > /dev/null <<EOF
+[Unit]
+Description=FaceID Live Verification (Picamera2 + ESP32)
+After=network.target faceid-api.service
+Wants=faceid-api.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+SupplementaryGroups=video gpio dialout
+WorkingDirectory=$PROJECT_DIR/car_face_auth
+Environment=FACEID_DB_PATH=$DB_DIR/faceid.db
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=$HOME/.Xauthority
+ExecStart="$FACE_VENV/bin/python" "$PROJECT_DIR/car_face_auth/src/verify_live.py"
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable faceid-api.service

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import cv2
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from insightface.app import FaceAnalysis
 from pydantic import BaseModel
 
@@ -21,23 +24,50 @@ from .face_engine import (
     save_user_embedding,
 )
 
+try:
+    from picamera2 import Picamera2
+    _PI_CAMERA_AVAILABLE = True
+except ImportError:
+    _PI_CAMERA_AVAILABLE = False
+
 _model: dict[str, FaceAnalysis] = {}
+_picam: Any = None
 ENROLL_SESSIONS: dict[str, dict[str, Any]] = {}
+
+
+def _init_picam():
+    cam = Picamera2()
+    cam.configure(cam.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
+    cam.start()
+    return cam
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global _picam
     print("Loading InsightFace (buffalo_s)...")
-    app = FaceAnalysis(
+    fa = FaceAnalysis(
         name="buffalo_s",
         allowed_modules=["detection", "recognition"],
         providers=["CPUExecutionProvider"],
     )
-    app.prepare(ctx_id=-1, det_size=(320, 320))
-    _model["app"] = app
+    fa.prepare(ctx_id=-1, det_size=(320, 320))
+    _model["app"] = fa
+    if _PI_CAMERA_AVAILABLE:
+        try:
+            loop = asyncio.get_event_loop()
+            _picam = await loop.run_in_executor(None, _init_picam)
+            print("Pi camera ready.")
+        except Exception as e:
+            print(f"Pi camera init failed: {e}")
     print("Model ready. API listening.")
     yield
     _model.clear()
+    if _picam is not None:
+        try:
+            _picam.stop()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="FaceLock local verify API", lifespan=lifespan)
@@ -164,3 +194,40 @@ def enroll_finish(body: EnrollSessionBody):
 def enroll_cancel(body: EnrollSessionBody):
     ENROLL_SESSIONS.pop(body.session_id, None)
     return {"ok": True}
+
+
+@app.get("/api/pi-camera-available")
+def pi_camera_available():
+    return {"available": _PI_CAMERA_AVAILABLE and _picam is not None}
+
+
+@app.get("/api/pi-stream")
+async def pi_stream():
+    if not _PI_CAMERA_AVAILABLE or _picam is None:
+        raise HTTPException(status_code=503, detail="Pi camera not available")
+
+    async def generate():
+        loop = asyncio.get_event_loop()
+        while True:
+            frame = await loop.run_in_executor(None, _picam.capture_array)
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            _, jpeg = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n"
+            await asyncio.sleep(0.033)
+
+    return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/api/pi-verify")
+async def pi_verify():
+    if not _PI_CAMERA_AVAILABLE or _picam is None:
+        raise HTTPException(status_code=503, detail="Pi camera not available")
+    if "app" not in _model:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    loop = asyncio.get_event_loop()
+    frame = await loop.run_in_executor(None, _picam.capture_array)
+    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    db = load_database()
+    if not db:
+        raise HTTPException(status_code=400, detail="No enrolled users.")
+    return analyze_frame(_model["app"], frame_bgr, db)

@@ -33,6 +33,7 @@ function formatFetchError(data, status, statusText) {
 
 export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnlock, popToast, busy }) {
   const videoRef = useRef(null);
+  const imgRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const historyRef = useRef([]);
@@ -46,6 +47,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
   const stopCameraRef = useRef(null);
 
   const [camOn, setCamOn] = useState(false);
+  const [piCamMode, setPiCamMode] = useState(false);
   const [statusLine, setStatusLine] = useState("Camera off");
   const [enrolledHint, setEnrolledHint] = useState("");
   const [apiError, setApiError] = useState(null);
@@ -89,6 +91,11 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
     setPostUnlockCountdown(null);
     accessDeniedHandledRef.current = false;
     blockedRecognitionRef.current = [];
+    if (piCamMode) {
+      setCamOn(true);
+      setApiError(null);
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
@@ -96,17 +103,27 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
       });
       streamRef.current = stream;
       if (videoRef.current) {
+        const ready = new Promise((res) => videoRef.current.addEventListener('loadedmetadata', res, { once: true }));
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        await ready;
+        await videoRef.current.play().catch((e) => { if (e.name !== 'AbortError') throw e; });
       }
       setCamOn(true);
       setApiError(null);
     } catch (e) {
       popToast("err", "Camera", e.message || "Permission denied");
     }
-  }, [popToast]);
+  }, [piCamMode, popToast]);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
+
+  useEffect(() => {
+    if (!cleanApi) { setPiCamMode(false); return; }
+    fetch(`${cleanApi}/api/pi-camera-available`)
+      .then((r) => r.json())
+      .then((j) => setPiCamMode(j.available === true))
+      .catch(() => setPiCamMode(false));
+  }, [cleanApi]);
 
   useEffect(() => {
     doUnlockRef.current = doUnlock;
@@ -146,24 +163,29 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
 
     const tick = async () => {
       if (inFlightRef.current) return;
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      if (!video || !canvas || video.readyState < 2) return;
       inFlightRef.current = true;
       try {
-        const w = video.videoWidth;
-        const h = video.videoHeight;
-        if (w < 2 || h < 2) return;
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(video, 0, 0, w, h);
-        const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.88));
-        if (!blob) return;
-        const form = new FormData();
-        form.append("image", blob, "frame.jpg");
-        const r = await fetch(`${cleanApi}/api/verify-frame`, { method: "POST", body: form });
-        const data = await r.json().catch(() => ({}));
+        let r, data;
+        if (piCamMode) {
+          r = await fetch(`${cleanApi}/api/pi-verify`);
+          data = await r.json().catch(() => ({}));
+        } else {
+          const video = videoRef.current;
+          const canvas = canvasRef.current;
+          if (!video || !canvas || video.readyState < 2) return;
+          const w = video.videoWidth;
+          const h = video.videoHeight;
+          if (w < 2 || h < 2) return;
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+          const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.88));
+          if (!blob) return;
+          const form = new FormData();
+          form.append("image", blob, "frame.jpg");
+          r = await fetch(`${cleanApi}/api/verify-frame`, { method: "POST", body: form });
+          data = await r.json().catch(() => ({}));
+        }
         if (!r.ok) {
           setApiError(formatFetchError(data, r.status, r.statusText));
           setStatusLine("Recognition API error");
@@ -280,7 +302,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
-  }, [camOn, cleanApi, faceAccessAllowed, popToast]);
+  }, [camOn, piCamMode, cleanApi, faceAccessAllowed, popToast]);
 
   return (
     <div className="w-full pt-1">
@@ -299,7 +321,16 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
           </div>
 
           <div className="mx-auto mt-6 max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-black/40">
-            <video ref={videoRef} className="aspect-video w-full object-cover" playsInline muted />
+            {piCamMode ? (
+              <img
+                ref={imgRef}
+                src={camOn ? `${cleanApi}/api/pi-stream` : undefined}
+                className="aspect-video w-full object-cover"
+                alt="Pi camera feed"
+              />
+            ) : (
+              <video ref={videoRef} className="aspect-video w-full object-cover" playsInline muted />
+            )}
             <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
           </div>
 
