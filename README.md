@@ -134,6 +134,51 @@ Use this when you want **your laptop webcam** in the UI to talk to **InsightFace
 - **Persistent UI state**: `localStorage` (mode, base URL, face API URL, sim snapshot).
 - **Layout**: sidebar + main content, theme via `ThemeProvider` (`src/context/`).
 
+## Device mode
+
+The canonical store is **SQLite on the Pi** (`db.py` / `db_api.py`). The React app talks to the Pi over HTTP using the same routes as before (`/api/status`, `/api/users`, …).
+
+### On the Pi
+
+1. Initialize the database (creates tables under `FACEID_DB_PATH`, default `/home/pi/faceid/faceid.db`):
+
+   ```bash
+   python db.py
+   ```
+
+2. Install Flask and start the device API (listens on `0.0.0.0`, port **5000** by default):
+
+   ```bash
+   pip install -r requirements-pi-device-api.txt
+   python pi_device_api.py
+   ```
+
+   Optional environment variables:
+
+   - `FACEID_DB_PATH` — SQLite file path (default: `/home/pi/faceid/faceid.db`)
+   - `PORT` — HTTP port (default: `5000`)
+
+### In the UI
+
+- Switch mode to **device**
+- Set **Base URL** to your Pi, e.g. `http://192.168.4.1:5000` (no trailing slash)
+- Refresh
+
+### HTTP routes (implemented in `pi_device_api.py`)
+
+- `GET /api/status`
+- `POST /api/unlock`
+- `GET /api/users`
+- `POST /api/users`
+- `DELETE /api/users/:id`
+- `GET /api/logs`
+- `GET /api/settings`
+- `POST /api/settings`
+
+### Schema (see `db.py`)
+
+- `users`, `auth_logs`, `settings`, `device_state`
+
 ---
 
 ## Face recognition backend (Python PoC)

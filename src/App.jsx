@@ -45,24 +45,29 @@ export default function App() {
                 popToast={state.popToast}
                 busy={state.busy}
               />
-              <div id="panel-status" className="mt-8 scroll-mt-6 space-y-3">
+              <div id="panel-status" className="mt-8 scroll-mt-6 space-y-5">
                 <Overview mode={state.mode} sim={state.sim} status={state.status} />
-                <StatusPanel
-                  locked={locked}
-                  busy={state.busy}
-                  doLockSim={actions.doLockSim}
-                  mode={state.mode}
-                  sim={state.sim}
-                  status={state.status}
-                />
-                <ConnectionPanel
-                  mode={state.mode}
-                  setMode={state.setMode}
-                  baseUrl={state.baseUrl}
-                  setBaseUrl={state.setBaseUrl}
-                  faceApiUrl={state.faceApiUrl}
-                  setFaceApiUrl={state.setFaceApiUrl}
-                />
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+                  <div className="lg:col-span-2">
+                    <StatusPanel
+                      locked={locked}
+                      busy={state.busy}
+                      doUnlock={actions.doUnlock}
+                      doLockSim={actions.doLockSim}
+                      mode={state.mode}
+                      sim={state.sim}
+                      status={state.status}
+                    />
+                  </div>
+                  <ConnectionPanel
+                    mode={state.mode}
+                    setMode={state.setMode}
+                    baseUrl={state.baseUrl}
+                    setBaseUrl={state.setBaseUrl}
+                    faceApiUrl={state.faceApiUrl}
+                    setFaceApiUrl={state.setFaceApiUrl}
+                  />
+                </div>
               </div>
             </>
           )}

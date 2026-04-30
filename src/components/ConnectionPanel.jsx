@@ -10,7 +10,10 @@ export default function ConnectionPanel({ mode, setMode, baseUrl, setBaseUrl, fa
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="text-sm font-semibold text-slate-100">Connection</div>
-          <div className="mt-1 text-xs text-slate-400">Simulation vs Pi device API, plus local Face API for browser scan.</div>
+          <div className="mt-1 text-xs text-slate-400">
+            Simulation vs Pi device API (<span className="font-mono text-[11px]">pi_device_api.py</span>), plus local Face
+            API for browser scan.
+          </div>
         </div>
         <Badge>LAN</Badge>
       </div>
