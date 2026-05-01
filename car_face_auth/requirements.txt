@@ -7,3 +7,4 @@ uvicorn[standard]
 python-multipart
 picamera2
 pyserial
+flask>=3.0,<4

@@ -60,7 +60,7 @@ WorkingDirectory=$PROJECT_DIR
 Environment=FACEID_DB_PATH=$DB_DIR/faceid.db
 Environment=PORT=5000
 ExecStartPre="$API_VENV/bin/python" "$PROJECT_DIR/db.py"
-ExecStart="$API_VENV/bin/python" "$PROJECT_DIR/pi_device_api.py"
+ExecStart="$API_VENV/bin/python" "$PROJECT_DIR/car_face_auth/pi_device_api.py"
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

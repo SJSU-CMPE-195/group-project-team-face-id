@@ -179,14 +179,13 @@ def enroll_finish(body: EnrollSessionBody):
             status_code=400,
             detail=f"Need {SAMPLES_NEEDED} samples, have {len(embs)}",
         )
-    db = load_database()
-    db[s["name"]] = embs
-    save_database(db)
-    # also persist into SQLite so verify_live.py and the Pi API can read it
     try:
         save_user_embedding(s["name"], embs)
     except Exception:
-        pass  # SQLite not available in standalone mode; .pkl is the fallback
+        # SQLite unavailable — fall back to .pkl
+        db = load_database()
+        db[s["name"]] = embs
+        save_database(db)
     return {"ok": True, "user": s["name"], "samples": len(embs)}
 
 

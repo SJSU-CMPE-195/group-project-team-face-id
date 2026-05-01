@@ -49,7 +49,7 @@ export default function useAppState() {
   const [deviceUsers, setDeviceUsers] = useState([]);
   const [deviceLogs, setDeviceLogs] = useState([]);
 
-  const [faceAccessAllowed, setFaceAccessAllowed] = useState(() => {
+  const [simFaceAccessAllowed, setSimFaceAccessAllowed] = useState(() => {
     try {
       const raw = localStorage.getItem("faceAccessAllowed");
       return raw ? JSON.parse(raw) : {};
@@ -68,8 +68,15 @@ export default function useAppState() {
   }, [mode, baseUrl, faceApiUrl, sim]);
 
   useEffect(() => {
-    localStorage.setItem("faceAccessAllowed", JSON.stringify(faceAccessAllowed));
-  }, [faceAccessAllowed]);
+    localStorage.setItem("faceAccessAllowed", JSON.stringify(simFaceAccessAllowed));
+  }, [simFaceAccessAllowed]);
+
+  const faceAccessAllowed =
+    mode === "device"
+      ? Object.fromEntries(deviceUsers.map((u) => [u.name, u.faceAccess !== false]))
+      : simFaceAccessAllowed;
+
+  const setFaceAccessAllowed = mode === "device" ? () => {} : setSimFaceAccessAllowed;
 
   useEffect(
     () => () => {

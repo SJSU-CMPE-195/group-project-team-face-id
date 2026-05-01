@@ -3,7 +3,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-DB_PATH = os.environ.get("FACEID_DB_PATH", "/home/pi/faceid/faceid.db")
+DB_PATH = os.environ.get("FACEID_DB_PATH", str(Path.home() / "faceid" / "faceid.db"))
 
 def get_conn():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)

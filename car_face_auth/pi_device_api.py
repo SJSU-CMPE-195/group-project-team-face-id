@@ -3,18 +3,69 @@ HTTP API for the face-ui Device mode. Uses SQLite on the Pi via db.py / db_api.p
 
 Run on the Pi (after `python db.py` once to init schema):
   pip install flask
-  python pi_device_api.py
+  python car_face_auth/pi_device_api.py
 
 Optional: FACEID_DB_PATH=/path/to/faceid.db  PORT=5000
 """
 import os
+import sys
+import time
+import threading
+from pathlib import Path
 
+# db.py and db_api.py live in the repo root
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import serial
+import serial.tools.list_ports
 from flask import Flask, jsonify, request
 
 from db import init_db
 import db_api
 
 app = Flask(__name__)
+
+# ── ESP32 serial connection ───────────────────────────────────────────────────
+
+_ser = None
+_ser_lock = threading.Lock()
+_ESP_KEYWORDS = ["CP210", "CH340", "CH341", "FTDI", "USB-SERIAL", "USB Serial", "Silicon Labs"]
+
+
+def _find_esp_port():
+    for port in serial.tools.list_ports.comports():
+        desc = (port.description or "") + (port.manufacturer or "")
+        if any(kw.lower() in desc.lower() for kw in _ESP_KEYWORDS):
+            return port.device
+    ports = serial.tools.list_ports.comports()
+    return ports[0].device if ports else None
+
+
+def _connect_esp():
+    global _ser
+    port = _find_esp_port()
+    if port is None:
+        print("ESP32 not found — hardware commands disabled.")
+        return
+    try:
+        _ser = serial.Serial(port, 115200, timeout=2)
+        time.sleep(2)
+        _ser.reset_input_buffer()
+        print(f"ESP32 connected on {port}")
+    except serial.SerialException as e:
+        print(f"ESP32 connect failed: {e}")
+
+
+def send_esp(cmd: str):
+    with _ser_lock:
+        if _ser is None:
+            return
+        try:
+            _ser.write((cmd + "\n").encode())
+        except serial.SerialException as e:
+            print(f"ESP32 serial error ({cmd}): {e}")
 
 
 @app.after_request
@@ -40,6 +91,7 @@ def api_unlock():
     body = request.get_json(silent=True) or {}
     reason = body.get("reason") or "manual_ui"
     db_api.set_unlock(reason=reason)
+    send_esp("UNLOCK")
     return jsonify({"ok": True})
 
 
@@ -48,6 +100,7 @@ def api_lock():
     body = request.get_json(silent=True) or {}
     reason = body.get("reason") or "manual_ui"
     db_api.set_lock(reason=reason)
+    send_esp("LOCK")
     return jsonify({"ok": True})
 
 
@@ -141,5 +194,6 @@ def health():
 
 if __name__ == "__main__":
     init_db()
+    _connect_esp()
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=False)

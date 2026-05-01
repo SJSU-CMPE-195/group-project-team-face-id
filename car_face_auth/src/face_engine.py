@@ -54,10 +54,15 @@ def save_database(db: dict) -> None:
 
 
 def save_user_embedding(name: str, embeddings: list) -> None:
-    """Persist a list of np.ndarray embeddings for a named user into SQLite."""
+    """Persist embeddings into SQLite. Creates the user row if it doesn't exist."""
+    import uuid, time
     import db_api
     blob = pickle.dumps([e.astype(np.float32) for e in embeddings])
     with db_api.get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, name, face_encoding, active, face_access, created_at) VALUES (?,?,?,1,1,?)",
+            (str(uuid.uuid4()), name, blob, int(time.time())),
+        )
         conn.execute(
             "UPDATE users SET face_encoding=? WHERE name=? AND active=1",
             (blob, name),
