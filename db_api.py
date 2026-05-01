@@ -68,11 +68,12 @@ def add_user(name: str, face_encoding: bytes = None):
 def delete_user(user_id: str):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT 1 FROM users WHERE id=? AND active=1", (user_id,)
+            "SELECT name FROM users WHERE id=? AND active=1", (user_id,)
         ).fetchone()
         if not row:
             return {"ok": False}
         conn.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
+        conn.execute("DELETE FROM face_embeddings WHERE name=?", (row["name"],))
     log_event("delete_user", "ok", detail=f"Removed {user_id}")
     return {"ok": True}
 

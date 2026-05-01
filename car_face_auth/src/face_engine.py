@@ -1,18 +1,18 @@
-"""Shared InsightFace helpers for the HTTP verify API (same DB files as enroll.py)."""
+"""Shared InsightFace helpers for the HTTP verify API."""
 
 from __future__ import annotations
 
+import os
 import pickle
+import sqlite3
 from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
 import numpy as np
 
-CAR_FACE_AUTH_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = CAR_FACE_AUTH_ROOT / "data"
-EMBEDDINGS_DIR = DATA_DIR / "embeddings"
-EMBEDDINGS_FILE = EMBEDDINGS_DIR / "face_embeddings.pkl"
+_DB_PATH = Path(os.environ.get("FACEID_DB_PATH", "/home/pi/faceid/faceid.db"))
+EMBEDDINGS_FILE = _DB_PATH.parent / "face_embeddings.pkl"  # backup
 
 SAMPLES_NEEDED = 10
 THRESHOLD = 0.45
@@ -20,17 +20,69 @@ WINDOW_SIZE = 10
 MIN_MATCHES = 6
 
 
-def load_database():
-    if EMBEDDINGS_FILE.exists():
-        with open(EMBEDDINGS_FILE, "rb") as file:
-            return pickle.load(file)
-    return {}
+def _connect() -> sqlite3.Connection:
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_DB_PATH))
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS face_embeddings (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            name      TEXT    NOT NULL,
+            embedding BLOB    NOT NULL,
+            created_at INTEGER DEFAULT (strftime('%s', 'now'))
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def load_database() -> dict:
+    # Migrate from pickle if table is empty and backup exists
+    conn = _connect()
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM face_embeddings").fetchone()[0]
+    finally:
+        conn.close()
+    if count == 0 and EMBEDDINGS_FILE.exists():
+        with open(EMBEDDINGS_FILE, "rb") as f:
+            legacy = pickle.load(f)
+        if legacy:
+            save_database(legacy)
+            return legacy
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT name, embedding FROM face_embeddings ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    db: dict = {}
+    for name, blob in rows:
+        emb = np.frombuffer(blob, dtype=np.float32).copy()
+        db.setdefault(name, []).append(emb)
+    return db
 
 
 def save_database(db: dict) -> None:
-    EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(EMBEDDINGS_FILE, "wb") as file:
-        pickle.dump(db, file)
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM face_embeddings")
+        for name, embeddings in db.items():
+            for emb in embeddings:
+                conn.execute(
+                    "INSERT INTO face_embeddings (name, embedding) VALUES (?, ?)",
+                    (name, emb.astype(np.float32).tobytes()),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Write pickle backup
+    with open(EMBEDDINGS_FILE, "wb") as f:
+        pickle.dump(db, f)
 
 
 def cosine_similarity(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
@@ -74,7 +126,7 @@ def extract_single_face_embedding(app, frame_bgr: np.ndarray) -> Tuple[Optional[
 def analyze_frame(app, frame_bgr: np.ndarray, database: dict) -> dict:
     """
     Run detection + one-face recognition. Returns JSON-serializable dict.
-    `database` is the same structure as face_embeddings.pkl (name -> list of embeddings).
+    `database` maps name -> list of embeddings (same structure returned by load_database).
     """
     if frame_bgr is None:
         return {"ok": False, "error": "decode_failed", "face_count": 0}
