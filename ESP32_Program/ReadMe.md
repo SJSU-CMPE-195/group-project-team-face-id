@@ -60,7 +60,7 @@ Open Serial Monitor at **115200 baud** with line ending set to **Newline**.
 
 - [x] DC motor on/off and direction control
 - [x] Lock/unlock motor mechanism
-- [ ] Face ID integration
+- [x] Face ID integration
 - [ ] Full system integration
 
 ## Notes
