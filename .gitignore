@@ -45,3 +45,4 @@ Thumbs.db
 car_face_auth/venv
 car_face_auth/venv/
 car_face_auth/data/embeddings/face_embeddings.pkl
+car_face_auth/src/__pycache__/
