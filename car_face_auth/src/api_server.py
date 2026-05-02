@@ -18,6 +18,7 @@ from .face_engine import (
     extract_single_face_embedding,
     load_database,
     save_database,
+    save_user_embedding,
 )
 
 _model: dict[str, FaceAnalysis] = {}
@@ -151,6 +152,11 @@ def enroll_finish(body: EnrollSessionBody):
     db = load_database()
     db[s["name"]] = embs
     save_database(db)
+    # also persist into SQLite so verify_live.py and the Pi API can read it
+    try:
+        save_user_embedding(s["name"], embs)
+    except Exception:
+        pass  # SQLite not available in standalone mode; .pkl is the fallback
     return {"ok": True, "user": s["name"], "samples": len(embs)}
 
 

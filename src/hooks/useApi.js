@@ -20,12 +20,20 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         status: () => fetchJson(`${clean}/api/status`),
         unlock: () =>
           fetchJson(`${clean}/api/unlock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
+        lock: () =>
+          fetchJson(`${clean}/api/lock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
         users: () => fetchJson(`${clean}/api/users`),
         addUser: (name) =>
           fetchJson(`${clean}/api/users`, { method: "POST", body: JSON.stringify({ name }) }),
         delUser: (id) =>
           fetchJson(`${clean}/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+        setAccess: (id, allowed) =>
+          fetchJson(`${clean}/api/users/${encodeURIComponent(id)}/access`, { method: "PATCH", body: JSON.stringify({ allowed }) }),
+        setEmbedding: (id, blob) =>
+          fetchJson(`${clean}/api/users/${encodeURIComponent(id)}/embedding`, { method: "PATCH", body: JSON.stringify({ blob }) }),
         logs: () => fetchJson(`${clean}/api/logs`),
+        verifyLog: (result, detail, user_id) =>
+          fetchJson(`${clean}/api/verify-log`, { method: "POST", body: JSON.stringify({ result, detail, user_id }) }),
         getSettings: () => fetchJson(`${clean}/api/settings`),
         saveSettings: (s) =>
           fetchJson(`${clean}/api/settings`, { method: "POST", body: JSON.stringify(s) }),
@@ -50,6 +58,14 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         }));
         return { ok: true };
       },
+      lock: async () => {
+        setSim((s) => ({
+          ...s,
+          locked: true,
+          logs: [{ id: genId("log"), ts: Date.now(), type: "lock", ok: true, detail: "manual_ui" }, ...s.logs].slice(0, 80),
+        }));
+        return { ok: true };
+      },
       users: async () => sim.users,
       addUser: async (name) => {
         const u = { id: genId("u"), name, createdAt: Date.now() };
@@ -68,7 +84,18 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         }));
         return { ok: true };
       },
+      setAccess: async (id, allowed) => {
+        setSim((s) => ({
+          ...s,
+          users: s.users.map((u) => u.id === id ? { ...u, faceAccess: allowed } : u),
+          logs: [{ id: genId("log"), ts: Date.now(), type: "access_change", ok: true, detail: `${allowed ? "granted" : "revoked"} for ${id}` }, ...s.logs].slice(0, 80),
+        }));
+        return { ok: true };
+      },
+      setEmbedding: async () => ({ ok: true }),
+      verifyLog: async () => ({ ok: true }),
       logs: async () => sim.logs,
+      getSettings: async () => sim.settings,
       saveSettings: async (next) => {
         setSim((s) => ({
           ...s,

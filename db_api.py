@@ -38,19 +38,33 @@ def set_unlock(reason: str = "manual_ui"):
         )
     log_event("unlock", "ok", detail=reason)
 
+def set_lock(reason: str = "auto_relock"):
+    now_ms = int(time.time() * 1000)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE device_state SET lock_state = 'locked', last_seen = ? WHERE id = 1",
+            (now_ms,),
+        )
+    log_event("lock", "ok", detail=reason)
+
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 def get_all_users():
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, name, created_at FROM users WHERE active=1 ORDER BY created_at DESC"
+            "SELECT id, name, face_access, created_at FROM users WHERE active=1 ORDER BY created_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
 
 
 def list_users_for_ui():
     return [
-        {"id": u["id"], "name": u["name"], "createdAt": int(u["created_at"]) * 1000}
+        {
+            "id": u["id"],
+            "name": u["name"],
+            "faceAccess": bool(u.get("face_access", 1)),
+            "createdAt": int(u["created_at"]) * 1000,
+        }
         for u in get_all_users()
     ]
 
@@ -68,12 +82,11 @@ def add_user(name: str, face_encoding: bytes = None):
 def delete_user(user_id: str):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT name FROM users WHERE id=? AND active=1", (user_id,)
+            "SELECT 1 FROM users WHERE id=? AND active=1", (user_id,)
         ).fetchone()
         if not row:
             return {"ok": False}
         conn.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
-        conn.execute("DELETE FROM face_embeddings WHERE name=?", (row["name"],))
     log_event("delete_user", "ok", detail=f"Removed {user_id}")
     return {"ok": True}
 
@@ -83,6 +96,24 @@ def get_user_by_id(user_id: str):
             "SELECT * FROM users WHERE id=? AND active=1", (user_id,)
         ).fetchone()
         return dict(row) if row else None
+
+def set_user_access(user_id: str, allowed: bool):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET face_access=? WHERE id=? AND active=1",
+            (1 if allowed else 0, user_id),
+        )
+    log_event("access_change", "ok", detail=f"{'granted' if allowed else 'revoked'} for {user_id}", user_id=user_id)
+    return {"ok": True}
+
+def set_user_embedding(user_id: str, blob: bytes):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET face_encoding=? WHERE id=? AND active=1",
+            (blob, user_id),
+        )
+    log_event("enroll_embedding", "ok", detail=f"Embedding stored for {user_id}", user_id=user_id)
+    return {"ok": True}
 
 def get_all_face_encodings():
     """Returns all active users with their face encodings — used by ML partner."""

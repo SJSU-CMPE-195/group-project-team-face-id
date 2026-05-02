@@ -19,6 +19,7 @@ def init_db():
                 name          TEXT NOT NULL,
                 face_encoding BLOB,
                 active        INTEGER DEFAULT 1,
+                face_access   INTEGER DEFAULT 1,
                 created_at    INTEGER NOT NULL
             );
 
@@ -50,13 +51,6 @@ def init_db():
             INSERT OR IGNORE INTO settings VALUES ('liveness_detection',  'true');
             INSERT OR IGNORE INTO settings VALUES ('fail_lockout',        'true');
             INSERT OR IGNORE INTO settings VALUES ('lockout_after',       '5');
-
-            CREATE TABLE IF NOT EXISTS face_embeddings (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                name       TEXT    NOT NULL,
-                embedding  BLOB    NOT NULL,
-                created_at INTEGER DEFAULT (strftime('%s', 'now'))
-            );
 
             INSERT OR IGNORE INTO device_state (id, device_name, lock_state, battery, signal, last_seen)
             VALUES (1, 'FaceLock-Pi', 'locked', 100, 5, CAST(strftime('%s','now') AS INTEGER) * 1000);

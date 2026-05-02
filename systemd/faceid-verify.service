@@ -1,0 +1,26 @@
+[Unit]
+Description=FaceID Live Verification (Picamera2 + ESP32)
+After=network.target faceid-api.service
+Wants=faceid-api.service
+# Give the API a moment to fully start before verify_live tries to log events
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=pi
+# picamera2 needs access to the GPU and video devices
+SupplementaryGroups=video gpio dialout
+WorkingDirectory=/home/pi/faceid/group-project-team-face-id-main/car_face_auth
+Environment=FACEID_DB_PATH=/home/pi/faceid/faceid.db
+# Tell OpenCV not to try to open a display (headless mode)
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+ExecStart=/usr/bin/python3 /home/pi/faceid/group-project-team-face-id-main/car_face_auth/src/verify_live.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

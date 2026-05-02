@@ -21,7 +21,7 @@ app = Flask(__name__)
 def cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     return resp
 
 
@@ -40,6 +40,14 @@ def api_unlock():
     body = request.get_json(silent=True) or {}
     reason = body.get("reason") or "manual_ui"
     db_api.set_unlock(reason=reason)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/lock")
+def api_lock():
+    body = request.get_json(silent=True) or {}
+    reason = body.get("reason") or "manual_ui"
+    db_api.set_lock(reason=reason)
     return jsonify({"ok": True})
 
 
@@ -63,6 +71,49 @@ def api_delete_user(user_id):
     out = db_api.delete_user(user_id)
     if not out.get("ok"):
         return jsonify({"error": "user not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.patch("/api/users/<user_id>/access")
+def api_set_access(user_id):
+    body = request.get_json(silent=True) or {}
+    if "allowed" not in body:
+        return jsonify({"error": "allowed field required"}), 400
+    return jsonify(db_api.set_user_access(user_id, bool(body["allowed"])))
+
+
+@app.patch("/api/users/<user_id>/embedding")
+def api_set_embedding(user_id):
+    import base64
+    body = request.get_json(silent=True) or {}
+    blob_b64 = body.get("blob", "")
+    if not blob_b64:
+        return jsonify({"error": "blob field required"}), 400
+    try:
+        blob = base64.b64decode(blob_b64)
+    except Exception:
+        return jsonify({"error": "invalid base64"}), 400
+    return jsonify(db_api.set_user_embedding(user_id, blob))
+
+
+@app.get("/api/users/<user_id>/embedding")
+def api_get_embedding(user_id):
+    import base64
+    row = db_api.get_user_by_id(user_id)
+    if not row or not row.get("face_encoding"):
+        return jsonify({"error": "no embedding"}), 404
+    return jsonify({"blob": base64.b64encode(row["face_encoding"]).decode()})
+
+
+@app.post("/api/verify-log")
+def api_verify_log():
+    body = request.get_json(silent=True) or {}
+    db_api.log_event(
+        stage="face_verify",
+        result=body.get("result", "unknown"),
+        detail=body.get("detail", ""),
+        user_id=body.get("user_id"),
+    )
     return jsonify({"ok": True})
 
 

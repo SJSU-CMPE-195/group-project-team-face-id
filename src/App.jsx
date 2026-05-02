@@ -52,6 +52,9 @@ export default function App() {
                   busy={state.busy}
                   doUnlock={actions.doUnlock}
                   doLockSim={actions.doLockSim}
+                  mode={state.mode}
+                  sim={state.sim}
+                  status={state.status}
                 />
                 <ConnectionPanel
                   mode={state.mode}
@@ -79,6 +82,7 @@ export default function App() {
               popToast={state.popToast}
               faceAccessAllowed={state.faceAccessAllowed}
               setFaceAccessAllowed={state.setFaceAccessAllowed}
+              api={state.api}
             />
           )}
 

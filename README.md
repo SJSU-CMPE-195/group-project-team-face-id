@@ -14,28 +14,35 @@
 ## Project Description:
 The Biometric Automobile Security System (B.A.S.S.) is a vehicle access control solution that replaces traditional keys with facial recognition for authentication. Using a Raspberry Pi and camera module, the system performs real-time identity verification against a local database and, upon successful recognition, enables door unlocking and ignition through connected hardware. This approach provides a secure, contactless, and user-centric alternative to conventional key-based vehicle security.
 
-
 This repository contains two main pieces: a **React dashboard** for controlling and monitoring the system (`src/`), and a **Python facial-recognition PoC** that runs on a Raspberry Pi (or a dev PC) inside `car_face_auth/`.
 
 ## Repository layout
 
 ```
-face-ui/
-  src/
-    components/           # UI (SidebarNav, TopBar, tabs, cards, …)
-    context/              # ThemeProvider / theme hooks
-    hooks/                # Custom React hooks (state & logic)
-    utils/                # Helper functions
-    App.jsx               # Root layout
-    main.jsx              # Entry point
-  car_face_auth/          # Python PoC + optional local HTTP API
-    src/
-      enroll.py           # CLI enrollment (OpenCV window)
-      verify_live.py      # CLI live verification
-      api_server.py       # FastAPI: browser frames → InsightFace
-      face_engine.py      # Shared embeddings DB + inference helpers
-    requirements.txt
-    images/               # Demo screenshots
+group-project-team-face-id/
+├── src/                          # React dashboard
+│   ├── components/               # UI components
+│   ├── hooks/                    # useAppState, useAppActions, useApi
+│   ├── utils/                    # Helper functions
+│   ├── App.jsx
+│   └── main.jsx
+├── car_face_auth/
+│   ├── src/
+│   │   ├── api_server.py         # FastAPI — browser frames → InsightFace
+│   │   ├── face_engine.py        # Shared embeddings + inference (SQLite-backed)
+│   │   ├── enroll.py             # CLI enrollment (Pi camera)
+│   │   ├── verify_live.py        # CLI live verification (Pi camera + ESP32)
+│   │   └── test_insightface.py   # Debug enrollment script
+│   └── requirements.txt
+├── db.py                         # SQLite schema + init
+├── db_api.py                     # Database access layer
+├── pi_device_api.py              # Flask REST API (runs on Pi)
+├── requirements-pi-device-api.txt
+├── systemd/                      # Auto-start service files for Pi
+│   ├── faceid-api.service
+│   └── faceid-verify.service
+├── install.sh                    # One-shot Pi setup script
+└── ESP32_Program/                # ESP32 firmware
 ```
 
 ---
@@ -80,14 +87,13 @@ Use this when you want **your laptop webcam** in the UI to talk to **InsightFace
 3. In the app, open **Control** → **Connection** (scroll on the Control page). Set **Face API** to `http://127.0.0.1:8765` (saved in `localStorage`).
 
 4. **Enroll**  
-   - **Users** → enter a **Display name** → **Start face enrollment** → turn on the camera → **Capture sample** ten times (one face in frame) → **Save to face database**.  
-   - This writes the same pickle file as the CLI: `car_face_auth/data/embeddings/face_embeddings.pkl`.
+   - **Users** → enter a **Display name** → **Start face enrollment** → turn on the camera → **Capture sample** ten times (one face in frame) → **Save to face database**. Embeddings are stored in the SQLite database on the Pi.
 
 5. **Verify**  
    - **Control** → **Turn on camera**. The UI sends JPEG frames to `/api/verify-frame` and shows match / rolling-window status.  
-   - If the API returns `400`, the face database is empty—enroll first (step 4 or CLI below).
+   - If the API returns `400`, the face database is empty — enroll first (step 4 or CLI below).
 
-**Device mode (Pi):** toggle **Device API mode** and set **Base URL** to your Pi (for example `http://192.168.4.1:5000` if using the team Flask service). That path is separate from the local Face API on port 8765.
+**Device mode (Pi):** toggle **Device API mode** and set **Base URL** to your Pi (for example `http://192.168.4.1:5000`).
 
 ### Components reference
 
@@ -115,7 +121,7 @@ Use this when you want **your laptop webcam** in the UI to talk to **InsightFace
 
 | Hook | Location | Purpose |
 |------|----------|---------|
-| **useAppState** | `src/hooks/useAppState.js` | Mode, sim, device cache, `faceApiUrl`, settings, `localStorage` |
+| **useAppState** | `src/hooks/useAppState.js` | Mode, sim, device cache, `faceApiUrl`, settings |
 | **useAppActions** | `src/hooks/useAppActions.js` | Refresh, unlock, add/delete user, save settings |
 | **useApi** | `src/hooks/useApi.js` | Device HTTP API vs simulation |
 
@@ -133,6 +139,112 @@ Use this when you want **your laptop webcam** in the UI to talk to **InsightFace
 - **Local Face API URL**: browser webcam enrollment and verification against InsightFace.
 - **Persistent UI state**: `localStorage` (mode, base URL, face API URL, sim snapshot).
 - **Layout**: sidebar + main content, theme via `ThemeProvider` (`src/context/`).
+
+---
+
+## Prerequisites
+
+### Mac
+- Node.js LTS — download from [nodejs.org](https://nodejs.org)
+- Python 3.11 (recommended — newer versions may not have `onnxruntime` wheels)
+- Git
+
+### Windows
+- Node.js LTS — download from [nodejs.org](https://nodejs.org)
+- Python 3.11 — download from [python.org](https://www.python.org/downloads/)
+- Git — download from [git-scm.com](https://git-scm.com)
+
+---
+
+## Setup — Raspberry Pi (one time)
+
+```bash
+# Clone the repo and switch to the working branch
+git clone https://github.com/SJSU-CMPE-195/group-project-team-face-id.git
+cd group-project-team-face-id
+git checkout fully-wired-main
+
+# Run the install script — handles everything automatically
+bash install.sh
+```
+
+The install script will:
+- Create the SQLite database at `~/faceid/faceid.db`
+- Install all Python dependencies into a virtual environment
+- Add your user to the `dialout`, `video`, and `gpio` groups
+- Install and enable systemd services so everything starts on boot
+
+To verify services are running after install:
+```bash
+sudo systemctl status faceid-api
+sudo systemctl status faceid-verify
+```
+
+---
+
+## Setup — Dashboard (Mac / Windows / Linux)
+
+The React UI only needs Node.js. Run this from your laptop on the same WiFi network as the Pi.
+
+### Mac / Linux
+
+```bash
+git clone https://github.com/SJSU-CMPE-195/group-project-team-face-id.git
+cd group-project-team-face-id
+git checkout fully-wired-main
+npm install
+npm run dev
+```
+
+### Windows
+
+```cmd
+git clone https://github.com/SJSU-CMPE-195/group-project-team-face-id.git
+cd group-project-team-face-id
+git checkout fully-wired-main
+npm install
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+---
+
+## Running the full system
+
+Once the Pi is set up and the UI is running on your laptop:
+
+1. Open [http://localhost:5173](http://localhost:5173)
+2. Go to the **Connection** panel
+3. Set **Base URL** to `http://<pi-ip>:5000`
+4. Set **Face API URL** to `http://<pi-ip>:8765`
+5. Switch to **Device mode** and hit **Refresh** — should show Online
+
+To find your Pi's IP address, run `hostname -I` on the Pi.
+
+---
+
+## Enrolling a user
+
+1. Go to the **Users** tab
+2. Enter a name and click **Add**
+3. Click **Start face enrollment**
+4. Allow camera access in your browser
+5. Click **Capture sample** 10 times, moving your head slightly between each
+6. Click **Save to face database**
+
+The face embedding is stored in the SQLite database on the Pi. The user can now be recognized by both the dashboard and `verify_live.py`.
+
+---
+
+## Face verification (dashboard)
+
+1. Go to the **Control** tab
+2. Click **Turn on camera & scan**
+3. Look at the camera — after 6 matches in a 10-frame rolling window, access is granted
+4. The Pi sends `UNLOCK` to the ESP32
+
+---
 
 ## Device mode
 
@@ -164,17 +276,6 @@ The canonical store is **SQLite on the Pi** (`db.py` / `db_api.py`). The React a
 - Set **Base URL** to your Pi, e.g. `http://192.168.4.1:5000` (no trailing slash)
 - Refresh
 
-### HTTP routes (implemented in `pi_device_api.py`)
-
-- `GET /api/status`
-- `POST /api/unlock`
-- `GET /api/users`
-- `POST /api/users`
-- `DELETE /api/users/:id`
-- `GET /api/logs`
-- `GET /api/settings`
-- `POST /api/settings`
-
 ### Schema (see `db.py`)
 
 - `users`, `auth_logs`, `settings`, `device_state`
@@ -183,7 +284,7 @@ The canonical store is **SQLite on the Pi** (`db.py` / `db_api.py`). The React a
 
 ## Face recognition backend (Python PoC)
 
-Facial-recognition vehicle access using a Raspberry Pi and camera: real-time detection, embeddings, local identity checks, and confidence-based unlock decisions (simulated).
+Facial-recognition vehicle access using a Raspberry Pi and camera: real-time detection, embeddings, local identity checks, and confidence-based unlock decisions.
 
 ### Proof-of-concept scope
 
@@ -196,49 +297,22 @@ Facial-recognition vehicle access using a Raspberry Pi and camera: real-time det
 
 **Not in scope yet**
 
-- Physical door lock / ignition control  
 - Multi-user robustness testing  
 - Anti-spoofing (photo/video)  
 - Full vehicle integration  
 
+**Implemented**
+
+- Physical door lock and ignition control via ESP32  
+
 ### Prerequisites
 
-- Python 3.8+ (3.11–3.12 recommended on Windows if prebuilt wheels are missing; 3.14 may require MSVC Build Tools for some packages).  
-- Raspberry Pi (or PC for development)  
-- Camera (Pi Camera Module or USB webcam) for **CLI** scripts; for **browser** enrollment/verify, the laptop webcam is enough.  
-- Virtual environment (recommended)  
+- Python 3.8+ (3.11–3.12 recommended on Windows if prebuilt wheels are missing)
+- Raspberry Pi (or PC for development)
+- Camera (Pi Camera Module or USB webcam) for **CLI** scripts; for **browser** enrollment/verify, the laptop webcam is enough.
+- Virtual environment (required on Pi, recommended on dev PC)
 
-**Python dependencies** (`car_face_auth/requirements.txt`): `insightface`, `onnxruntime`, `opencv-python`, `numpy`, `fastapi`, `uvicorn[standard]`, `python-multipart`. Use `onnxruntime-gpu` instead of `onnxruntime` only if you configure GPU.
-
-**Branch note:** the full Python PoC is maintained on the **Machine-Learning** branch. Check out that branch and work from `car_face_auth/`.
-
-### Installation
-
-1. Clone the repo and enter the project root.
-
-2. Switch to the Machine-Learning branch and enter `car_face_auth`:
-
-   ```bash
-   git checkout Machine-Learning
-   cd car_face_auth
-   ```
-
-3. Create and activate a virtual environment:
-
-   ```bash
-   python -m venv venv
-   ```
-
-   - macOS / Linux: `source venv/bin/activate`  
-   - Windows: `venv\Scripts\activate`
-
-4. Install dependencies:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-5. For **CLI** OpenCV scripts, ensure a camera is free (close Teams, browser tabs using the camera, etc.). On Windows, if `verify_live` / `enroll` exits immediately with MSMF errors, try another camera index or search for OpenCV `CAP_DSHOW` workarounds.
+**Python dependencies** (`car_face_auth/requirements.txt`): `insightface`, `onnxruntime`, `opencv-python`, `numpy`, `fastapi`, `uvicorn[standard]`, `python-multipart`, `picamera2`, `pyserial`.
 
 ### Running the PoC
 
@@ -250,9 +324,7 @@ Facial-recognition vehicle access using a Raspberry Pi and camera: real-time det
    python src/enroll.py
    ```
 
-   Enter a username when prompted. Press **`s`** in the **OpenCV window** (not the terminal) to save each sample; you need **10** samples. Embeddings are stored under `car_face_auth/data/embeddings/face_embeddings.pkl`.
-
-   If you see `Unable to import dependency onnxruntime`, run `pip install onnxruntime` inside the same venv (it is listed in `requirements.txt` for fresh installs).
+   Enter a username when prompted. Press **`s`** in the **OpenCV window** to save each sample; you need **10** samples.
 
 2. **Live verification**:
 
@@ -280,26 +352,40 @@ See the **Browser + local Face API** subsection under [Frontend](#frontend-react
 
 ![Verify live](car_face_auth/images/demo1.png)
 
-### Python stack
+---
+
+## HTTP API routes (`pi_device_api.py`)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/status` | Device status, lock state, battery, signal |
+| POST | `/api/unlock` | Unlock the device |
+| POST | `/api/lock` | Lock the device |
+| GET | `/api/users` | List all enrolled users |
+| POST | `/api/users` | Add a new user |
+| DELETE | `/api/users/<id>` | Remove a user |
+| PATCH | `/api/users/<id>/access` | Enable/disable face access for a user |
+| PATCH | `/api/users/<id>/embedding` | Save face embedding to SQLite |
+| GET | `/api/users/<id>/embedding` | Retrieve face embedding |
+| POST | `/api/verify-log` | Log a face verify event |
+| GET | `/api/logs` | Retrieve auth logs |
+| GET | `/api/settings` | Get device settings |
+| POST | `/api/settings` | Save device settings |
+
+---
+
+## Tech stack
 
 | Area | Technology |
 |------|------------|
-| Language | Python |
-| Computer vision | OpenCV |
-| Face recognition | InsightFace (buffalo_s) |
-| Numerics | NumPy |
-| Runtime | ONNX Runtime |
-| Optional HTTP | FastAPI + Uvicorn (`src/api_server.py`) |
-| Hardware | Raspberry Pi + camera (CLI); webcam (browser path) |
-| Embeddings store | Pickle (`data/embeddings/face_embeddings.pkl`) |
-
-### Roadmap (CMPE 195B direction)
-
-- Integrate physical door lock and ignition  
-- Improve robustness to lighting and head pose  
-- Anti-spoofing  
-- Raspberry Pi performance tuning  
-- User testing and accuracy evaluation  
+| Dashboard | React + Vite + Tailwind CSS |
+| Face recognition | InsightFace (buffalo_s model) |
+| Face API | FastAPI + Uvicorn |
+| Device API | Flask |
+| Database | SQLite via db_api.py |
+| Camera (Pi) | Picamera2 |
+| Hardware control | pyserial → ESP32 |
+| Auto-start | systemd |
 
 ---
 
@@ -308,3 +394,12 @@ See the **Browser + local Face API** subsection under [Frontend](#frontend-react
 Firmware and setup notes live under **`ESP32_Program`** (see branch **`Hardware-Integration`** on GitHub):
 
 https://github.com/SJSU-CMPE-195/group-project-team-face-id/tree/Hardware-Integration/ESP32_Program
+
+The Pi sends simple serial commands to the ESP32:
+
+| Command | Action |
+|---------|--------|
+| `UNLOCK` | Unlock door |
+| `LOCK` | Lock door |
+| `START` | Start ignition |
+| `STOP` | Stop ignition |
