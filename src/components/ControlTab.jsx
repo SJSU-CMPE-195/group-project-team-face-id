@@ -229,7 +229,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
           popToast(
             "err",
             "Access denied",
-            `${deniedUser ?? "This user"} has no access permission. Turn it on under Users → Access authorization.`,
+            `${deniedUser ?? "This user"} has no access permission. Turn it on under Users → People & access.`,
           );
           stopCameraRef.current?.();
           return;

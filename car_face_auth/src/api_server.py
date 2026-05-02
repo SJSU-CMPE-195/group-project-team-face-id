@@ -18,6 +18,7 @@ from .face_engine import (
     SAMPLES_NEEDED,
     analyze_frame,
     decode_image_bytes,
+    delete_embedding_for_name,
     extract_single_face_embedding,
     load_database,
     save_database,
@@ -93,6 +94,18 @@ def face_status():
     db = load_database()
     names = list(db.keys())
     return {"enrolled": names, "count": len(names)}
+
+
+@app.post("/api/face/remove")
+def face_remove(body: EnrollStartBody):
+    """Drop embeddings for this display name (SQLite + pickle)."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name required")
+    out = delete_embedding_for_name(name)
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("detail", "remove failed"))
+    return out
 
 
 @app.post("/api/verify-frame")

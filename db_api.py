@@ -82,12 +82,13 @@ def add_user(name: str, face_encoding: bytes = None):
 def delete_user(user_id: str):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT 1 FROM users WHERE id=? AND active=1", (user_id,)
+            "SELECT name FROM users WHERE id=? AND active=1", (user_id,)
         ).fetchone()
         if not row:
             return {"ok": False}
+        display_name = row["name"] or user_id
         conn.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
-    log_event("delete_user", "ok", detail=f"Removed {user_id}")
+    log_event("delete_user", "ok", detail=f"Removed {display_name}", user_id=user_id)
     return {"ok": True}
 
 def get_user_by_id(user_id: str):
@@ -99,11 +100,16 @@ def get_user_by_id(user_id: str):
 
 def set_user_access(user_id: str, allowed: bool):
     with get_conn() as conn:
+        row = conn.execute(
+            "SELECT name FROM users WHERE id=? AND active=1", (user_id,)
+        ).fetchone()
+        display_name = (row["name"] if row else None) or user_id
         conn.execute(
             "UPDATE users SET face_access=? WHERE id=? AND active=1",
             (1 if allowed else 0, user_id),
         )
-    log_event("access_change", "ok", detail=f"{'granted' if allowed else 'revoked'} for {user_id}", user_id=user_id)
+    action = "allowed" if allowed else "blocked"
+    log_event("access_change", "ok", detail=f"Access {action} for {display_name}", user_id=user_id)
     return {"ok": True}
 
 def set_user_embedding(user_id: str, blob: bytes):

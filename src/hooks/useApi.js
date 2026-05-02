@@ -77,19 +77,45 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         return u;
       },
       delUser: async (id) => {
-        setSim((s) => ({
-          ...s,
-          users: s.users.filter((x) => x.id !== id),
-          logs: [{ id: genId("log"), ts: Date.now(), type: "delete_user", ok: true, detail: `Deleted ${id}` }, ...s.logs].slice(0, 80),
-        }));
+        setSim((s) => {
+          const removed = s.users.find((x) => x.id === id);
+          const label = removed?.name?.trim() || id;
+          return {
+            ...s,
+            users: s.users.filter((x) => x.id !== id),
+            logs: [
+              {
+                id: genId("log"),
+                ts: Date.now(),
+                type: "delete_user",
+                ok: true,
+                detail: `Removed ${label}`,
+              },
+              ...s.logs,
+            ].slice(0, 80),
+          };
+        });
         return { ok: true };
       },
       setAccess: async (id, allowed) => {
-        setSim((s) => ({
-          ...s,
-          users: s.users.map((u) => u.id === id ? { ...u, faceAccess: allowed } : u),
-          logs: [{ id: genId("log"), ts: Date.now(), type: "access_change", ok: true, detail: `${allowed ? "granted" : "revoked"} for ${id}` }, ...s.logs].slice(0, 80),
-        }));
+        setSim((s) => {
+          const row = s.users.find((u) => u.id === id);
+          const label = row?.name?.trim() || id;
+          return {
+            ...s,
+            users: s.users.map((u) => (u.id === id ? { ...u, faceAccess: allowed } : u)),
+            logs: [
+              {
+                id: genId("log"),
+                ts: Date.now(),
+                type: "access_change",
+                ok: true,
+                detail: allowed ? `Access allowed for ${label}` : `Access blocked for ${label}`,
+              },
+              ...s.logs,
+            ].slice(0, 80),
+          };
+        });
         return { ok: true };
       },
       setEmbedding: async () => ({ ok: true }),

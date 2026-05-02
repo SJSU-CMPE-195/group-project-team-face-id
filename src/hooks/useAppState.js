@@ -128,5 +128,6 @@ export default function useAppState() {
     setDeviceLogs,
     faceAccessAllowed,
     setFaceAccessAllowed,
+    setSimFaceAccessAllowed,
   };
 }
