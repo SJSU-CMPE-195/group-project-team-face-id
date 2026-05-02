@@ -16,6 +16,10 @@ export default function useAppActions(state) {
     setSettings,
     setDeviceUsers,
     setDeviceLogs,
+    faceApiUrl,
+    sim,
+    deviceUsers,
+    setSimFaceAccessAllowed,
   } = state;
 
   const refresh = async (opts = {}) => {
@@ -91,13 +95,59 @@ export default function useAppActions(state) {
     }
   };
 
+  /** Register user on device/sim without clearing the name field or toasting (for combined face enroll flow). */
+  const addUserToDirectory = async (displayName) => {
+    const n = displayName.trim();
+    if (!n) throw new Error("Name required");
+    await api.addUser(n);
+    if (mode === "device") {
+      const users = await api.users();
+      setDeviceUsers(users);
+    }
+  };
+
   const delUser = async (id) => {
-    if (!confirm("Remove this user?")) return;
+    if (!confirm("Remove this user and their face template (if any)?")) return;
+    const list = mode === "device" ? deviceUsers : sim.users;
+    const u = list.find((x) => x.id === id);
+    const displayName = (u?.name ?? "").trim();
+    const cleanFace = (faceApiUrl || "").trim().replace(/\/$/, "");
+
     setBusy(true);
     try {
+      if (cleanFace && displayName) {
+        try {
+          const r = await fetch(`${cleanFace}/api/face/remove`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: displayName }),
+          });
+          if (!r.ok) {
+            popToast(
+              "info",
+              "Face template",
+              `Face API returned HTTP ${r.status}. User will still be removed from the list.`,
+            );
+          }
+        } catch (e) {
+          popToast(
+            "info",
+            "Face template",
+            `${e.message || "Face API unreachable"} — user will still be removed from the list.`,
+          );
+        }
+      }
+
       await api.delUser(id);
+      if (mode === "sim" && displayName) {
+        setSimFaceAccessAllowed((prev) => {
+          const next = { ...prev };
+          delete next[displayName];
+          return next;
+        });
+      }
       if (mode === "device") await refresh({ silent: true });
-      popToast("ok", "Removed", "User deleted.");
+      popToast("ok", "Removed", "User and face data updated where available.");
     } catch (e) {
       popToast("err", "Delete failed", e.message);
     } finally {
@@ -123,6 +173,7 @@ export default function useAppActions(state) {
     doUnlock,
     doLockSim,
     addUser,
+    addUserToDirectory,
     delUser,
     saveSettings,
   };
