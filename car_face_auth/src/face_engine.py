@@ -35,8 +35,9 @@ def load_database() -> dict:
         for row in rows:
             if row["face_encoding"]:
                 db[row["name"]] = pickle.loads(row["face_encoding"])
-        if db:
-            return db
+        # Must return even when empty: otherwise we fall through to stale .pkl after the last
+        # embedding is cleared in SQLite — face-status / verify would still see removed users.
+        return db
     except Exception:
         pass
     # fallback to .pkl
@@ -51,6 +52,40 @@ def save_database(db: dict) -> None:
     EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
     with open(EMBEDDINGS_FILE, "wb") as f:
         pickle.dump(db, f)
+
+
+def delete_embedding_for_name(name: str) -> dict:
+    """
+    Remove stored face embeddings for a display name from SQLite (clear blob) and/or pickle.
+    Safe to call if the user row was already removed — still cleans pickle / orphaned blobs.
+    """
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "detail": "empty name"}
+    sqlite_touched = False
+    try:
+        import db_api
+
+        with db_api.get_conn() as conn:
+            cur = conn.execute(
+                "UPDATE users SET face_encoding=NULL WHERE name=? AND active=1",
+                (name,),
+            )
+            sqlite_touched = cur.rowcount > 0
+    except Exception:
+        pass
+    pkl_touched = False
+    if EMBEDDINGS_FILE.exists():
+        try:
+            with open(EMBEDDINGS_FILE, "rb") as f:
+                db = pickle.load(f)
+            if isinstance(db, dict) and name in db:
+                del db[name]
+                save_database(db)
+                pkl_touched = True
+        except Exception:
+            pass
+    return {"ok": True, "sqlite": sqlite_touched, "pkl": pkl_touched}
 
 
 def save_user_embedding(name: str, embeddings: list) -> None:

@@ -15,6 +15,7 @@ from .face_engine import (
     SAMPLES_NEEDED,
     analyze_frame,
     decode_image_bytes,
+    delete_embedding_for_name,
     extract_single_face_embedding,
     load_database,
     save_database,
@@ -63,6 +64,12 @@ def face_status():
     db = load_database()
     names = list(db.keys())
     return {"enrolled": names, "count": len(names)}
+
+
+@app.post("/api/face/remove")
+async def face_remove(name: str = Form(...)):
+    result = delete_embedding_for_name(name)
+    return result
 
 
 @app.post("/api/verify-frame")

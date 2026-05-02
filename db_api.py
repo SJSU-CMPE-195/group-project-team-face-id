@@ -82,12 +82,13 @@ def add_user(name: str, face_encoding: bytes = None):
 def delete_user(user_id: str):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT 1 FROM users WHERE id=? AND active=1", (user_id,)
+            "SELECT name FROM users WHERE id=? AND active=1", (user_id,)
         ).fetchone()
         if not row:
             return {"ok": False}
+        display_name = row["name"] or user_id
         conn.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
-    log_event("delete_user", "ok", detail=f"Removed {user_id}")
+    log_event("delete_user", "ok", detail=f"Removed {display_name}", user_id=user_id)
     return {"ok": True}
 
 def get_user_by_id(user_id: str):

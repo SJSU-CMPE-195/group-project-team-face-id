@@ -72,11 +72,12 @@ export default function App() {
             <UsersTab
               mode={state.mode}
               sim={state.sim}
+              setSim={state.setSim}
               deviceUsers={state.deviceUsers}
               name={state.name}
               setName={state.setName}
               busy={state.busy}
-              addUser={actions.addUser}
+              addUserToDirectory={actions.addUserToDirectory}
               delUser={actions.delUser}
               faceApiUrl={state.faceApiUrl}
               popToast={state.popToast}

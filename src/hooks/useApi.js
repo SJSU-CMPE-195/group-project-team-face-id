@@ -77,11 +77,15 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         return u;
       },
       delUser: async (id) => {
-        setSim((s) => ({
-          ...s,
-          users: s.users.filter((x) => x.id !== id),
-          logs: [{ id: genId("log"), ts: Date.now(), type: "delete_user", ok: true, detail: `Deleted ${id}` }, ...s.logs].slice(0, 80),
-        }));
+        setSim((s) => {
+          const removed = s.users.find((x) => x.id === id);
+          const label = removed?.name?.trim() || id;
+          return {
+            ...s,
+            users: s.users.filter((x) => x.id !== id),
+            logs: [{ id: genId("log"), ts: Date.now(), type: "delete_user", ok: true, detail: `Deleted ${label}` }, ...s.logs].slice(0, 80),
+          };
+        });
         return { ok: true };
       },
       setAccess: async (id, allowed) => {
