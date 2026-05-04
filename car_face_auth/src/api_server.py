@@ -1,7 +1,10 @@
 """Local HTTP API: browser webcam frames -> InsightFace (same DB as enroll.py)."""
+"""Handles everything face-ML-related:
 
-from __future__ import annotations
-
+Receive webcam frames from the browser
+Run InsightFace on them
+Save embeddings to SQLite
+from __future__ import annotations"""
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -66,9 +69,13 @@ def face_status():
     return {"enrolled": names, "count": len(names)}
 
 
+class FaceRemoveBody(BaseModel):
+    name: str
+
+
 @app.post("/api/face/remove")
-async def face_remove(name: str = Form(...)):
-    result = delete_embedding_for_name(name)
+async def face_remove(body: FaceRemoveBody):
+    result = delete_embedding_for_name(body.name)
     return result
 
 

@@ -90,13 +90,19 @@ def delete_embedding_for_name(name: str) -> dict:
 
 def save_user_embedding(name: str, embeddings: list) -> None:
     """Persist a list of np.ndarray embeddings for a named user into SQLite."""
-    import db_api
+    import db_api, uuid, time
     blob = pickle.dumps([e.astype(np.float32) for e in embeddings])
     with db_api.get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE users SET face_encoding=? WHERE name=? AND active=1",
             (blob, name),
         )
+        if cur.rowcount == 0:
+            conn.execute(
+                "INSERT INTO users (id, name, face_encoding, face_access, active, created_at)"
+                " VALUES (?,?,?,1,1,?)",
+                (str(uuid.uuid4()), name, blob, int(time.time())),
+            )
 
 
 def cosine_similarity(vector_a: np.ndarray, vector_b: np.ndarray) -> float:

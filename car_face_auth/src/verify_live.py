@@ -17,7 +17,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 EMBEDDINGS_FILE = DATA_DIR / "embeddings" / "face_embeddings.pkl"
 
 # Make db_api importable when running from car_face_auth/
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -150,11 +150,20 @@ def main():
     ignition_prompt = False
     ignition_running = False
     current_matched = False
+    last_db_reload = time.time()
+    DB_RELOAD_INTERVAL = 30
 
     print("Press 'r' to reset access state and rolling window")
     print("Press 'i' to start ignition (once access is granted)\n")
 
     while True:
+        now = time.time()
+        if now - last_db_reload >= DB_RELOAD_INTERVAL:
+            refreshed = load_database()
+            if refreshed:
+                db = refreshed
+            last_db_reload = now
+
         frame = cap.capture_array()
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         display_frame = frame.copy()
