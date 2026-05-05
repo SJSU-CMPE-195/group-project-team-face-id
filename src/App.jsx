@@ -51,7 +51,7 @@ export default function App() {
                   locked={locked}
                   busy={state.busy}
                   doUnlock={actions.doUnlock}
-                  doLockSim={actions.doLockSim}
+                  doLock={actions.doLock}
                   mode={state.mode}
                   sim={state.sim}
                   status={state.status}

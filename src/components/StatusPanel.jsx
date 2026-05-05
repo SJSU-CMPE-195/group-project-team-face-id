@@ -3,7 +3,7 @@ import Card from "./Card";
 import Btn from "./Btn";
 import Badge from "./Badge";
 
-export default function StatusPanel({ locked, busy, doUnlock, doLockSim, mode, sim, status }) {
+export default function StatusPanel({ locked, busy, doUnlock, doLock, mode, sim, status }) {
   const battery = mode === "sim" ? sim?.battery ?? 100 : status?.battery ?? 0;
   const signal  = mode === "sim" ? sim?.signal  ?? 5   : status?.signal  ?? 0;
   const online  = status?.online ?? false;
@@ -17,7 +17,7 @@ export default function StatusPanel({ locked, busy, doUnlock, doLockSim, mode, s
           <p className="mt-2 max-w-md text-sm text-slate-400">
             {locked
               ? "Use Face scan above for automatic unlock when verified. Manual Unlock sends a command to your Pi in Device mode."
-              : "Lock (sim) is simulation-only. In Device mode, re-lock from your hardware workflow if needed."}
+              : "Use Lock to return the device to a secure starting state before your next face-unlock test."}
           </p>
           <div className="mt-5 flex justify-center">
             {locked ? (
@@ -25,8 +25,8 @@ export default function StatusPanel({ locked, busy, doUnlock, doLockSim, mode, s
                 Unlock
               </Btn>
             ) : (
-              <Btn variant="secondary" disabled={busy} onClick={doLockSim}>
-                Lock (sim)
+              <Btn variant="secondary" disabled={busy} onClick={() => doLock()}>
+                Lock
               </Btn>
             )}
           </div>

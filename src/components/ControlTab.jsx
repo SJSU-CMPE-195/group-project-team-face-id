@@ -189,7 +189,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
         }
         while (hist.length > WINDOW_SIZE) hist.shift();
 
-        const { granted, candidateUser, candidateCount } = evaluateWindow(hist);
+        const { granted, candidateCount } = evaluateWindow(hist);
 
         const br = blockedRecognitionRef.current;
         if (faceCount === 1 && data.matched && !isFaceAccessAllowed(data.user, faceAccessAllowed)) {

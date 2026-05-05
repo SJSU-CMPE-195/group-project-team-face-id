@@ -17,7 +17,15 @@ export default function useAppState() {
 
   const [sim, setSim] = useState(() => {
     const raw = localStorage.getItem("sim");
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        const saved = JSON.parse(raw);
+        // Always begin a new UI session in locked state for unlock-flow testing.
+        return { ...saved, locked: true };
+      } catch {
+        localStorage.removeItem("sim");
+      }
+    }
     return {
       deviceName: "FaceLock-Pi",
       locked: true,

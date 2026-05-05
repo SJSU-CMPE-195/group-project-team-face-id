@@ -8,14 +8,35 @@ async function fetchJson(url, opts = {}) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return res.json();
-  return res.text();
+  if (!ct.includes("application/json")) {
+    throw new Error(`Expected JSON response from ${url}`);
+  }
+  return res.json();
 }
 
 export default function useApi(mode, baseUrl, sim, setSim) {
   return useMemo(() => {
     if (mode === "device") {
-      const clean = baseUrl.replace(/\/$/, "");
+      const clean = (baseUrl || "").trim().replace(/\/$/, "");
+      if (!clean) {
+        const missingBaseUrl = async () => {
+          throw new Error("Base URL required in Device mode.");
+        };
+        return {
+          status: missingBaseUrl,
+          unlock: missingBaseUrl,
+          lock: missingBaseUrl,
+          users: missingBaseUrl,
+          addUser: missingBaseUrl,
+          delUser: missingBaseUrl,
+          setAccess: missingBaseUrl,
+          setEmbedding: missingBaseUrl,
+          logs: missingBaseUrl,
+          verifyLog: missingBaseUrl,
+          getSettings: missingBaseUrl,
+          saveSettings: missingBaseUrl,
+        };
+      }
       return {
         status: () => fetchJson(`${clean}/api/status`),
         unlock: () =>

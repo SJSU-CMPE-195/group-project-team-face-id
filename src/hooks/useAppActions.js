@@ -50,6 +50,12 @@ export default function useAppActions(state) {
   };
 
   useEffect(() => {
+    if (mode === "device" && !(baseUrl || "").trim()) {
+      setStatus((p) => ({ ...p, online: false }));
+      setDeviceUsers([]);
+      setDeviceLogs([]);
+      return;
+    }
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, baseUrl]);
@@ -70,13 +76,27 @@ export default function useAppActions(state) {
     }
   };
 
-  const doLockSim = () => {
-    if (mode !== "sim") return popToast("info", "Disabled", "Lock is SIM-only for safety.");
-    setSim((s) => ({
-      ...s,
-      locked: true,
-      logs: [{ id: genId("log"), ts: Date.now(), type: "lock", ok: true, detail: "Locked (sim)" }, ...s.logs].slice(0, 80),
-    }));
+  const doLock = async () => {
+    setBusy(true);
+    try {
+      if (mode === "sim") {
+        setSim((s) => ({
+          ...s,
+          locked: true,
+          logs: [{ id: genId("log"), ts: Date.now(), type: "lock", ok: true, detail: "Locked (sim)" }, ...s.logs].slice(0, 80),
+        }));
+      } else {
+        await api.lock();
+      }
+      await refresh({ silent: true });
+      popToast("ok", "Locked", "Device reports locked.");
+      return true;
+    } catch (e) {
+      popToast("err", "Lock failed", e.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
   };
 
   const addUser = async () => {
@@ -171,7 +191,7 @@ export default function useAppActions(state) {
   return {
     refresh,
     doUnlock,
-    doLockSim,
+    doLock,
     addUser,
     addUserToDirectory,
     delUser,
