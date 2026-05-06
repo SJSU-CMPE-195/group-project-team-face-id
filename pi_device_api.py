@@ -8,6 +8,7 @@ Run on the Pi (after `python db.py` once to init schema):
 Optional: FACEID_DB_PATH=/path/to/faceid.db  PORT=5000
 """
 import os
+import threading
 
 from flask import Flask, jsonify, request
 
@@ -15,6 +16,36 @@ from db import init_db
 import db_api
 
 app = Flask(__name__)
+_auto_relock_timer = None
+_auto_relock_lock = threading.Lock()
+
+
+def _cancel_auto_relock_timer():
+    global _auto_relock_timer
+    with _auto_relock_lock:
+        if _auto_relock_timer is not None:
+            _auto_relock_timer.cancel()
+            _auto_relock_timer = None
+
+
+def _schedule_auto_relock():
+    global _auto_relock_timer
+    settings = db_api.get_settings_for_ui()
+    secs = int(settings.get("autoRelockSeconds", 0) or 0)
+    _cancel_auto_relock_timer()
+    if secs <= 0:
+        return
+
+    def _run():
+        global _auto_relock_timer
+        with _auto_relock_lock:
+            _auto_relock_timer = None
+        db_api.set_lock(reason=f"auto_relock_{secs}s")
+
+    with _auto_relock_lock:
+        _auto_relock_timer = threading.Timer(secs, _run)
+        _auto_relock_timer.daemon = True
+        _auto_relock_timer.start()
 
 
 @app.after_request
@@ -40,6 +71,7 @@ def api_unlock():
     body = request.get_json(silent=True) or {}
     reason = body.get("reason") or "manual_ui"
     db_api.set_unlock(reason=reason)
+    _schedule_auto_relock()
     return jsonify({"ok": True})
 
 
@@ -47,6 +79,7 @@ def api_unlock():
 def api_lock():
     body = request.get_json(silent=True) or {}
     reason = body.get("reason") or "manual_ui"
+    _cancel_auto_relock_timer()
     db_api.set_lock(reason=reason)
     return jsonify({"ok": True})
 

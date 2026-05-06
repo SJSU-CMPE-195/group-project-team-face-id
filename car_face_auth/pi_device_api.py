@@ -31,6 +31,8 @@ app = Flask(__name__)
 
 _ser = None
 _ser_lock = threading.Lock()
+_auto_relock_timer = None
+_auto_relock_lock = threading.Lock()
 _ESP_KEYWORDS = ["CP210", "CH340", "CH341", "FTDI", "USB-SERIAL", "USB Serial", "Silicon Labs"]
 
 
@@ -68,6 +70,35 @@ def send_esp(cmd: str):
             print(f"ESP32 serial error ({cmd}): {e}")
 
 
+def _cancel_auto_relock_timer():
+    global _auto_relock_timer
+    with _auto_relock_lock:
+        if _auto_relock_timer is not None:
+            _auto_relock_timer.cancel()
+            _auto_relock_timer = None
+
+
+def _schedule_auto_relock():
+    global _auto_relock_timer
+    settings = db_api.get_settings_for_ui()
+    secs = int(settings.get("autoRelockSeconds", 0) or 0)
+    _cancel_auto_relock_timer()
+    if secs <= 0:
+        return
+
+    def _run():
+        global _auto_relock_timer
+        with _auto_relock_lock:
+            _auto_relock_timer = None
+        db_api.set_lock(reason=f"auto_relock_{secs}s")
+        send_esp("LOCK")
+
+    with _auto_relock_lock:
+        _auto_relock_timer = threading.Timer(secs, _run)
+        _auto_relock_timer.daemon = True
+        _auto_relock_timer.start()
+
+
 @app.after_request
 def cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -92,6 +123,7 @@ def api_unlock():
     reason = body.get("reason") or "manual_ui"
     db_api.set_unlock(reason=reason)
     send_esp("UNLOCK")
+    _schedule_auto_relock()
     return jsonify({"ok": True})
 
 
@@ -99,6 +131,7 @@ def api_unlock():
 def api_lock():
     body = request.get_json(silent=True) or {}
     reason = body.get("reason") or "manual_ui"
+    _cancel_auto_relock_timer()
     db_api.set_lock(reason=reason)
     send_esp("LOCK")
     return jsonify({"ok": True})
