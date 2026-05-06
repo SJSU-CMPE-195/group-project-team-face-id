@@ -83,16 +83,17 @@ void loop() {
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
+    cmd.toUpperCase();
 
-    if (cmd == "on") {
+    if (cmd == "START" || cmd == "ON") {
       engineOn();
       Serial.println("Engine ON");
 
-    } else if (cmd == "off") {
+    } else if (cmd == "STOP" || cmd == "OFF") {
       engineOff();
       Serial.println("Engine OFF");
 
-    } else if (cmd.startsWith("speed ")) {
+    } else if (cmd.startsWith("SPEED ")) {
       int val = cmd.substring(6).toInt();
       if (val >= 0 && val <= 255) {
         currentSpeed = val;
@@ -103,20 +104,20 @@ void loop() {
         Serial.println("Speed must be 0-255");
       }
 
-    } else if (cmd == "lock") {
+    } else if (cmd == "LOCK") {
       Serial.println("Locking...");
       lockMotor.move(LOCK_STEPS);
       locked = true;
       stepperMoving = true;
 
-    } else if (cmd == "unlock") {
+    } else if (cmd == "UNLOCK") {
       Serial.println("Unlocking...");
       lockMotor.move(-LOCK_STEPS);
       locked = false;
       stepperMoving = true;
 
     } else {
-      Serial.println("Unknown command. Use: on, off, speed X, lock, unlock");
+      Serial.println("Unknown command. Use: START, STOP, SPEED X, LOCK, UNLOCK");
     }
   }
 }
