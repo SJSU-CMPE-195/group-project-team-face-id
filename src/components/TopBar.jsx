@@ -9,7 +9,7 @@ const titles = {
   settings: "Settings",
 };
 
-export default function TopBar({ tab, mode, locked, online, busy, onRefresh }) {
+export default function TopBar({ tab, mode, locked, ignitionOn, online, busy, onRefresh }) {
   const { isDark, toggleTheme } = useTheme();
   const modeLabel = mode === "device" ? "Device API" : "Simulation";
   const lockLabel = locked ? "Locked" : "Unlocked";
@@ -27,6 +27,7 @@ export default function TopBar({ tab, mode, locked, online, busy, onRefresh }) {
         <StatPill label="Mode" value={modeLabel} />
         <StatPill label="Link" value={online ? "Online" : "Offline"} accent={online ? "text-violet-300" : "text-rose-400"} />
         <StatPill label="State" value={lockLabel} accent={locked ? "text-fuchsia-300" : "text-emerald-300"} />
+        <StatPill label="Ignition" value={ignitionOn ? "On" : "Off"} accent={ignitionOn ? "text-amber-300" : "text-slate-300"} />
       </div>
 
       <div className="flex items-center gap-1.5">

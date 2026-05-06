@@ -26,6 +26,9 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           status: missingBaseUrl,
           unlock: missingBaseUrl,
           lock: missingBaseUrl,
+          ignitionStart: missingBaseUrl,
+          ignitionStop: missingBaseUrl,
+          fullReset: missingBaseUrl,
           users: missingBaseUrl,
           addUser: missingBaseUrl,
           delUser: missingBaseUrl,
@@ -43,6 +46,9 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           fetchJson(`${clean}/api/unlock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
         lock: () =>
           fetchJson(`${clean}/api/lock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
+        ignitionStart: () => fetchJson(`${clean}/api/ignition/start`, { method: "POST" }),
+        ignitionStop: () => fetchJson(`${clean}/api/ignition/stop`, { method: "POST" }),
+        fullReset: () => fetchJson(`${clean}/api/full-reset`, { method: "POST" }),
         users: () => fetchJson(`${clean}/api/users`),
         addUser: (name) =>
           fetchJson(`${clean}/api/users`, { method: "POST", body: JSON.stringify({ name }) }),
@@ -66,6 +72,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
       status: async () => ({
         online: true,
         lockState: sim.locked ? "locked" : "unlocked",
+        ignitionOn: !!sim.ignitionOn,
         deviceName: sim.deviceName,
         battery: sim.battery,
         signal: sim.signal,
@@ -83,7 +90,33 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         setSim((s) => ({
           ...s,
           locked: true,
+          ignitionOn: false,
           logs: [{ id: genId("log"), ts: Date.now(), type: "lock", ok: true, detail: "manual_ui" }, ...s.logs].slice(0, 80),
+        }));
+        return { ok: true };
+      },
+      ignitionStart: async () => {
+        setSim((s) => ({
+          ...s,
+          ignitionOn: true,
+          logs: [{ id: genId("log"), ts: Date.now(), type: "ignition", ok: true, detail: "start" }, ...s.logs].slice(0, 80),
+        }));
+        return { ok: true };
+      },
+      ignitionStop: async () => {
+        setSim((s) => ({
+          ...s,
+          ignitionOn: false,
+          logs: [{ id: genId("log"), ts: Date.now(), type: "ignition", ok: true, detail: "stop" }, ...s.logs].slice(0, 80),
+        }));
+        return { ok: true };
+      },
+      fullReset: async () => {
+        setSim((s) => ({
+          ...s,
+          locked: true,
+          ignitionOn: false,
+          logs: [{ id: genId("log"), ts: Date.now(), type: "reset", ok: true, detail: "full_reset" }, ...s.logs].slice(0, 80),
         }));
         return { ok: true };
       },

@@ -22,6 +22,7 @@ export default function useAppActions(state) {
     setSimFaceAccessAllowed,
   } = state;
   const simRelockTimerRef = useRef(null);
+  const simIgnitionStopTimerRef = useRef(null);
   const deviceRelockCheckTimerRef = useRef(null);
 
   const clearSimRelockTimer = useCallback(() => {
@@ -30,6 +31,32 @@ export default function useAppActions(state) {
       simRelockTimerRef.current = null;
     }
   }, []);
+
+  const clearSimIgnitionStopTimer = useCallback(() => {
+    if (simIgnitionStopTimerRef.current) {
+      clearTimeout(simIgnitionStopTimerRef.current);
+      simIgnitionStopTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleSimIgnitionStop = useCallback(() => {
+    clearSimIgnitionStopTimer();
+    if (mode !== "sim") return;
+    const secs = Math.max(0, Number(settings?.ignitionAutoStopSeconds) || 0);
+    if (secs <= 0) return;
+    simIgnitionStopTimerRef.current = setTimeout(() => {
+      simIgnitionStopTimerRef.current = null;
+      setSim((s) => {
+        if (!s.ignitionOn) return s;
+        return {
+          ...s,
+          ignitionOn: false,
+          logs: [{ id: genId("log"), ts: Date.now(), type: "ignition", ok: true, detail: `timeout_${secs}s` }, ...s.logs].slice(0, 80),
+        };
+      });
+      popToast("info", "Ignition auto-stop", `Stopped after ${secs}s.`);
+    }, secs * 1000);
+  }, [clearSimIgnitionStopTimer, mode, popToast, setSim, settings?.ignitionAutoStopSeconds]);
 
   const clearDeviceRelockCheckTimer = useCallback(() => {
     if (deviceRelockCheckTimerRef.current) {
@@ -50,6 +77,7 @@ export default function useAppActions(state) {
         return {
           ...s,
           locked: true,
+          ignitionOn: false,
           logs: [
             { id: genId("log"), ts: Date.now(), type: "lock", ok: true, detail: `auto_relock_${secs}s` },
             ...s.logs,
@@ -101,9 +129,10 @@ export default function useAppActions(state) {
   useEffect(
     () => () => {
       clearSimRelockTimer();
+      clearSimIgnitionStopTimer();
       clearDeviceRelockCheckTimer();
     },
-    [clearSimRelockTimer, clearDeviceRelockCheckTimer],
+    [clearSimIgnitionStopTimer, clearSimRelockTimer, clearDeviceRelockCheckTimer],
   );
 
   useEffect(() => {
@@ -117,6 +146,18 @@ export default function useAppActions(state) {
     }
     scheduleSimRelock();
   }, [mode, sim.locked, settings?.autoRelockSeconds, scheduleSimRelock, clearSimRelockTimer]);
+
+  useEffect(() => {
+    if (mode !== "sim") {
+      clearSimIgnitionStopTimer();
+      return;
+    }
+    if (!sim.ignitionOn) {
+      clearSimIgnitionStopTimer();
+      return;
+    }
+    scheduleSimIgnitionStop();
+  }, [clearSimIgnitionStopTimer, mode, scheduleSimIgnitionStop, settings?.ignitionAutoStopSeconds, sim.ignitionOn]);
 
   const doUnlock = async (opts = {}) => {
     const suppressSuccessToast = !!opts.suppressSuccessToast;
@@ -150,11 +191,13 @@ export default function useAppActions(state) {
     setBusy(true);
     try {
       if (mode === "sim") clearSimRelockTimer();
+      if (mode === "sim") clearSimIgnitionStopTimer();
       if (mode === "device") clearDeviceRelockCheckTimer();
       if (mode === "sim") {
         setSim((s) => ({
           ...s,
           locked: true,
+          ignitionOn: false,
           logs: [{ id: genId("log"), ts: Date.now(), type: "lock", ok: true, detail: "Locked (sim)" }, ...s.logs].slice(0, 80),
         }));
       } else {
@@ -182,6 +225,56 @@ export default function useAppActions(state) {
       popToast("ok", "Enrolled", `Added ${n}`);
     } catch (e) {
       popToast("err", "Enroll failed", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doIgnitionStart = async () => {
+    setBusy(true);
+    try {
+      await api.ignitionStart();
+      if (mode === "sim") scheduleSimIgnitionStop();
+      await refresh({ silent: true });
+      popToast("ok", "Ignition", "Ignition started.");
+      return true;
+    } catch (e) {
+      popToast("err", "Ignition start failed", e.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doIgnitionStop = async () => {
+    setBusy(true);
+    try {
+      await api.ignitionStop();
+      if (mode === "sim") clearSimIgnitionStopTimer();
+      await refresh({ silent: true });
+      popToast("ok", "Ignition", "Ignition stopped.");
+      return true;
+    } catch (e) {
+      popToast("err", "Ignition stop failed", e.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doFullReset = async () => {
+    setBusy(true);
+    try {
+      clearSimRelockTimer();
+      clearSimIgnitionStopTimer();
+      clearDeviceRelockCheckTimer();
+      await api.fullReset();
+      await refresh({ silent: true });
+      popToast("ok", "Full reset", "Ignition stopped and lock engaged.");
+      return true;
+    } catch (e) {
+      popToast("err", "Full reset failed", e.message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -264,6 +357,9 @@ export default function useAppActions(state) {
     refresh,
     doUnlock,
     doLock,
+    doIgnitionStart,
+    doIgnitionStop,
+    doFullReset,
     addUser,
     addUserToDirectory,
     delUser,

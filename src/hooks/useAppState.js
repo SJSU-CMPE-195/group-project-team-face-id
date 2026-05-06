@@ -29,6 +29,7 @@ export default function useAppState() {
     return {
       deviceName: "FaceLock-Pi",
       locked: true,
+      ignitionOn: false,
       battery: 100,
       signal: 5,
       users: [
@@ -39,13 +40,14 @@ export default function useAppState() {
         { id: "l1", ts: Date.now() - 1000 * 60 * 10, type: "boot", ok: true, detail: "Device started" },
         { id: "l2", ts: Date.now() - 1000 * 60 * 6, type: "lock", ok: true, detail: "Locked" },
       ],
-      settings: { autoRelockSeconds: 10, liveness: true, failLockout: true, lockoutAfter: 5 },
+      settings: { autoRelockSeconds: 10, ignitionAutoStopSeconds: 20, liveness: true, failLockout: true, lockoutAfter: 5 },
     };
   });
 
   const [status, setStatus] = useState({
     online: true,
     lockState: "locked",
+    ignitionOn: false,
     deviceName: "",
     battery: 0,
     signal: 0,

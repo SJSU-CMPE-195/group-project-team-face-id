@@ -31,7 +31,19 @@ function formatFetchError(data, status, statusText) {
   return `HTTP ${status} ${statusText}`;
 }
 
-export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnlock, popToast, busy }) {
+export default function ControlTab({
+  faceApiUrl,
+  faceAccessAllowed = {},
+  locked,
+  ignitionOn,
+  doUnlock,
+  doLock,
+  doIgnitionStart,
+  doIgnitionStop,
+  doFullReset,
+  popToast,
+  busy,
+}) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -43,17 +55,22 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
   const intervalRef = useRef(null);
   const postUnlockIntervalRef = useRef(null);
   const doUnlockRef = useRef(doUnlock);
+  const doIgnitionStartRef = useRef(doIgnitionStart);
   const stopCameraRef = useRef(null);
+  const unlockOwnerRef = useRef(null);
 
   const [camOn, setCamOn] = useState(false);
   const [statusLine, setStatusLine] = useState("Camera off");
   const [enrolledHint, setEnrolledHint] = useState("");
   const [apiError, setApiError] = useState(null);
   const [postUnlockCountdown, setPostUnlockCountdown] = useState(null);
+  const [flowStage, setFlowStage] = useState("unlock_verify");
+  const [promptCountdown, setPromptCountdown] = useState(null);
 
   const cleanApi = (faceApiUrl || "").trim().replace(/\/$/, "");
 
-  const stopCamera = useCallback(() => {
+  const stopCamera = useCallback((opts = {}) => {
+    const preserveOwner = !!opts.preserveOwner;
     if (postUnlockIntervalRef.current) {
       clearInterval(postUnlockIntervalRef.current);
       postUnlockIntervalRef.current = null;
@@ -73,6 +90,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
     blockedRecognitionRef.current = [];
     accessGrantedRef.current = false;
     accessDeniedHandledRef.current = false;
+    if (!preserveOwner) unlockOwnerRef.current = null;
     setStatusLine("Camera off");
     setApiError(null);
   }, []);
@@ -113,6 +131,57 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
   }, [doUnlock]);
 
   useEffect(() => {
+    doIgnitionStartRef.current = doIgnitionStart;
+  }, [doIgnitionStart]);
+
+  useEffect(() => {
+    if (locked) unlockOwnerRef.current = null;
+    if (locked) setFlowStage("unlock_verify");
+  }, [locked]);
+
+  useEffect(() => {
+    if (flowStage !== "prompt" || camOn) {
+      setPromptCountdown(null);
+      return;
+    }
+    setPromptCountdown(5);
+    let remain = 5;
+    const t = setInterval(() => {
+      remain -= 1;
+      if (remain <= 0) {
+        clearInterval(t);
+        setPromptCountdown(0);
+        void handleIgnitionPromptNo();
+      } else {
+        setPromptCountdown(remain);
+      }
+    }, 1000);
+    return () => clearInterval(t);
+  }, [camOn, flowStage]);
+
+  const handleFullReset = async () => {
+    const ok = await doFullReset();
+    if (ok) {
+      stopCameraRef.current?.();
+      setFlowStage("unlock_verify");
+    }
+  };
+
+  const handleIgnitionPromptNo = async () => {
+    const ok = await doLock();
+    if (ok) {
+      stopCameraRef.current?.();
+      setFlowStage("unlock_verify");
+    }
+  };
+
+  const handleIgnitionPromptYes = async () => {
+    setFlowStage("ignition_verify");
+    await startCamera();
+    setStatusLine("Ignition verify: scan the same face again.");
+  };
+
+  useEffect(() => {
     if (!cleanApi) {
       setEnrolledHint("");
       return;
@@ -136,7 +205,8 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
   }, [cleanApi, camOn]);
 
   useEffect(() => {
-    if (!camOn || !cleanApi) {
+    const scanningAllowed = flowStage === "unlock_verify" || flowStage === "ignition_verify";
+    if (!camOn || !cleanApi || !scanningAllowed) {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -189,7 +259,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
         }
         while (hist.length > WINDOW_SIZE) hist.shift();
 
-        const { granted, candidateCount } = evaluateWindow(hist);
+        const { granted, candidateUser, candidateCount } = evaluateWindow(hist);
 
         const br = blockedRecognitionRef.current;
         if (faceCount === 1 && data.matched && !isFaceAccessAllowed(data.user, faceAccessAllowed)) {
@@ -233,11 +303,33 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
 
         if (granted && !accessGrantedRef.current) {
           accessGrantedRef.current = true;
-          const unlock = doUnlockRef.current;
-          if (typeof unlock === "function") {
-            void unlock({ suppressSuccessToast: true }).then((ok) => {
+          const action =
+            flowStage === "unlock_verify" ? doUnlockRef.current : ignitionOn ? null : doIgnitionStartRef.current;
+          if (typeof action === "function") {
+            if (flowStage === "ignition_verify") {
+              const owner = unlockOwnerRef.current;
+              if (!owner) {
+                popToast("err", "Ignition blocked", "Unlock must be completed by face scan first.");
+                setStatusLine("Ignition blocked: unlock owner missing. Re-lock and verify again.");
+                stopCameraRef.current?.();
+                return;
+              }
+              if (candidateUser && candidateUser !== owner) {
+                popToast("err", "Ignition blocked", `Second verify must be the same user (${owner}).`);
+                setStatusLine(`Ignition blocked: expected ${owner}, got ${candidateUser}.`);
+                stopCameraRef.current?.();
+                return;
+              }
+            }
+            void action({ suppressSuccessToast: true }).then((ok) => {
               if (ok) {
-                popToast("ok", "Device unlock", "Verified — device unlock.");
+                if (flowStage === "unlock_verify") {
+                  unlockOwnerRef.current = candidateUser || null;
+                  popToast("ok", "Device unlock", "Verified — device unlock.");
+                  setFlowStage("prompt");
+                }
+                else if (!ignitionOn) popToast("ok", "Ignition start", "Second verify passed — ignition started.");
+                else popToast("info", "Already running", "Ignition is already on.");
                 setPostUnlockCountdown(3);
                 let step = 0;
                 if (postUnlockIntervalRef.current) {
@@ -252,7 +344,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
                       postUnlockIntervalRef.current = null;
                     }
                     setPostUnlockCountdown(null);
-                    stopCameraRef.current?.();
+                    stopCameraRef.current?.({ preserveOwner: true });
                   } else {
                     setPostUnlockCountdown(3 - step);
                   }
@@ -262,7 +354,8 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
               }
             });
           } else {
-            popToast("ok", "Device unlock", "Verified — device unlock.");
+            popToast("info", "Already running", "Ignition is already on.");
+            stopCameraRef.current?.({ preserveOwner: true });
           }
         }
         if (!granted) accessGrantedRef.current = false;
@@ -280,7 +373,7 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
-  }, [camOn, cleanApi, faceAccessAllowed, popToast]);
+  }, [camOn, cleanApi, faceAccessAllowed, flowStage, ignitionOn, popToast]);
 
   return (
     <div className="w-full pt-1">
@@ -292,8 +385,8 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
             <div className="mt-4 min-w-0 max-w-lg">
               <div className="text-lg font-semibold tracking-tight text-slate-100">Face scan</div>
               <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
-                Enable the camera for live verification. With a stable match and access allowed, the app unlocks the device,
-                then stops the camera after a short countdown.
+                First scan unlocks. Then choose Yes/No for ignition. If Yes, run a second scan with the same user to start
+                ignition.
               </p>
             </div>
           </div>
@@ -306,14 +399,39 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
           <div className="mt-4 flex flex-wrap justify-center gap-2">
             {!camOn ? (
               <Btn disabled={busy} onClick={startCamera}>
-                {"Turn on camera & scan"}
+                {flowStage === "ignition_verify" ? "Start ignition face verify" : "Turn on camera & scan"}
               </Btn>
             ) : (
               <Btn variant="secondary" disabled={busy} onClick={stopCamera}>
                 Stop camera
               </Btn>
             )}
+            <Btn variant="danger" disabled={busy} onClick={handleFullReset}>
+              FULL RESET
+            </Btn>
+            {ignitionOn ? (
+              <Btn variant="secondary" disabled={busy} onClick={doIgnitionStop}>
+                Stop ignition
+              </Btn>
+            ) : null}
           </div>
+
+          {flowStage === "prompt" && !camOn ? (
+            <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-center gap-2 rounded-xl border border-violet-500/25 bg-violet-500/10 px-4 py-3">
+              <div className="w-full text-center text-sm text-violet-200">
+                Start ignition now? (Choosing Yes requires a second face verify from the same user.)
+              </div>
+              <div className="w-full text-center text-xs text-violet-300/90">
+                Auto lock in {promptCountdown ?? 5}s if no choice.
+              </div>
+              <Btn disabled={busy} onClick={handleIgnitionPromptYes}>
+                Yes, continue
+              </Btn>
+              <Btn variant="secondary" disabled={busy} onClick={handleIgnitionPromptNo}>
+                No, lock now
+              </Btn>
+            </div>
+          ) : null}
 
           <div className="mx-auto mt-4 max-w-2xl rounded-xl border border-white/[0.08] bg-dna-bg/60 px-4 py-3 text-center text-xs text-slate-400">
             <div className="font-medium text-slate-200">{statusLine}</div>
@@ -323,6 +441,9 @@ export default function ControlTab({ faceApiUrl, faceAccessAllowed = {}, doUnloc
               <div className="mt-1 text-amber-400/90">Add the Face API URL under Connection below.</div>
             )}
             {apiError ? <div className="mt-1 text-rose-400/90">{apiError}</div> : null}
+            <div className="mt-1 text-[11px] text-slate-500">
+              Lock: {locked ? "locked" : "unlocked"} · Ignition: {ignitionOn ? "on" : "off"}
+            </div>
             {postUnlockCountdown != null ? (
               <div className="mt-2 text-sm font-medium text-violet-300/95">
                 Stopping camera in {postUnlockCountdown}…

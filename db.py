@@ -48,6 +48,7 @@ def init_db():
             );
 
             INSERT OR IGNORE INTO settings VALUES ('auto_relock_seconds', '10');
+            INSERT OR IGNORE INTO settings VALUES ('ignition_auto_stop_seconds', '20');
             INSERT OR IGNORE INTO settings VALUES ('liveness_detection',  'true');
             INSERT OR IGNORE INTO settings VALUES ('fail_lockout',        'true');
             INSERT OR IGNORE INTO settings VALUES ('lockout_after',       '5');

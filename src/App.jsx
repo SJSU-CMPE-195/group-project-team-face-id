@@ -18,6 +18,7 @@ export default function App() {
   const actions = useAppActions(state);
 
   const locked = state.mode === "sim" ? state.sim.locked : state.status.lockState === "locked";
+  const ignitionOn = state.mode === "sim" ? !!state.sim.ignitionOn : !!state.status.ignitionOn;
   const online = state.status.online;
 
   return (
@@ -30,6 +31,7 @@ export default function App() {
           tab={state.tab}
           mode={state.mode}
           locked={locked}
+          ignitionOn={ignitionOn}
           online={online}
           busy={state.busy}
           onRefresh={actions.refresh}
@@ -41,7 +43,13 @@ export default function App() {
               <ControlTab
                 faceApiUrl={state.faceApiUrl}
                 faceAccessAllowed={state.faceAccessAllowed}
+                locked={locked}
+                ignitionOn={ignitionOn}
                 doUnlock={actions.doUnlock}
+                doLock={actions.doLock}
+                doIgnitionStart={actions.doIgnitionStart}
+                doIgnitionStop={actions.doIgnitionStop}
+                doFullReset={actions.doFullReset}
                 popToast={state.popToast}
                 busy={state.busy}
               />

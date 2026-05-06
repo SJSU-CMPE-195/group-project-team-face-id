@@ -25,6 +25,23 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
             <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 5–15s.</div>
           </div>
 
+          <div>
+            <div className="text-sm font-medium text-slate-200">Ignition auto-stop (seconds)</div>
+            <div className="mt-2">
+              <Input
+                type="number"
+                value={settings.ignitionAutoStopSeconds}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    ignitionAutoStopSeconds: Math.max(0, Math.min(1800, parseInt(e.target.value || "0", 10))),
+                  }))
+                }
+              />
+            </div>
+            <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 15–60s.</div>
+          </div>
+
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-medium text-slate-200">Liveness detection</div>
@@ -57,7 +74,15 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
           <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
             <Btn
               variant="secondary"
-              onClick={() => setSettings({ autoRelockSeconds: 10, liveness: true, failLockout: true, lockoutAfter: 5 })}
+              onClick={() =>
+                setSettings({
+                  autoRelockSeconds: 10,
+                  ignitionAutoStopSeconds: 20,
+                  liveness: true,
+                  failLockout: true,
+                  lockoutAfter: 5,
+                })
+              }
             >
               Reset
             </Btn>

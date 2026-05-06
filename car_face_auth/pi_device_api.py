@@ -33,6 +33,10 @@ _ser = None
 _ser_lock = threading.Lock()
 _auto_relock_timer = None
 _auto_relock_lock = threading.Lock()
+_ignition_stop_timer = None
+_ignition_stop_lock = threading.Lock()
+_ignition_running = False
+_ignition_lock = threading.Lock()
 _ESP_KEYWORDS = ["CP210", "CH340", "CH341", "FTDI", "USB-SERIAL", "USB Serial", "Silicon Labs"]
 
 
@@ -91,12 +95,55 @@ def _schedule_auto_relock():
         with _auto_relock_lock:
             _auto_relock_timer = None
         db_api.set_lock(reason=f"auto_relock_{secs}s")
+        _set_ignition(False, reason="auto_relock")
         send_esp("LOCK")
 
     with _auto_relock_lock:
         _auto_relock_timer = threading.Timer(secs, _run)
         _auto_relock_timer.daemon = True
         _auto_relock_timer.start()
+
+
+def _cancel_ignition_stop_timer():
+    global _ignition_stop_timer
+    with _ignition_stop_lock:
+        if _ignition_stop_timer is not None:
+            _ignition_stop_timer.cancel()
+            _ignition_stop_timer = None
+
+
+def _schedule_ignition_stop():
+    global _ignition_stop_timer
+    settings = db_api.get_settings_for_ui()
+    secs = int(settings.get("ignitionAutoStopSeconds", 0) or 0)
+    _cancel_ignition_stop_timer()
+    if secs <= 0:
+        return
+
+    def _run():
+        global _ignition_stop_timer
+        with _ignition_stop_lock:
+            _ignition_stop_timer = None
+        _set_ignition(False, reason=f"ignition_timeout_{secs}s")
+
+    with _ignition_stop_lock:
+        _ignition_stop_timer = threading.Timer(secs, _run)
+        _ignition_stop_timer.daemon = True
+        _ignition_stop_timer.start()
+
+
+def _set_ignition(running: bool, reason: str = "manual"):
+    global _ignition_running
+    with _ignition_lock:
+        if _ignition_running == running:
+            return
+        _ignition_running = running
+    if running:
+        _schedule_ignition_stop()
+    else:
+        _cancel_ignition_stop_timer()
+    send_esp("START" if running else "STOP")
+    db_api.log_event("ignition", "ok", detail=f"{'start' if running else 'stop'}:{reason}")
 
 
 @app.after_request
@@ -114,7 +161,10 @@ def preflight(_any):
 
 @app.get("/api/status")
 def api_status():
-    return jsonify(db_api.get_status())
+    s = db_api.get_status()
+    with _ignition_lock:
+        s["ignitionOn"] = _ignition_running
+    return jsonify(s)
 
 
 @app.post("/api/unlock")
@@ -132,7 +182,33 @@ def api_lock():
     body = request.get_json(silent=True) or {}
     reason = body.get("reason") or "manual_ui"
     _cancel_auto_relock_timer()
+    _set_ignition(False, reason=reason)
     db_api.set_lock(reason=reason)
+    send_esp("LOCK")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/ignition/start")
+def api_ignition_start():
+    s = db_api.get_status()
+    if s.get("lockState") == "locked":
+        return jsonify({"error": "device is locked"}), 409
+    _set_ignition(True, reason="api_start")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/ignition/stop")
+def api_ignition_stop():
+    _set_ignition(False, reason="api_stop")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/full-reset")
+def api_full_reset():
+    _cancel_auto_relock_timer()
+    _cancel_ignition_stop_timer()
+    _set_ignition(False, reason="full_reset")
+    db_api.set_lock(reason="full_reset")
     send_esp("LOCK")
     return jsonify({"ok": True})
 
