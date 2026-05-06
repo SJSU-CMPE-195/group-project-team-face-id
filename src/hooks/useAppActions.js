@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { genId } from "../utils/helpers";
 
 export default function useAppActions(state) {
@@ -21,6 +21,44 @@ export default function useAppActions(state) {
     deviceUsers,
     setSimFaceAccessAllowed,
   } = state;
+  const simRelockTimerRef = useRef(null);
+  const deviceRelockCheckTimerRef = useRef(null);
+
+  const clearSimRelockTimer = useCallback(() => {
+    if (simRelockTimerRef.current) {
+      clearTimeout(simRelockTimerRef.current);
+      simRelockTimerRef.current = null;
+    }
+  }, []);
+
+  const clearDeviceRelockCheckTimer = useCallback(() => {
+    if (deviceRelockCheckTimerRef.current) {
+      clearTimeout(deviceRelockCheckTimerRef.current);
+      deviceRelockCheckTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleSimRelock = useCallback(() => {
+    clearSimRelockTimer();
+    if (mode !== "sim") return;
+    const secs = Math.max(0, Number(settings?.autoRelockSeconds) || 0);
+    if (secs <= 0) return;
+    simRelockTimerRef.current = setTimeout(() => {
+      simRelockTimerRef.current = null;
+      setSim((s) => {
+        if (s.locked) return s;
+        return {
+          ...s,
+          locked: true,
+          logs: [
+            { id: genId("log"), ts: Date.now(), type: "lock", ok: true, detail: `auto_relock_${secs}s` },
+            ...s.logs,
+          ].slice(0, 80),
+        };
+      });
+      popToast("info", "Auto re-lock", `Locked after ${secs}s.`);
+    }, secs * 1000);
+  }, [clearSimRelockTimer, mode, popToast, setSim, settings?.autoRelockSeconds]);
 
   const refresh = async (opts = {}) => {
     const silent = !!opts.silent;
@@ -60,12 +98,44 @@ export default function useAppActions(state) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, baseUrl]);
 
+  useEffect(
+    () => () => {
+      clearSimRelockTimer();
+      clearDeviceRelockCheckTimer();
+    },
+    [clearSimRelockTimer, clearDeviceRelockCheckTimer],
+  );
+
+  useEffect(() => {
+    if (mode !== "sim") {
+      clearSimRelockTimer();
+      return;
+    }
+    if (sim.locked) {
+      clearSimRelockTimer();
+      return;
+    }
+    scheduleSimRelock();
+  }, [mode, sim.locked, settings?.autoRelockSeconds, scheduleSimRelock, clearSimRelockTimer]);
+
   const doUnlock = async (opts = {}) => {
     const suppressSuccessToast = !!opts.suppressSuccessToast;
     setBusy(true);
     try {
       await api.unlock();
       await refresh({ silent: true });
+      if (mode === "sim") scheduleSimRelock();
+      if (mode === "device") {
+        clearDeviceRelockCheckTimer();
+        const secs = Math.max(0, Number(settings?.autoRelockSeconds) || 0);
+        if (secs > 0) {
+          // Device auto re-lock happens on backend; re-fetch status after expected timeout.
+          deviceRelockCheckTimerRef.current = setTimeout(() => {
+            deviceRelockCheckTimerRef.current = null;
+            void refresh({ silent: true });
+          }, secs * 1000 + 1200);
+        }
+      }
       if (!suppressSuccessToast) popToast("ok", "Unlocked", "Device reports unlocked.");
       return true;
     } catch (e) {
@@ -79,6 +149,8 @@ export default function useAppActions(state) {
   const doLock = async () => {
     setBusy(true);
     try {
+      if (mode === "sim") clearSimRelockTimer();
+      if (mode === "device") clearDeviceRelockCheckTimer();
       if (mode === "sim") {
         setSim((s) => ({
           ...s,
