@@ -169,6 +169,7 @@ def list_logs_for_ui(limit: int = 80):
 _UI_TO_DB_KEYS = {
     "autoRelockSeconds": "auto_relock_seconds",
     "ignitionAutoStopSeconds": "ignition_auto_stop_seconds",
+    "promptAutoLockSeconds": "ignition_prompt_autolock_seconds",
     "liveness": "liveness_detection",
     "failLockout": "fail_lockout",
     "lockoutAfter": "lockout_after",
@@ -190,7 +191,7 @@ def get_settings_for_ui():
         val = raw[db_key]
         if ui_key in ("liveness", "failLockout"):
             ui[ui_key] = val.lower() in ("true", "1", "yes")
-        elif ui_key in ("autoRelockSeconds", "ignitionAutoStopSeconds", "lockoutAfter"):
+        elif ui_key in ("autoRelockSeconds", "ignitionAutoStopSeconds", "promptAutoLockSeconds", "lockoutAfter"):
             try:
                 ui[ui_key] = int(val)
             except ValueError:
@@ -198,6 +199,8 @@ def get_settings_for_ui():
                     ui[ui_key] = 10
                 elif ui_key == "ignitionAutoStopSeconds":
                     ui[ui_key] = 20
+                elif ui_key == "promptAutoLockSeconds":
+                    ui[ui_key] = 0
                 else:
                     ui[ui_key] = 5
         else:

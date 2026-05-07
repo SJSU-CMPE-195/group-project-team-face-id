@@ -45,6 +45,11 @@ export default function App() {
                 faceAccessAllowed={state.faceAccessAllowed}
                 locked={locked}
                 ignitionOn={ignitionOn}
+                promptAutoLockSeconds={
+                  typeof state.settings?.promptAutoLockSeconds === "number"
+                    ? state.settings.promptAutoLockSeconds
+                    : 0
+                }
                 doUnlock={actions.doUnlock}
                 doLock={actions.doLock}
                 doIgnitionStart={actions.doIgnitionStart}

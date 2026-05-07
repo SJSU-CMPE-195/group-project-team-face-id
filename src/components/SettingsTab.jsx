@@ -42,6 +42,25 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
             <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 15–60s.</div>
           </div>
 
+          <div>
+            <div className="text-sm font-medium text-slate-200">Ignition prompt auto-lock (seconds)</div>
+            <div className="mt-2">
+              <Input
+                type="number"
+                value={typeof settings.promptAutoLockSeconds === "number" ? settings.promptAutoLockSeconds : 0}
+                onChange={(e) =>
+                  setSettings((s) => ({
+                    ...s,
+                    promptAutoLockSeconds: Math.max(0, Math.min(600, parseInt(e.target.value || "0", 10))),
+                  }))
+                }
+              />
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              After unlock, how long to wait on &quot;Start ignition?&quot; before auto-locking. 0 = no countdown (wait forever).
+            </div>
+          </div>
+
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-medium text-slate-200">Liveness detection</div>
@@ -78,6 +97,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
                 setSettings({
                   autoRelockSeconds: 10,
                   ignitionAutoStopSeconds: 20,
+                  promptAutoLockSeconds: 0,
                   liveness: true,
                   failLockout: true,
                   lockoutAfter: 5,

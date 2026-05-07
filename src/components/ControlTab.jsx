@@ -36,6 +36,7 @@ export default function ControlTab({
   faceAccessAllowed = {},
   locked,
   ignitionOn,
+  promptAutoLockSeconds = 0,
   doUnlock,
   doLock,
   doIgnitionStart,
@@ -139,13 +140,40 @@ export default function ControlTab({
     if (locked) setFlowStage("unlock_verify");
   }, [locked]);
 
+  const handleIgnitionPromptNo = useCallback(async () => {
+    const ok = await doLock();
+    if (ok) {
+      stopCameraRef.current?.();
+      setFlowStage("unlock_verify");
+    }
+  }, [doLock]);
+
+  const handleIgnitionPromptYes = useCallback(async () => {
+    setFlowStage("ignition_verify");
+    await startCamera();
+    setStatusLine("Ignition verify: scan the same face again.");
+  }, [startCamera]);
+
+  const handleFullReset = useCallback(async () => {
+    const ok = await doFullReset();
+    if (ok) {
+      stopCameraRef.current?.();
+      setFlowStage("unlock_verify");
+    }
+  }, [doFullReset]);
+
   useEffect(() => {
     if (flowStage !== "prompt" || camOn) {
       setPromptCountdown(null);
       return;
     }
-    setPromptCountdown(5);
-    let remain = 5;
+    const max = Math.max(0, Number(promptAutoLockSeconds) || 0);
+    if (max <= 0) {
+      setPromptCountdown(null);
+      return;
+    }
+    setPromptCountdown(max);
+    let remain = max;
     const t = setInterval(() => {
       remain -= 1;
       if (remain <= 0) {
@@ -157,29 +185,7 @@ export default function ControlTab({
       }
     }, 1000);
     return () => clearInterval(t);
-  }, [camOn, flowStage]);
-
-  const handleFullReset = async () => {
-    const ok = await doFullReset();
-    if (ok) {
-      stopCameraRef.current?.();
-      setFlowStage("unlock_verify");
-    }
-  };
-
-  const handleIgnitionPromptNo = async () => {
-    const ok = await doLock();
-    if (ok) {
-      stopCameraRef.current?.();
-      setFlowStage("unlock_verify");
-    }
-  };
-
-  const handleIgnitionPromptYes = async () => {
-    setFlowStage("ignition_verify");
-    await startCamera();
-    setStatusLine("Ignition verify: scan the same face again.");
-  };
+  }, [camOn, flowStage, handleIgnitionPromptNo, promptAutoLockSeconds]);
 
   useEffect(() => {
     if (!cleanApi) {
@@ -385,8 +391,8 @@ export default function ControlTab({
             <div className="mt-4 min-w-0 max-w-lg">
               <div className="text-lg font-semibold tracking-tight text-slate-100">Face scan</div>
               <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
-                First scan unlocks. Then choose Yes/No for ignition. If Yes, run a second scan with the same user to start
-                ignition.
+                First scan unlocks. Then choose Yes/No for ignition (optional countdown in Settings). If Yes, run a second
+                scan with the same user to start ignition.
               </p>
             </div>
           </div>
@@ -421,9 +427,15 @@ export default function ControlTab({
               <div className="w-full text-center text-sm text-violet-200">
                 Start ignition now? (Choosing Yes requires a second face verify from the same user.)
               </div>
-              <div className="w-full text-center text-xs text-violet-300/90">
-                Auto lock in {promptCountdown ?? 5}s if no choice.
-              </div>
+              {promptAutoLockSeconds > 0 ? (
+                <div className="w-full text-center text-xs text-violet-300/90">
+                  Auto lock in {promptCountdown ?? promptAutoLockSeconds}s if no choice.
+                </div>
+              ) : (
+                <div className="w-full text-center text-xs text-slate-500">
+                  No auto-lock timer — choose Yes or No when ready.
+                </div>
+              )}
               <Btn disabled={busy} onClick={handleIgnitionPromptYes}>
                 Yes, continue
               </Btn>

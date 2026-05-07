@@ -24,6 +24,7 @@ export default function useAppActions(state) {
   const simRelockTimerRef = useRef(null);
   const simIgnitionStopTimerRef = useRef(null);
   const deviceRelockCheckTimerRef = useRef(null);
+  const deviceIgnitionStopCheckTimerRef = useRef(null);
 
   const clearSimRelockTimer = useCallback(() => {
     if (simRelockTimerRef.current) {
@@ -62,6 +63,13 @@ export default function useAppActions(state) {
     if (deviceRelockCheckTimerRef.current) {
       clearTimeout(deviceRelockCheckTimerRef.current);
       deviceRelockCheckTimerRef.current = null;
+    }
+  }, []);
+
+  const clearDeviceIgnitionStopCheckTimer = useCallback(() => {
+    if (deviceIgnitionStopCheckTimerRef.current) {
+      clearTimeout(deviceIgnitionStopCheckTimerRef.current);
+      deviceIgnitionStopCheckTimerRef.current = null;
     }
   }, []);
 
@@ -131,8 +139,9 @@ export default function useAppActions(state) {
       clearSimRelockTimer();
       clearSimIgnitionStopTimer();
       clearDeviceRelockCheckTimer();
+      clearDeviceIgnitionStopCheckTimer();
     },
-    [clearSimIgnitionStopTimer, clearSimRelockTimer, clearDeviceRelockCheckTimer],
+    [clearDeviceIgnitionStopCheckTimer, clearSimIgnitionStopTimer, clearSimRelockTimer, clearDeviceRelockCheckTimer],
   );
 
   useEffect(() => {
@@ -168,6 +177,7 @@ export default function useAppActions(state) {
       if (mode === "sim") scheduleSimRelock();
       if (mode === "device") {
         clearDeviceRelockCheckTimer();
+        clearDeviceIgnitionStopCheckTimer();
         const secs = Math.max(0, Number(settings?.autoRelockSeconds) || 0);
         if (secs > 0) {
           // Device auto re-lock happens on backend; re-fetch status after expected timeout.
@@ -192,7 +202,10 @@ export default function useAppActions(state) {
     try {
       if (mode === "sim") clearSimRelockTimer();
       if (mode === "sim") clearSimIgnitionStopTimer();
-      if (mode === "device") clearDeviceRelockCheckTimer();
+      if (mode === "device") {
+        clearDeviceRelockCheckTimer();
+        clearDeviceIgnitionStopCheckTimer();
+      }
       if (mode === "sim") {
         setSim((s) => ({
           ...s,
@@ -235,6 +248,16 @@ export default function useAppActions(state) {
     try {
       await api.ignitionStart();
       if (mode === "sim") scheduleSimIgnitionStop();
+      if (mode === "device") {
+        clearDeviceIgnitionStopCheckTimer();
+        const secs = Math.max(0, Number(settings?.ignitionAutoStopSeconds) || 0);
+        if (secs > 0) {
+          deviceIgnitionStopCheckTimerRef.current = setTimeout(() => {
+            deviceIgnitionStopCheckTimerRef.current = null;
+            void refresh({ silent: true });
+          }, secs * 1000 + 1200);
+        }
+      }
       await refresh({ silent: true });
       popToast("ok", "Ignition", "Ignition started.");
       return true;
@@ -251,6 +274,7 @@ export default function useAppActions(state) {
     try {
       await api.ignitionStop();
       if (mode === "sim") clearSimIgnitionStopTimer();
+      if (mode === "device") clearDeviceIgnitionStopCheckTimer();
       await refresh({ silent: true });
       popToast("ok", "Ignition", "Ignition stopped.");
       return true;
@@ -268,6 +292,7 @@ export default function useAppActions(state) {
       clearSimRelockTimer();
       clearSimIgnitionStopTimer();
       clearDeviceRelockCheckTimer();
+      clearDeviceIgnitionStopCheckTimer();
       await api.fullReset();
       await refresh({ silent: true });
       popToast("ok", "Full reset", "Ignition stopped and lock engaged.");

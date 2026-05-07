@@ -20,8 +20,20 @@ export default function useAppState() {
     if (raw) {
       try {
         const saved = JSON.parse(raw);
+        const defaultSettings = {
+          autoRelockSeconds: 10,
+          ignitionAutoStopSeconds: 20,
+          promptAutoLockSeconds: 0,
+          liveness: true,
+          failLockout: true,
+          lockoutAfter: 5,
+        };
         // Always begin a new UI session in locked state for unlock-flow testing.
-        return { ...saved, locked: true };
+        return {
+          ...saved,
+          locked: true,
+          settings: { ...defaultSettings, ...(saved.settings || {}) },
+        };
       } catch {
         localStorage.removeItem("sim");
       }
@@ -40,7 +52,14 @@ export default function useAppState() {
         { id: "l1", ts: Date.now() - 1000 * 60 * 10, type: "boot", ok: true, detail: "Device started" },
         { id: "l2", ts: Date.now() - 1000 * 60 * 6, type: "lock", ok: true, detail: "Locked" },
       ],
-      settings: { autoRelockSeconds: 10, ignitionAutoStopSeconds: 20, liveness: true, failLockout: true, lockoutAfter: 5 },
+      settings: {
+        autoRelockSeconds: 10,
+        ignitionAutoStopSeconds: 20,
+        promptAutoLockSeconds: 0,
+        liveness: true,
+        failLockout: true,
+        lockoutAfter: 5,
+      },
     };
   });
 
