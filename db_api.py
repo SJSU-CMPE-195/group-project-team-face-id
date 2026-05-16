@@ -87,7 +87,10 @@ def delete_user(user_id: str):
         if not row:
             return {"ok": False}
         display_name = row["name"] or user_id
-        conn.execute("UPDATE users SET active=0 WHERE id=?", (user_id,))
+        conn.execute(
+            "UPDATE users SET active=0, face_access=0, face_encoding=NULL WHERE id=?",
+            (user_id,),
+        )
     log_event("delete_user", "ok", detail=f"Removed {display_name}", user_id=user_id)
     return {"ok": True}
 

@@ -41,6 +41,9 @@ export default function App() {
           {state.tab === "control" && (
             <div className="mx-auto w-full max-w-6xl space-y-6">
               <ControlTab
+                api={state.api}
+                mode={state.mode}
+                baseUrl={state.baseUrl}
                 faceApiUrl={state.faceApiUrl}
                 faceAccessAllowed={state.faceAccessAllowed}
                 locked={locked}
@@ -57,6 +60,7 @@ export default function App() {
                 doFullReset={actions.doFullReset}
                 popToast={state.popToast}
                 busy={state.busy}
+                onRefresh={actions.refresh}
               />
               <div id="panel-status" className="scroll-mt-6 space-y-4">
                 <Overview mode={state.mode} sim={state.sim} status={state.status} />

@@ -13,8 +13,7 @@ export default function ConnectionPanel({ mode, setMode, baseUrl, setBaseUrl, fa
           <Badge>LAN</Badge>
         </div>
         <p className="mt-2 max-w-xl text-sm text-slate-400">
-          Pi runs <span className="font-mono text-xs text-slate-500">pi_device_api.py</span>. This browser uses a separate Face API for the camera
-          above.
+          Pi runs <span className="font-mono text-xs text-slate-500">pi_device_api.py</span>. Port 5055 uses the Fake Pi scan flow.
         </p>
       </div>
 
@@ -33,6 +32,7 @@ export default function ConnectionPanel({ mode, setMode, baseUrl, setBaseUrl, fa
               placeholder="http://192.168.4.1:5000"
             />
             <p className="text-xs text-slate-500">Pi address and port (default 5000).</p>
+            <p className="text-xs text-slate-500">Use port 5055 for Fake Pi. Other URLs keep the local camera scan UI.</p>
           </div>
         </div>
 

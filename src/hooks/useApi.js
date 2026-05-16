@@ -64,6 +64,18 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         getSettings: () => fetchJson(`${clean}/api/settings`),
         saveSettings: (s) =>
           fetchJson(`${clean}/api/settings`, { method: "POST", body: JSON.stringify(s) }),
+        scanStart: (payload = {}) =>
+          fetchJson(`${clean}/api/scan/start`, { method: "POST", body: JSON.stringify(payload) }),
+        scanStatus: (sessionId) =>
+          fetchJson(`${clean}/api/scan/status?session_id=${encodeURIComponent(sessionId)}`),
+        scanCancel: (sessionId) =>
+          fetchJson(`${clean}/api/scan/cancel`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
+        piEnrollStart: (payload = {}) =>
+          fetchJson(`${clean}/api/enroll/start`, { method: "POST", body: JSON.stringify(payload) }),
+        piEnrollStatus: (sessionId) =>
+          fetchJson(`${clean}/api/enroll/status?session_id=${encodeURIComponent(sessionId)}`),
+        piEnrollCancel: (sessionId) =>
+          fetchJson(`${clean}/api/enroll/cancel`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
       };
     }
 
@@ -162,6 +174,64 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         }));
         return { ok: true };
       },
+      scanStart: async ({ purpose = "unlock", expectedUser = null } = {}) => {
+        const user = expectedUser || sim.users[0]?.name || "Demo Driver";
+        if (purpose === "ignition") {
+          setSim((s) => ({
+            ...s,
+            ignitionOn: true,
+            logs: [{ id: genId("log"), ts: Date.now(), type: "face_scan", ok: true, detail: `Ignition granted for ${user}` }, ...s.logs].slice(0, 80),
+          }));
+        } else {
+          setSim((s) => ({
+            ...s,
+            locked: false,
+            logs: [{ id: genId("log"), ts: Date.now(), type: "face_scan", ok: true, detail: `Unlock granted for ${user}` }, ...s.logs].slice(0, 80),
+          }));
+        }
+        return {
+          ok: true,
+          session_id: genId("scan"),
+          state: "granted",
+          purpose,
+          user,
+          score: 0.82,
+          face_count: 1,
+          message: "simulated_scan_granted",
+          window: { matches: 6, needed: 6, size: 10 },
+        };
+      },
+      scanStatus: async (sessionId) => ({
+        ok: true,
+        session_id: sessionId,
+        state: "granted",
+        user: sim.users[0]?.name || "Demo Driver",
+        score: 0.82,
+        face_count: 1,
+        window: { matches: 6, needed: 6, size: 10 },
+      }),
+      scanCancel: async (sessionId) => ({ ok: true, session_id: sessionId, state: "cancelled" }),
+      piEnrollStart: async ({ name } = {}) => {
+        const displayName = (name || "Demo Driver").trim();
+        return {
+          ok: true,
+          session_id: genId("enroll"),
+          state: "completed",
+          user: displayName,
+          count: 10,
+          samples_needed: 10,
+          source: "pi_camera",
+        };
+      },
+      piEnrollStatus: async (sessionId) => ({
+        ok: true,
+        session_id: sessionId,
+        state: "completed",
+        count: 10,
+        samples_needed: 10,
+        source: "pi_camera",
+      }),
+      piEnrollCancel: async (sessionId) => ({ ok: true, session_id: sessionId, state: "cancelled" }),
     };
   }, [mode, baseUrl, sim, setSim]);
 }

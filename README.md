@@ -58,6 +58,22 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
+### Develop the remote-camera flow without a Pi
+
+Use the Fake Pi API when the Raspberry Pi / ESP32 hardware is not available. It exposes the same Device API routes used by the dashboard, including the new Pi-camera scan contract:
+
+```bash
+python mock_pi_device_api.py
+```
+
+Then open the dashboard, turn on **Device API**, and set **Base URL** to:
+
+```text
+http://127.0.0.1:5055
+```
+
+The fake service simulates Pi camera scan sessions, user enrollment from the Pi camera, lock / unlock state, ignition state, logs, and settings. This lets a phone or laptop behave like "device A" while the backend stands in for the Pi.
+
 ### Browser + local Face API (dev PC)
 
 Use this when you want **your laptop webcam** in the UI to talk to **InsightFace** on the same machine (no Pi required for this path).

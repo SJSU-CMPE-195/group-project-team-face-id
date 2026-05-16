@@ -1,37 +1,91 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Card from "./Card";
 import Btn from "./Btn";
+import Badge from "./Badge";
 import { ScanFace } from "lucide-react";
 import { isFaceAccessAllowed } from "../utils/helpers";
 
 const WINDOW_SIZE = 10;
 const MIN_MATCHES = 6;
+const FINAL_STATES = new Set(["granted", "denied", "error", "cancelled", "timeout"]);
 
 function evaluateWindow(history) {
   const validUsers = history.filter((h) => h.matched && h.user).map((h) => h.user);
   if (!validUsers.length) return { granted: false, candidateUser: null, candidateCount: 0 };
   const counts = {};
-  for (const u of validUsers) counts[u] = (counts[u] || 0) + 1;
-  let bestUser = null;
-  let bestCount = 0;
-  for (const [u, c] of Object.entries(counts)) {
-    if (c > bestCount) {
-      bestCount = c;
-      bestUser = u;
+  for (const user of validUsers) counts[user] = (counts[user] || 0) + 1;
+  let candidateUser = null;
+  let candidateCount = 0;
+  for (const [user, count] of Object.entries(counts)) {
+    if (count > candidateCount) {
+      candidateUser = user;
+      candidateCount = count;
     }
   }
-  return { granted: bestCount >= MIN_MATCHES, candidateUser: bestUser, candidateCount: bestCount };
+  return { granted: candidateCount >= MIN_MATCHES, candidateUser, candidateCount };
 }
 
 function formatFetchError(data, status, statusText) {
-  const d = data?.detail;
-  if (typeof d === "string") return d;
-  if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join("; ");
-  if (d != null) return JSON.stringify(d);
+  const detail = data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((item) => item.msg || JSON.stringify(item)).join("; ");
+  if (detail != null) return JSON.stringify(detail);
   return `HTTP ${status} ${statusText}`;
 }
 
+function normalizeScan(raw = {}, fallbackPurpose = "unlock") {
+  const state =
+    raw.state ||
+    raw.result ||
+    (raw.granted === true ? "granted" : raw.granted === false ? "denied" : "scanning");
+  return {
+    ok: raw.ok !== false,
+    sessionId: raw.session_id || raw.sessionId || null,
+    state,
+    purpose: raw.purpose || fallbackPurpose,
+    user: raw.user || raw.candidate_user || raw.candidateUser || null,
+    score: raw.score ?? raw.best_score ?? null,
+    faceCount: raw.face_count ?? raw.faceCount ?? null,
+    message: raw.message || raw.detail || raw.error || "",
+    window: raw.window || {
+      matches: raw.matches ?? raw.candidate_count ?? 0,
+      needed: raw.needed ?? raw.min_matches ?? 6,
+      size: raw.size ?? raw.window_size ?? 10,
+    },
+  };
+}
+
+function scanBadge(state) {
+  if (state === "granted") return "ok";
+  if (state === "denied" || state === "error" || state === "timeout") return "err";
+  if (state === "cancelled") return "warn";
+  return "info";
+}
+
+function scanLabel(state) {
+  if (state === "granted") return "Granted";
+  if (state === "denied") return "Denied";
+  if (state === "error") return "Error";
+  if (state === "timeout") return "Timeout";
+  if (state === "cancelled") return "Cancelled";
+  if (state === "starting") return "Starting";
+  return "Scanning";
+}
+
+function isMockPiUrl(baseUrl) {
+  const raw = (baseUrl || "").trim();
+  if (!raw) return false;
+  try {
+    return new URL(raw).port === "5055";
+  } catch {
+    return /(^|:)5055(\/|$)/.test(raw);
+  }
+}
+
 export default function ControlTab({
+  api,
+  mode,
+  baseUrl,
   faceApiUrl,
   faceAccessAllowed = {},
   locked,
@@ -44,70 +98,425 @@ export default function ControlTab({
   doFullReset,
   popToast,
   busy,
+  onRefresh,
+}) {
+  const useMockPiScan = mode === "device" && isMockPiUrl(baseUrl);
+
+  if (!useMockPiScan) {
+    return (
+      <LocalCameraControl
+        mode={mode}
+        faceApiUrl={faceApiUrl}
+        faceAccessAllowed={faceAccessAllowed}
+        locked={locked}
+        ignitionOn={ignitionOn}
+        doUnlock={doUnlock}
+        doIgnitionStart={doIgnitionStart}
+        doIgnitionStop={doIgnitionStop}
+        doFullReset={doFullReset}
+        popToast={popToast}
+        busy={busy}
+      />
+    );
+  }
+
+  return (
+    <PiCameraControl
+      api={api}
+      mode={mode}
+      locked={locked}
+      ignitionOn={ignitionOn}
+      promptAutoLockSeconds={promptAutoLockSeconds}
+      doLock={doLock}
+      doIgnitionStop={doIgnitionStop}
+      doFullReset={doFullReset}
+      popToast={popToast}
+      busy={busy}
+      onRefresh={onRefresh}
+      isMockApi={useMockPiScan}
+    />
+  );
+}
+
+function PiCameraControl({
+  api,
+  mode,
+  locked,
+  ignitionOn,
+  promptAutoLockSeconds,
+  doLock,
+  doIgnitionStop,
+  doFullReset,
+  popToast,
+  busy,
+  onRefresh,
+  isMockApi,
+}) {
+  const pollTimerRef = useRef(null);
+  const scanSessionRef = useRef(null);
+  const unlockOwnerRef = useRef(null);
+  const [scan, setScan] = useState(null);
+  const [flowStage, setFlowStage] = useState("unlock_verify");
+  const [promptCountdown, setPromptCountdown] = useState(null);
+  const [unlockOwner, setUnlockOwner] = useState(null);
+
+  const isScanning = scan && !FINAL_STATES.has(scan.state);
+  const statusLine =
+    scan?.state === "granted"
+      ? scan.purpose === "ignition"
+        ? `Ignition verified${scan.user ? ` for ${scan.user}` : ""}.`
+        : `Unlock verified${scan.user ? ` for ${scan.user}` : ""}.`
+      : scan?.state === "denied"
+      ? scan.message || "Face scan was denied."
+      : scan?.state === "error"
+      ? scan.message || "Pi scan failed."
+      : scan?.state === "cancelled"
+      ? "Scan cancelled."
+      : isScanning
+      ? scan.message || "Pi camera is scanning."
+      : mode === "device"
+      ? isMockApi
+        ? "Ready for Fake Pi scan."
+        : "Ready for Pi camera scan."
+      : "Simulation mode will grant a mock scan.";
+
+  const clearPoll = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const refreshQuietly = useCallback(() => {
+    if (typeof onRefresh === "function") void onRefresh({ silent: true });
+  }, [onRefresh]);
+
+  const handleFinalScan = useCallback(
+    (next) => {
+      clearPoll();
+      scanSessionRef.current = null;
+
+      if (next.state === "granted") {
+        refreshQuietly();
+        if (next.purpose === "ignition") {
+          popToast("ok", "Ignition start", isMockApi ? "Fake Pi verified the same driver." : "Pi camera verified the same driver.");
+          setFlowStage("unlock_verify");
+        } else {
+          unlockOwnerRef.current = next.user || null;
+          setUnlockOwner(next.user || null);
+          popToast("ok", "Device unlock", isMockApi ? "Fake Pi verified access." : "Pi camera verified access.");
+          {
+            const max = Math.max(0, Number(promptAutoLockSeconds) || 0);
+            setPromptCountdown(max > 0 ? max : null);
+          }
+          setFlowStage("prompt");
+        }
+        return;
+      }
+
+      if (next.state === "cancelled") {
+        popToast("info", "Scan cancelled", isMockApi ? "Fake Pi scan stopped." : "Pi camera scan stopped.");
+        setFlowStage("unlock_verify");
+        return;
+      }
+
+      if (next.state === "denied" || next.state === "timeout" || next.state === "error") {
+        popToast("err", "Scan failed", next.message || (isMockApi ? "Fake Pi did not grant access." : "Pi camera did not grant access."));
+        setFlowStage("unlock_verify");
+      }
+    },
+    [clearPoll, isMockApi, popToast, promptAutoLockSeconds, refreshQuietly],
+  );
+
+  const applyScanUpdate = useCallback(
+    (raw, fallbackPurpose) => {
+      const next = normalizeScan(raw, fallbackPurpose);
+      setScan(next);
+      if (FINAL_STATES.has(next.state)) handleFinalScan(next);
+      return next;
+    },
+    [handleFinalScan],
+  );
+
+  const pollScan = useCallback(
+    (sessionId, purpose) => {
+      clearPoll();
+      if (!sessionId) return;
+      pollTimerRef.current = setInterval(async () => {
+        try {
+          const raw = await api.scanStatus(sessionId);
+          applyScanUpdate(raw, purpose);
+        } catch (e) {
+          const next = normalizeScan(
+            { state: "error", session_id: sessionId, message: e.message || "Could not read scan status." },
+            purpose,
+          );
+          setScan(next);
+          handleFinalScan(next);
+        }
+      }, 800);
+    },
+    [api, applyScanUpdate, clearPoll, handleFinalScan],
+  );
+
+  const startScan = useCallback(
+    async (purpose) => {
+      clearPoll();
+      const expectedUser = purpose === "ignition" ? unlockOwnerRef.current : null;
+      const starting = normalizeScan(
+        {
+          state: "starting",
+          purpose,
+          message: purpose === "ignition" ? "Starting ignition verification." : "Starting unlock verification.",
+        },
+        purpose,
+      );
+      setScan(starting);
+
+      try {
+        const raw = await api.scanStart({
+          purpose,
+          expectedUser,
+          expected_user: expectedUser,
+        });
+        const next = applyScanUpdate(raw, purpose);
+        if (!FINAL_STATES.has(next.state)) {
+          scanSessionRef.current = next.sessionId;
+          pollScan(next.sessionId, purpose);
+        } else {
+          scanSessionRef.current = null;
+        }
+      } catch (e) {
+        const next = normalizeScan({ state: "error", purpose, message: e.message || "Could not start scan." }, purpose);
+        setScan(next);
+        handleFinalScan(next);
+      }
+    },
+    [api, applyScanUpdate, clearPoll, handleFinalScan, pollScan],
+  );
+
+  const cancelScan = useCallback(async () => {
+    const sessionId = scanSessionRef.current || scan?.sessionId;
+    clearPoll();
+    if (!sessionId) {
+      setScan(normalizeScan({ state: "cancelled" }, scan?.purpose || "unlock"));
+      return;
+    }
+    try {
+      const raw = await api.scanCancel(sessionId);
+      applyScanUpdate(raw, scan?.purpose || "unlock");
+    } catch (e) {
+      const next = normalizeScan({ state: "cancelled", session_id: sessionId, message: e.message }, scan?.purpose || "unlock");
+      setScan(next);
+      handleFinalScan(next);
+    }
+  }, [api, applyScanUpdate, clearPoll, handleFinalScan, scan]);
+
+  const handleIgnitionPromptNo = useCallback(async () => {
+    const ok = await doLock();
+    if (ok) {
+      unlockOwnerRef.current = null;
+      setUnlockOwner(null);
+      setPromptCountdown(null);
+      setFlowStage("unlock_verify");
+      setScan(null);
+    }
+  }, [doLock]);
+
+  const handleIgnitionPromptYes = useCallback(async () => {
+    setFlowStage("ignition_verify");
+    setPromptCountdown(null);
+    await startScan("ignition");
+  }, [startScan]);
+
+  const handleFullReset = useCallback(async () => {
+    clearPoll();
+    const ok = await doFullReset();
+    if (ok) {
+      unlockOwnerRef.current = null;
+      setUnlockOwner(null);
+      setPromptCountdown(null);
+      setFlowStage("unlock_verify");
+      setScan(null);
+    }
+  }, [clearPoll, doFullReset]);
+
+  useEffect(() => {
+    if (locked) {
+      unlockOwnerRef.current = null;
+      const timer = setTimeout(() => {
+        setUnlockOwner(null);
+        setPromptCountdown(null);
+        setFlowStage("unlock_verify");
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [locked]);
+
+  useEffect(() => () => clearPoll(), [clearPoll]);
+
+  useEffect(() => {
+    if (flowStage !== "prompt" || promptCountdown == null) return;
+    const timer = setTimeout(() => {
+      setPromptCountdown((current) => {
+        if (current == null) return current;
+        if (current <= 1) {
+          setTimeout(() => {
+            void handleIgnitionPromptNo();
+          }, 0);
+          return 0;
+        }
+        return current - 1;
+      });
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [flowStage, handleIgnitionPromptNo, promptCountdown]);
+
+  return (
+    <div className="w-full pt-1">
+      <Card contentClassName="p-5 sm:p-6">
+        <div className="flex flex-col items-center text-center">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10">
+            <ScanFace className="h-5 w-5 text-violet-400" strokeWidth={1.75} />
+          </div>
+          <div className="mt-4 min-w-0 max-w-lg">
+            <div className="text-lg font-semibold tracking-tight text-slate-100">{isMockApi ? "Fake Pi scan" : "Pi camera scan"}</div>
+            <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
+              {isMockApi
+                ? "Port 5055 uses the local Fake Pi API for scan-session testing."
+                : "Device API mode starts a scan on the Pi and waits for the Pi to return the result."}
+            </p>
+          </div>
+        </div>
+
+        <div className="mx-auto mt-6 max-w-2xl rounded-2xl border border-white/10 bg-dna-bg/70 px-5 py-5 text-center">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Badge variant={scanBadge(scan?.state || "idle")}>{scan ? scanLabel(scan.state) : "Ready"}</Badge>
+            <Badge variant={locked ? "warn" : "ok"}>{locked ? "Locked" : "Unlocked"}</Badge>
+            <Badge variant={ignitionOn ? "ok" : "default"}>{ignitionOn ? "Ignition on" : "Ignition off"}</Badge>
+          </div>
+
+          <div className="mt-4 text-sm font-medium text-slate-100">{statusLine}</div>
+
+          {scan ? (
+            <div className="mt-3 grid gap-2 text-xs text-slate-400 sm:grid-cols-3">
+              <div className="rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2">
+                <div className="text-slate-500">Driver</div>
+                <div className="mt-1 truncate text-slate-200">{scan.user || "None"}</div>
+              </div>
+              <div className="rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2">
+                <div className="text-slate-500">Score</div>
+                <div className="mt-1 text-slate-200">{scan.score == null ? "Pending" : scan.score}</div>
+              </div>
+              <div className="rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2">
+                <div className="text-slate-500">Window</div>
+                <div className="mt-1 text-slate-200">
+                  {scan.window?.matches ?? 0}/{scan.window?.size ?? 10}
+                  <span className="text-slate-500"> need {scan.window?.needed ?? 6}</span>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          {isScanning ? (
+            <Btn variant="secondary" disabled={busy} onClick={cancelScan}>
+              Cancel scan
+            </Btn>
+          ) : flowStage === "prompt" ? null : (
+            <Btn disabled={busy} onClick={() => startScan("unlock")}>
+              {isMockApi ? "Start fake Pi scan" : "Start Pi face scan"}
+            </Btn>
+          )}
+          <Btn variant="danger" disabled={busy} onClick={handleFullReset}>
+            FULL RESET
+          </Btn>
+          {ignitionOn ? (
+            <Btn variant="secondary" disabled={busy} onClick={doIgnitionStop}>
+              Stop ignition
+            </Btn>
+          ) : null}
+        </div>
+
+        {flowStage === "prompt" ? (
+          <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-center gap-2 rounded-xl border border-violet-500/25 bg-violet-500/10 px-4 py-3">
+            <div className="w-full text-center text-sm text-violet-200">
+              Start ignition now? The second scan must match {unlockOwner || "the same driver"}.
+            </div>
+            {promptAutoLockSeconds > 0 ? (
+              <div className="w-full text-center text-xs text-violet-300/90">
+                Auto lock in {promptCountdown ?? promptAutoLockSeconds}s if no choice.
+              </div>
+            ) : (
+              <div className="w-full text-center text-xs text-slate-500">No auto-lock timer; choose Yes or No when ready.</div>
+            )}
+            <Btn disabled={busy || isScanning} onClick={handleIgnitionPromptYes}>
+              Yes, verify ignition
+            </Btn>
+            <Btn variant="secondary" disabled={busy || isScanning} onClick={handleIgnitionPromptNo}>
+              No, lock now
+            </Btn>
+          </div>
+        ) : null}
+      </Card>
+    </div>
+  );
+}
+
+function LocalCameraControl({
+  mode,
+  faceApiUrl,
+  faceAccessAllowed = {},
+  locked,
+  ignitionOn,
+  doUnlock,
+  doIgnitionStop,
+  doFullReset,
+  popToast,
+  busy,
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const historyRef = useRef([]);
-  const inFlightRef = useRef(false);
-  const accessGrantedRef = useRef(false);
-  const blockedRecognitionRef = useRef([]);
-  const accessDeniedHandledRef = useRef(false);
   const intervalRef = useRef(null);
-  const postUnlockIntervalRef = useRef(null);
-  const doUnlockRef = useRef(doUnlock);
-  const doIgnitionStartRef = useRef(doIgnitionStart);
-  const stopCameraRef = useRef(null);
-  const unlockOwnerRef = useRef(null);
+  const inFlightRef = useRef(false);
+  const historyRef = useRef([]);
+  const grantedRef = useRef(false);
 
   const [camOn, setCamOn] = useState(false);
   const [statusLine, setStatusLine] = useState("Camera off");
   const [enrolledHint, setEnrolledHint] = useState("");
   const [apiError, setApiError] = useState(null);
-  const [postUnlockCountdown, setPostUnlockCountdown] = useState(null);
-  const [flowStage, setFlowStage] = useState("unlock_verify");
-  const [promptCountdown, setPromptCountdown] = useState(null);
 
   const cleanApi = (faceApiUrl || "").trim().replace(/\/$/, "");
 
-  const stopCamera = useCallback((opts = {}) => {
-    const preserveOwner = !!opts.preserveOwner;
-    if (postUnlockIntervalRef.current) {
-      clearInterval(postUnlockIntervalRef.current);
-      postUnlockIntervalRef.current = null;
-    }
-    setPostUnlockCountdown(null);
+  const clearScanLoop = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
+  }, []);
+
+  const stopCamera = useCallback(() => {
+    clearScanLoop();
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
     if (videoRef.current) videoRef.current.srcObject = null;
-    setCamOn(false);
     historyRef.current = [];
-    blockedRecognitionRef.current = [];
-    accessGrantedRef.current = false;
-    accessDeniedHandledRef.current = false;
-    if (!preserveOwner) unlockOwnerRef.current = null;
+    grantedRef.current = false;
+    setCamOn(false);
     setStatusLine("Camera off");
     setApiError(null);
-  }, []);
-
-  useEffect(() => {
-    stopCameraRef.current = stopCamera;
-  }, [stopCamera]);
+  }, [clearScanLoop]);
 
   const startCamera = useCallback(async () => {
-    if (postUnlockIntervalRef.current) {
-      clearInterval(postUnlockIntervalRef.current);
-      postUnlockIntervalRef.current = null;
+    if (!cleanApi) {
+      popToast("err", "Face API", "Set Face API URL under Connection first.");
+      return;
     }
-    setPostUnlockCountdown(null);
-    accessDeniedHandledRef.current = false;
-    blockedRecognitionRef.current = [];
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
@@ -118,91 +527,35 @@ export default function ControlTab({
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      historyRef.current = [];
+      grantedRef.current = false;
       setCamOn(true);
+      setStatusLine("Scanning with this device camera.");
       setApiError(null);
     } catch (e) {
       popToast("err", "Camera", e.message || "Permission denied");
     }
-  }, [popToast]);
+  }, [cleanApi, popToast]);
+
+  const handleFullReset = useCallback(async () => {
+    const ok = await doFullReset();
+    if (ok) stopCamera();
+  }, [doFullReset, stopCamera]);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
   useEffect(() => {
-    doUnlockRef.current = doUnlock;
-  }, [doUnlock]);
-
-  useEffect(() => {
-    doIgnitionStartRef.current = doIgnitionStart;
-  }, [doIgnitionStart]);
-
-  useEffect(() => {
-    if (locked) unlockOwnerRef.current = null;
-    if (locked) setFlowStage("unlock_verify");
-  }, [locked]);
-
-  const handleIgnitionPromptNo = useCallback(async () => {
-    const ok = await doLock();
-    if (ok) {
-      stopCameraRef.current?.();
-      setFlowStage("unlock_verify");
-    }
-  }, [doLock]);
-
-  const handleIgnitionPromptYes = useCallback(async () => {
-    setFlowStage("ignition_verify");
-    await startCamera();
-    setStatusLine("Ignition verify: scan the same face again.");
-  }, [startCamera]);
-
-  const handleFullReset = useCallback(async () => {
-    const ok = await doFullReset();
-    if (ok) {
-      stopCameraRef.current?.();
-      setFlowStage("unlock_verify");
-    }
-  }, [doFullReset]);
-
-  useEffect(() => {
-    if (flowStage !== "prompt" || camOn) {
-      setPromptCountdown(null);
-      return;
-    }
-    const max = Math.max(0, Number(promptAutoLockSeconds) || 0);
-    if (max <= 0) {
-      setPromptCountdown(null);
-      return;
-    }
-    setPromptCountdown(max);
-    let remain = max;
-    const t = setInterval(() => {
-      remain -= 1;
-      if (remain <= 0) {
-        clearInterval(t);
-        setPromptCountdown(0);
-        void handleIgnitionPromptNo();
-      } else {
-        setPromptCountdown(remain);
-      }
-    }, 1000);
-    return () => clearInterval(t);
-  }, [camOn, flowStage, handleIgnitionPromptNo, promptAutoLockSeconds]);
-
-  useEffect(() => {
-    if (!cleanApi) {
-      setEnrolledHint("");
-      return;
-    }
+    if (!cleanApi) return;
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(`${cleanApi}/api/face-status`);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = await r.json();
+        const res = await fetch(`${cleanApi}/api/face-status`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
         if (cancelled) return;
-        if (j.count > 0) setEnrolledHint(`Enrolled: ${j.enrolled.join(", ")}`);
-        else setEnrolledHint("No users in face DB — run enroll.py in car_face_auth first.");
+        setEnrolledHint(data.count > 0 ? `Enrolled: ${data.enrolled.join(", ")}` : "No users in face DB.");
       } catch {
-        if (!cancelled) setEnrolledHint("Cannot reach Face API (is uvicorn running?)");
+        if (!cancelled) setEnrolledHint("Cannot reach Face API.");
       }
     })();
     return () => {
@@ -211,160 +564,71 @@ export default function ControlTab({
   }, [cleanApi, camOn]);
 
   useEffect(() => {
-    const scanningAllowed = flowStage === "unlock_verify" || flowStage === "ignition_verify";
-    if (!camOn || !cleanApi || !scanningAllowed) {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
+    if (!camOn || !cleanApi) {
+      clearScanLoop();
       return;
     }
 
     const tick = async () => {
-      if (inFlightRef.current) return;
+      if (inFlightRef.current || grantedRef.current) return;
       const video = videoRef.current;
       const canvas = canvasRef.current;
       if (!video || !canvas || video.readyState < 2) return;
+
       inFlightRef.current = true;
       try {
-        const w = video.videoWidth;
-        const h = video.videoHeight;
-        if (w < 2 || h < 2) return;
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(video, 0, 0, w, h);
-        const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.88));
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        if (width < 2 || height < 2) return;
+
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(video, 0, 0, width, height);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
         if (!blob) return;
+
         const form = new FormData();
         form.append("image", blob, "frame.jpg");
-        const r = await fetch(`${cleanApi}/api/verify-frame`, { method: "POST", body: form });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) {
-          setApiError(formatFetchError(data, r.status, r.statusText));
+        const res = await fetch(`${cleanApi}/api/verify-frame`, { method: "POST", body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setApiError(formatFetchError(data, res.status, res.statusText));
           setStatusLine("Recognition API error");
           return;
         }
+
         setApiError(null);
-
-        if (data.ok === false && data.error === "decode_failed") {
-          setStatusLine("Bad frame");
-          return;
-        }
-
-        const hist = historyRef.current;
+        const history = historyRef.current;
         const faceCount = data.face_count ?? 0;
+        const allowed = faceCount === 1 && !!data.matched && isFaceAccessAllowed(data.user, faceAccessAllowed);
+        history.push({ matched: allowed, user: allowed ? data.user : null });
+        while (history.length > WINDOW_SIZE) history.shift();
+
+        const { granted, candidateUser, candidateCount } = evaluateWindow(history);
         if (faceCount === 0) {
-          hist.push({ matched: false, user: null });
-        } else if (faceCount > 1) {
-          hist.push({ matched: false, user: null });
-        } else {
-          const allowed =
-            !!data.matched && isFaceAccessAllowed(data.user, faceAccessAllowed);
-          hist.push({ matched: allowed, user: data.user || null });
-        }
-        while (hist.length > WINDOW_SIZE) hist.shift();
-
-        const { granted, candidateUser, candidateCount } = evaluateWindow(hist);
-
-        const br = blockedRecognitionRef.current;
-        if (faceCount === 1 && data.matched && !isFaceAccessAllowed(data.user, faceAccessAllowed)) {
-          br.push({ user: data.user });
-        } else {
-          br.push(null);
-        }
-        while (br.length > WINDOW_SIZE) br.shift();
-        const blockedHits = br.filter(Boolean);
-        const blockedStable = blockedHits.length >= MIN_MATCHES;
-        const deniedUser = blockedHits.length ? blockedHits[blockedHits.length - 1].user : null;
-
-        if (blockedStable && !accessDeniedHandledRef.current) {
-          accessDeniedHandledRef.current = true;
-          popToast(
-            "err",
-            "Access denied",
-            `${deniedUser ?? "This user"} has no access permission. Turn it on under Users → People & access.`,
-          );
-          stopCameraRef.current?.();
-          return;
-        }
-
-        if (faceCount === 1) {
-          if (data.matched && !isFaceAccessAllowed(data.user, faceAccessAllowed)) {
-            setStatusLine(
-              `Recognized ${data.user} (score ${data.score}) · access off — enable in Users tab · ${candidateCount}/${WINDOW_SIZE}`,
-            );
-          } else {
-            setStatusLine(
-              data.matched
-                ? `Match: ${data.user} (score ${data.score}) · stable ${candidateCount}/${WINDOW_SIZE}`
-                : `No match · closest ${data.user ?? "—"} (${data.score}) · ${candidateCount}/${WINDOW_SIZE}`,
-            );
-          }
-        } else if (faceCount === 0) {
           setStatusLine("No face detected");
-        } else {
+        } else if (faceCount > 1) {
           setStatusLine("Multiple faces in frame");
+        } else if (data.matched && !allowed) {
+          setStatusLine(`Recognized ${data.user} but access is off. ${candidateCount}/${WINDOW_SIZE}`);
+        } else {
+          setStatusLine(
+            data.matched
+              ? `Match: ${data.user} (${data.score}) ${candidateCount}/${WINDOW_SIZE}`
+              : `No match. Closest ${data.user ?? "none"} (${data.score})`,
+          );
         }
 
-        if (granted && !accessGrantedRef.current) {
-          accessGrantedRef.current = true;
-          const action =
-            flowStage === "unlock_verify" ? doUnlockRef.current : ignitionOn ? null : doIgnitionStartRef.current;
-          if (typeof action === "function") {
-            if (flowStage === "ignition_verify") {
-              const owner = unlockOwnerRef.current;
-              if (!owner) {
-                popToast("err", "Ignition blocked", "Unlock must be completed by face scan first.");
-                setStatusLine("Ignition blocked: unlock owner missing. Re-lock and verify again.");
-                stopCameraRef.current?.();
-                return;
-              }
-              if (candidateUser && candidateUser !== owner) {
-                popToast("err", "Ignition blocked", `Second verify must be the same user (${owner}).`);
-                setStatusLine(`Ignition blocked: expected ${owner}, got ${candidateUser}.`);
-                stopCameraRef.current?.();
-                return;
-              }
-            }
-            void action({ suppressSuccessToast: true }).then((ok) => {
-              if (ok) {
-                if (flowStage === "unlock_verify") {
-                  unlockOwnerRef.current = candidateUser || null;
-                  popToast("ok", "Device unlock", "Verified — device unlock.");
-                  setFlowStage("prompt");
-                }
-                else if (!ignitionOn) popToast("ok", "Ignition start", "Second verify passed — ignition started.");
-                else popToast("info", "Already running", "Ignition is already on.");
-                setPostUnlockCountdown(3);
-                let step = 0;
-                if (postUnlockIntervalRef.current) {
-                  clearInterval(postUnlockIntervalRef.current);
-                  postUnlockIntervalRef.current = null;
-                }
-                postUnlockIntervalRef.current = setInterval(() => {
-                  step += 1;
-                  if (step >= 3) {
-                    if (postUnlockIntervalRef.current) {
-                      clearInterval(postUnlockIntervalRef.current);
-                      postUnlockIntervalRef.current = null;
-                    }
-                    setPostUnlockCountdown(null);
-                    stopCameraRef.current?.({ preserveOwner: true });
-                  } else {
-                    setPostUnlockCountdown(3 - step);
-                  }
-                }, 1000);
-              } else {
-                accessGrantedRef.current = false;
-              }
-            });
+        if (granted && !grantedRef.current) {
+          grantedRef.current = true;
+          const ok = await doUnlock({ suppressSuccessToast: true });
+          if (ok) {
+            popToast("ok", "Device unlock", `Verified ${candidateUser || "driver"} with this device camera.`);
+            stopCamera();
           } else {
-            popToast("info", "Already running", "Ignition is already on.");
-            stopCameraRef.current?.({ preserveOwner: true });
+            grantedRef.current = false;
           }
         }
-        if (!granted) accessGrantedRef.current = false;
       } catch (e) {
         setApiError(e.message);
         setStatusLine("Network error");
@@ -375,94 +639,64 @@ export default function ControlTab({
 
     intervalRef.current = setInterval(tick, 450);
     tick();
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    };
-  }, [camOn, cleanApi, faceAccessAllowed, flowStage, ignitionOn, popToast]);
+    return () => clearScanLoop();
+  }, [camOn, cleanApi, clearScanLoop, doUnlock, faceAccessAllowed, popToast, stopCamera]);
 
   return (
     <div className="w-full pt-1">
       <Card contentClassName="p-5 sm:p-6">
-          <div className="flex flex-col items-center text-center">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10">
-              <ScanFace className="h-5 w-5 text-violet-400" strokeWidth={1.75} />
-            </div>
-            <div className="mt-4 min-w-0 max-w-lg">
-              <div className="text-lg font-semibold tracking-tight text-slate-100">Face scan</div>
-              <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
-                First scan unlocks. Then choose Yes/No for ignition (optional countdown in Settings). If Yes, run a second
-                scan with the same user to start ignition.
-              </p>
-            </div>
+        <div className="flex flex-col items-center text-center">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10">
+            <ScanFace className="h-5 w-5 text-violet-400" strokeWidth={1.75} />
           </div>
-
-          <div className="mx-auto mt-6 max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-black/40">
-            <video ref={videoRef} className="aspect-video w-full object-cover" playsInline muted />
-            <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
+          <div className="mt-4 min-w-0 max-w-lg">
+            <div className="text-lg font-semibold tracking-tight text-slate-100">Local camera scan</div>
+            <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
+              {mode === "device"
+                ? "Device API mode uses this browser camera unless the Base URL is the Fake Pi API on port 5055."
+                : "Simulation mode keeps the original browser camera unlock flow."}
+            </p>
           </div>
+        </div>
 
-          <div className="mt-4 flex flex-wrap justify-center gap-2">
-            {!camOn ? (
-              <Btn disabled={busy} onClick={startCamera}>
-                {flowStage === "ignition_verify" ? "Start ignition face verify" : "Turn on camera & scan"}
-              </Btn>
-            ) : (
-              <Btn variant="secondary" disabled={busy} onClick={stopCamera}>
-                Stop camera
-              </Btn>
-            )}
-            <Btn variant="danger" disabled={busy} onClick={handleFullReset}>
-              FULL RESET
+        <div className="mx-auto mt-6 max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+          <video ref={videoRef} className="aspect-video w-full object-cover" playsInline muted />
+          <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
+        </div>
+
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          {!camOn ? (
+            <Btn disabled={busy} onClick={startCamera}>
+              Turn on camera and scan
             </Btn>
-            {ignitionOn ? (
-              <Btn variant="secondary" disabled={busy} onClick={doIgnitionStop}>
-                Stop ignition
-              </Btn>
-            ) : null}
-          </div>
-
-          {flowStage === "prompt" && !camOn ? (
-            <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-center gap-2 rounded-xl border border-violet-500/25 bg-violet-500/10 px-4 py-3">
-              <div className="w-full text-center text-sm text-violet-200">
-                Start ignition now? (Choosing Yes requires a second face verify from the same user.)
-              </div>
-              {promptAutoLockSeconds > 0 ? (
-                <div className="w-full text-center text-xs text-violet-300/90">
-                  Auto lock in {promptCountdown ?? promptAutoLockSeconds}s if no choice.
-                </div>
-              ) : (
-                <div className="w-full text-center text-xs text-slate-500">
-                  No auto-lock timer — choose Yes or No when ready.
-                </div>
-              )}
-              <Btn disabled={busy} onClick={handleIgnitionPromptYes}>
-                Yes, continue
-              </Btn>
-              <Btn variant="secondary" disabled={busy} onClick={handleIgnitionPromptNo}>
-                No, lock now
-              </Btn>
-            </div>
+          ) : (
+            <Btn variant="secondary" disabled={busy} onClick={stopCamera}>
+              Stop camera
+            </Btn>
+          )}
+          <Btn variant="danger" disabled={busy} onClick={handleFullReset}>
+            FULL RESET
+          </Btn>
+          {ignitionOn ? (
+            <Btn variant="secondary" disabled={busy} onClick={doIgnitionStop}>
+              Stop ignition
+            </Btn>
           ) : null}
+        </div>
 
-          <div className="mx-auto mt-4 max-w-2xl rounded-xl border border-white/[0.08] bg-dna-bg/60 px-4 py-3 text-center text-xs text-slate-400">
-            <div className="font-medium text-slate-200">{statusLine}</div>
-            {cleanApi ? (
-              <div className="mt-1">{enrolledHint}</div>
-            ) : (
-              <div className="mt-1 text-amber-400/90">Add the Face API URL under Connection below.</div>
-            )}
-            {apiError ? <div className="mt-1 text-rose-400/90">{apiError}</div> : null}
-            <div className="mt-1 text-[11px] text-slate-500">
-              Lock: {locked ? "locked" : "unlocked"} · Ignition: {ignitionOn ? "on" : "off"}
-            </div>
-            {postUnlockCountdown != null ? (
-              <div className="mt-2 text-sm font-medium text-violet-300/95">
-                Stopping camera in {postUnlockCountdown}…
-              </div>
-            ) : null}
+        <div className="mx-auto mt-4 max-w-2xl rounded-xl border border-white/[0.08] bg-dna-bg/60 px-4 py-3 text-center text-xs text-slate-400">
+          <div className="font-medium text-slate-200">{statusLine}</div>
+          {cleanApi ? (
+            <div className="mt-1">{enrolledHint}</div>
+          ) : (
+            <div className="mt-1 text-amber-400/90">Add the Face API URL under Connection below.</div>
+          )}
+          {apiError ? <div className="mt-1 text-rose-400/90">{apiError}</div> : null}
+          <div className="mt-1 text-[11px] text-slate-500">
+            Lock: {locked ? "locked" : "unlocked"} · Ignition: {ignitionOn ? "on" : "off"}
           </div>
-        </Card>
+        </div>
+      </Card>
     </div>
   );
 }
