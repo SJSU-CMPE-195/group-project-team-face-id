@@ -100,6 +100,7 @@ export default function App() {
               popToast={state.popToast}
               faceAccessAllowed={state.faceAccessAllowed}
               setFaceAccessAllowed={state.setFaceAccessAllowed}
+              setDeviceUsers={state.setDeviceUsers}
               api={state.api}
             />
           )}

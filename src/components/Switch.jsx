@@ -1,6 +1,6 @@
 import React from "react";
 
-export default function Switch({ checked, onChange }) {
+export default function Switch({ checked, onChange, ariaLabel }) {
   return (
     <button
       type="button"
@@ -9,6 +9,7 @@ export default function Switch({ checked, onChange }) {
         checked ? "bg-fuchsia-600 shadow-[0_0_14px_-2px_rgba(217,70,239,0.55)]" : "bg-slate-700"
       }`}
       aria-pressed={checked}
+      aria-label={ariaLabel}
     >
       <div
         className={`h-5 w-5 rounded-full bg-dna-bg shadow-sm transition ${

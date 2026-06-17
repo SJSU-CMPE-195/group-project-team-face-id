@@ -29,6 +29,7 @@ export default function UsersTab({
   sim,
   setSim,
   deviceUsers,
+  setDeviceUsers,
   name,
   setName,
   busy,
@@ -48,7 +49,7 @@ export default function UsersTab({
   const [enrollCount, setEnrollCount] = useState(0);
   const [enrollCamOn, setEnrollCamOn] = useState(false);
   const [enrollingAuto, setEnrollingAuto] = useState(false);
-  const [enrollSource, setEnrollSource] = useState("pi_camera");
+  const [enrollSource, setEnrollSource] = useState(mode === "device" ? "pi_camera" : "phone_camera");
   const [piEnrollStatus, setPiEnrollStatus] = useState(null);
   const enrollVideoRef = useRef(null);
   const enrollCanvasRef = useRef(null);
@@ -100,6 +101,13 @@ export default function UsersTab({
 
   useEffect(() => {
     if (mode !== "sim") prevFaceNamesRef.current = null;
+  }, [mode]);
+
+  useEffect(() => {
+    setEnrollSource((source) => {
+      if (mode === "device" || source !== "pi_camera") return source;
+      return "phone_camera";
+    });
   }, [mode]);
 
   /**
@@ -537,6 +545,7 @@ export default function UsersTab({
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
           <button
             type="button"
+            aria-pressed={enrollSource === "pi_camera"}
             className={sourceButtonClass(enrollSource === "pi_camera")}
             disabled={enrollingAuto}
             onClick={() => setEnrollSource("pi_camera")}
@@ -546,6 +555,7 @@ export default function UsersTab({
           </button>
           <button
             type="button"
+            aria-pressed={enrollSource === "phone_camera"}
             className={sourceButtonClass(enrollSource === "phone_camera")}
             disabled={enrollingAuto}
             onClick={() => setEnrollSource("phone_camera")}
@@ -563,8 +573,8 @@ export default function UsersTab({
 
         <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="min-w-0 flex-1">
-            <label className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-slate-500">Display name</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" disabled={enrollingAuto} />
+            <label htmlFor="display-name" className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-slate-500">Display name</label>
+            <Input id="display-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" disabled={enrollingAuto} />
           </div>
           <Btn
             disabled={busy || enrollingAuto || (enrollSource === "phone_camera" && !cleanApi)}
@@ -678,10 +688,11 @@ export default function UsersTab({
                         {isFaceAccessAllowed(n, faceAccessAllowed) ? "allowed" : "blocked"}
                       </span>
                       <Switch
+                        ariaLabel={`${n} face access`}
                         checked={isFaceAccessAllowed(n, faceAccessAllowed)}
                         onChange={async (allowed) => {
-                          setFaceAccessAllowed((prev) => ({ ...prev, [n]: allowed }));
                           if (mode === "sim" && typeof setSim === "function") {
+                            setFaceAccessAllowed((prev) => ({ ...prev, [n]: allowed }));
                             setSim((s) => ({
                               ...s,
                               logs: [
@@ -701,6 +712,11 @@ export default function UsersTab({
                             if (row) {
                               try {
                                 await api.setAccess(row.id, allowed);
+                                if (typeof setDeviceUsers === "function") {
+                                  setDeviceUsers((prev) =>
+                                    prev.map((u) => (u.id === row.id ? { ...u, faceAccess: allowed } : u)),
+                                  );
+                                }
                               } catch {
                                 /* non-fatal */
                               }

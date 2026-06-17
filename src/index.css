@@ -56,6 +56,26 @@ html[data-theme="light"] .text-slate-500 {
   @apply text-slate-600;
 }
 
+html[data-theme="light"] .text-violet-300 {
+  @apply text-violet-700;
+}
+
+html[data-theme="light"] .text-fuchsia-300 {
+  @apply text-fuchsia-700;
+}
+
+html[data-theme="light"] .text-emerald-300 {
+  @apply text-emerald-700;
+}
+
+html[data-theme="light"] .text-amber-300 {
+  @apply text-amber-700;
+}
+
+html[data-theme="light"] .text-rose-400 {
+  @apply text-rose-700;
+}
+
 html[data-theme="light"] .border-white\/10 {
   border-color: rgb(15 23 42 / 0.12) !important;
 }

@@ -21,11 +21,12 @@ export default function ConnectionPanel({ mode, setMode, baseUrl, setBaseUrl, fa
         <div className="rounded-xl border border-white/[0.08] bg-dna-bg/40 p-4 text-center">
           <div className="flex items-center justify-center gap-3">
             <span className="text-sm font-medium text-slate-200">Device API</span>
-            <Switch checked={mode === "device"} onChange={(v) => setMode(v ? "device" : "sim")} />
+            <Switch ariaLabel="Device API mode" checked={mode === "device"} onChange={(v) => setMode(v ? "device" : "sim")} />
           </div>
           <div className={`mx-auto mt-4 max-w-md space-y-2 text-center ${mode === "device" ? "" : "pointer-events-none opacity-45"}`}>
-            <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-500">Base URL</label>
+            <label htmlFor="base-url" className="block text-[11px] font-medium uppercase tracking-wider text-slate-500">Base URL</label>
             <Input
+              id="base-url"
               disabled={mode !== "device"}
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}

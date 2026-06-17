@@ -12,24 +12,30 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
 
         <div className="mt-4 space-y-4">
           <div>
-            <div className="text-sm font-medium text-slate-200">Auto re-lock (seconds)</div>
+            <label htmlFor="auto-relock-seconds" className="text-sm font-medium text-slate-200">Auto re-lock (seconds)</label>
             <div className="mt-2">
               <Input
+                id="auto-relock-seconds"
                 type="number"
+                min="0"
+                max="600"
                 value={settings.autoRelockSeconds}
                 onChange={(e) =>
                   setSettings((s) => ({ ...s, autoRelockSeconds: Math.max(0, Math.min(600, parseInt(e.target.value || "0", 10))) }))
                 }
               />
             </div>
-            <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 5–15s.</div>
+            <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 5-15s.</div>
           </div>
 
           <div>
-            <div className="text-sm font-medium text-slate-200">Ignition auto-stop (seconds)</div>
+            <label htmlFor="ignition-auto-stop-seconds" className="text-sm font-medium text-slate-200">Ignition auto-stop (seconds)</label>
             <div className="mt-2">
               <Input
+                id="ignition-auto-stop-seconds"
                 type="number"
+                min="0"
+                max="1800"
                 value={settings.ignitionAutoStopSeconds}
                 onChange={(e) =>
                   setSettings((s) => ({
@@ -39,14 +45,17 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
                 }
               />
             </div>
-            <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 15–60s.</div>
+            <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 15-60s.</div>
           </div>
 
           <div>
-            <div className="text-sm font-medium text-slate-200">Ignition prompt auto-lock (seconds)</div>
+            <label htmlFor="prompt-auto-lock-seconds" className="text-sm font-medium text-slate-200">Ignition prompt auto-lock (seconds)</label>
             <div className="mt-2">
               <Input
+                id="prompt-auto-lock-seconds"
                 type="number"
+                min="0"
+                max="600"
                 value={typeof settings.promptAutoLockSeconds === "number" ? settings.promptAutoLockSeconds : 0}
                 onChange={(e) =>
                   setSettings((s) => ({
@@ -66,7 +75,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
               <div className="text-sm font-medium text-slate-200">Liveness detection</div>
               <div className="text-xs text-slate-500">Reduces simple photo spoofing (v1 simplified).</div>
             </div>
-            <Switch checked={settings.liveness} onChange={(v) => setSettings((s) => ({ ...s, liveness: v }))} />
+            <Switch ariaLabel="Liveness detection" checked={settings.liveness} onChange={(v) => setSettings((s) => ({ ...s, liveness: v }))} />
           </div>
 
           <div className="flex items-center justify-between gap-3">
@@ -74,14 +83,17 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
               <div className="text-sm font-medium text-slate-200">Fail lockout</div>
               <div className="text-xs text-slate-500">Cooldown after repeated failures.</div>
             </div>
-            <Switch checked={settings.failLockout} onChange={(v) => setSettings((s) => ({ ...s, failLockout: v }))} />
+            <Switch ariaLabel="Fail lockout" checked={settings.failLockout} onChange={(v) => setSettings((s) => ({ ...s, failLockout: v }))} />
           </div>
 
           <div>
-            <div className="text-sm font-medium text-slate-200">Lockout after (failures)</div>
+            <label htmlFor="lockout-after-failures" className="text-sm font-medium text-slate-200">Lockout after (failures)</label>
             <div className="mt-2">
               <Input
+                id="lockout-after-failures"
                 type="number"
+                min="1"
+                max="20"
                 value={settings.lockoutAfter}
                 onChange={(e) =>
                   setSettings((s) => ({ ...s, lockoutAfter: Math.max(1, Math.min(20, parseInt(e.target.value || "5", 10))) }))
