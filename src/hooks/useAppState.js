@@ -17,10 +17,31 @@ export default function useAppState() {
 
   const [sim, setSim] = useState(() => {
     const raw = localStorage.getItem("sim");
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      try {
+        const saved = JSON.parse(raw);
+        const defaultSettings = {
+          autoRelockSeconds: 10,
+          ignitionAutoStopSeconds: 20,
+          promptAutoLockSeconds: 0,
+          liveness: true,
+          failLockout: true,
+          lockoutAfter: 5,
+        };
+        // Always begin a new UI session in locked state for unlock-flow testing.
+        return {
+          ...saved,
+          locked: true,
+          settings: { ...defaultSettings, ...(saved.settings || {}) },
+        };
+      } catch {
+        localStorage.removeItem("sim");
+      }
+    }
     return {
       deviceName: "FaceLock-Pi",
       locked: true,
+      ignitionOn: false,
       battery: 100,
       signal: 5,
       users: [
@@ -31,13 +52,21 @@ export default function useAppState() {
         { id: "l1", ts: Date.now() - 1000 * 60 * 10, type: "boot", ok: true, detail: "Device started" },
         { id: "l2", ts: Date.now() - 1000 * 60 * 6, type: "lock", ok: true, detail: "Locked" },
       ],
-      settings: { autoRelockSeconds: 10, liveness: true, failLockout: true, lockoutAfter: 5 },
+      settings: {
+        autoRelockSeconds: 10,
+        ignitionAutoStopSeconds: 20,
+        promptAutoLockSeconds: 0,
+        liveness: true,
+        failLockout: true,
+        lockoutAfter: 5,
+      },
     };
   });
 
   const [status, setStatus] = useState({
     online: true,
     lockState: "locked",
+    ignitionOn: false,
     deviceName: "",
     battery: 0,
     signal: 0,
@@ -49,7 +78,7 @@ export default function useAppState() {
   const [deviceUsers, setDeviceUsers] = useState([]);
   const [deviceLogs, setDeviceLogs] = useState([]);
 
-  const [faceAccessAllowed, setFaceAccessAllowed] = useState(() => {
+  const [simFaceAccessAllowed, setSimFaceAccessAllowed] = useState(() => {
     try {
       const raw = localStorage.getItem("faceAccessAllowed");
       return raw ? JSON.parse(raw) : {};
@@ -68,8 +97,15 @@ export default function useAppState() {
   }, [mode, baseUrl, faceApiUrl, sim]);
 
   useEffect(() => {
-    localStorage.setItem("faceAccessAllowed", JSON.stringify(faceAccessAllowed));
-  }, [faceAccessAllowed]);
+    localStorage.setItem("faceAccessAllowed", JSON.stringify(simFaceAccessAllowed));
+  }, [simFaceAccessAllowed]);
+
+  const faceAccessAllowed =
+    mode === "device"
+      ? Object.fromEntries(deviceUsers.map((u) => [u.name, u.faceAccess !== false]))
+      : simFaceAccessAllowed;
+
+  const setFaceAccessAllowed = mode === "device" ? () => {} : setSimFaceAccessAllowed;
 
   useEffect(
     () => () => {
@@ -121,5 +157,6 @@ export default function useAppState() {
     setDeviceLogs,
     faceAccessAllowed,
     setFaceAccessAllowed,
+    setSimFaceAccessAllowed,
   };
 }

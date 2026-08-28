@@ -1,4 +1,4 @@
-"""Enroll a user by capturing multiple face embeddings from the webcam."""
+"""Enroll a user by capturing multiple face embeddings from the Pi camera."""
 
 import pickle
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
+from picamera2 import Picamera2
 
 
 DATA_DIR = Path("data")
@@ -44,13 +45,11 @@ def setup_model():
 
 
 def setup_camera():
-    """Open the default camera."""
-    print("Starting camera...")
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Cannot open camera")
-        return None
-
+    """Open the Pi camera via picamera2."""
+    print("Starting Pi camera...")
+    cap = Picamera2()
+    cap.configure(cap.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
+    cap.start()
     print("Camera opened successfully.")
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     return cap
@@ -69,59 +68,54 @@ def print_instructions():
 
 
 def collect_embeddings(app, cap):
-    """Collect face embeddings from webcam frames."""
+    """Collect face embeddings from Pi camera frames."""
     collected_embeddings = []
     enrollment_cancelled = False
 
-    while len(collected_embeddings) < SAMPLES_NEEDED:
-        ret, frame = cap.read()
-        if not ret:
-            print("Can't receive frame (stream end?). Exiting...")
-            break
+    try:
+        while len(collected_embeddings) < SAMPLES_NEEDED:
+            frame = cap.capture_array()
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            display_frame = frame.copy()
 
-        frame = cv2.resize(frame, (640, 480))
-        display_frame = frame.copy()
+            status_text = (
+                f"Samples: {len(collected_embeddings)}/{SAMPLES_NEEDED}, "
+                "press 's' to save, 'q' to quit"
+            )
 
-        status_text = (
-            f"Samples: {len(collected_embeddings)}/{SAMPLES_NEEDED}, "
-            "press 's' to save, 'q' to quit"
-        )
+            cv2.putText(
+                display_frame,
+                status_text,
+                (20, 70),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+            )
+            cv2.imshow(WINDOW_NAME, display_frame)
 
-        cv2.putText(
-            display_frame,
-            status_text,
-            (20, 70),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-        )
-        cv2.imshow(WINDOW_NAME, display_frame)
+            key = cv2.waitKey(1) & 0xFF
 
-        key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                print("Enrollment cancelled. No samples saved.")
+                enrollment_cancelled = True
+                break
 
-        if key == ord("q"):
-            print("Enrollment cancelled. No samples saved.")
-            enrollment_cancelled = True
-            break
+            if key == ord("s"):
+                print("Processing captured frame...")
+                faces = app.get(frame)
 
-        if key == ord("s"):
-            print("Processing captured frame...")
-            faces = app.get(frame)
-
-            if len(faces) == 1:
-                embedding = faces[0].embedding.astype(np.float32)
-                collected_embeddings.append(embedding)
-                print(
-                    f"Sample {len(collected_embeddings)}/{SAMPLES_NEEDED} collected."
-                )
-            elif len(faces) == 0:
-                print("No face detected. Please try again.")
-            else:
-                print(
-                    "Multiple faces detected. "
-                    "Please ensure only one face is visible."
-                )
+                if len(faces) == 1:
+                    embedding = faces[0].embedding.astype(np.float32)
+                    collected_embeddings.append(embedding)
+                    print(f"Sample {len(collected_embeddings)}/{SAMPLES_NEEDED} collected.")
+                elif len(faces) == 0:
+                    print("No face detected. Please try again.")
+                else:
+                    print("Multiple faces detected. Please ensure only one face is visible.")
+    finally:
+        cap.stop()
+        cv2.destroyAllWindows()
 
     return collected_embeddings, enrollment_cancelled
 
@@ -135,14 +129,9 @@ def main():
 
     app = setup_model()
     cap = setup_camera()
-    if cap is None:
-        return
 
     print_instructions()
     collected_embeddings, enrollment_cancelled = collect_embeddings(app, cap)
-
-    cap.release()
-    cv2.destroyAllWindows()
 
     if enrollment_cancelled:
         return

@@ -1,4 +1,8 @@
-"""Local HTTP API: browser webcam frames -> InsightFace (same DB as enroll.py)."""
+"""Local HTTP API for browser-camera InsightFace development.
+
+Receives webcam frames, runs InsightFace, and stores embeddings in the same
+canonical SQLite database used by the Pi Device API.
+"""
 
 from __future__ import annotations
 
@@ -15,9 +19,10 @@ from .face_engine import (
     SAMPLES_NEEDED,
     analyze_frame,
     decode_image_bytes,
+    delete_embedding_for_name,
     extract_single_face_embedding,
     load_database,
-    save_database,
+    save_user_embedding,
 )
 
 _model: dict[str, FaceAnalysis] = {}
@@ -62,6 +67,16 @@ def face_status():
     db = load_database()
     names = list(db.keys())
     return {"enrolled": names, "count": len(names)}
+
+
+class FaceRemoveBody(BaseModel):
+    name: str
+
+
+@app.post("/api/face/remove")
+async def face_remove(body: FaceRemoveBody):
+    result = delete_embedding_for_name(body.name)
+    return result
 
 
 @app.post("/api/verify-frame")
@@ -148,9 +163,10 @@ def enroll_finish(body: EnrollSessionBody):
             status_code=400,
             detail=f"Need {SAMPLES_NEEDED} samples, have {len(embs)}",
         )
-    db = load_database()
-    db[s["name"]] = embs
-    save_database(db)
+    result = save_user_embedding(s["name"], embs)
+    if not result.get("ok"):
+        status_code = 503 if result.get("error") == "database unavailable" else 409
+        raise HTTPException(status_code=status_code, detail=result.get("error") or "Could not store embedding")
     return {"ok": True, "user": s["name"], "samples": len(embs)}
 
 
