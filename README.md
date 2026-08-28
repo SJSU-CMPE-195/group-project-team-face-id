@@ -448,7 +448,7 @@ Facial-recognition vehicle access using a Raspberry Pi and camera: real-time det
 
 **Implemented**
 
-- Physical door lock and ignition control via ESP32  
+- Physical door lock and ignition control via ESP32
 
 ### Prerequisites
 
