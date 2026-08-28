@@ -43,6 +43,7 @@ function normalizeScan(raw = {}, fallbackPurpose = "unlock") {
     sessionId: raw.session_id || raw.sessionId || null,
     state,
     purpose: raw.purpose || fallbackPurpose,
+    source: raw.source || "pi_camera",
     user: raw.user || raw.candidate_user || raw.candidateUser || null,
     score: raw.score ?? raw.best_score ?? null,
     faceCount: raw.face_count ?? raw.faceCount ?? null,
@@ -146,9 +147,15 @@ function PiCameraControl({
   isMockApi,
 }) {
   const pollTimerRef = useRef(null);
+  const sampleTimerRef = useRef(null);
   const scanSessionRef = useRef(null);
   const unlockOwnerRef = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const sampleInFlightRef = useRef(false);
   const [scan, setScan] = useState(null);
+  const [scanSource, setScanSource] = useState("client_camera");
   const [flowStage, setFlowStage] = useState("unlock_verify");
   const [promptCountdown, setPromptCountdown] = useState(null);
   const [unlockOwner, setUnlockOwner] = useState(null);
@@ -166,10 +173,12 @@ function PiCameraControl({
       : scan?.state === "cancelled"
       ? "Scan cancelled."
       : isScanning
-      ? scan.message || "Pi camera is scanning."
+      ? scan.message || (scan.source === "client_camera" ? "This device camera is scanning." : "Pi camera is scanning.")
       : mode === "device"
       ? isMockApi
         ? "Ready for Fake Pi scan."
+        : scanSource === "client_camera"
+        ? "Ready to send this device camera to the Pi for verification."
         : "Ready for Pi camera scan."
       : "Simulation mode will grant a mock scan.";
 
@@ -180,6 +189,39 @@ function PiCameraControl({
     }
   }, []);
 
+  const clearSampleLoop = useCallback(() => {
+    if (sampleTimerRef.current) {
+      clearInterval(sampleTimerRef.current);
+      sampleTimerRef.current = null;
+    }
+    sampleInFlightRef.current = false;
+  }, []);
+
+  const stopClientCamera = useCallback(() => {
+    clearSampleLoop();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }, [clearSampleLoop]);
+
+  const ensureClientCamera = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("This browser does not support camera capture. Open the app on localhost or HTTPS.");
+    }
+    if (!streamRef.current) {
+      streamRef.current = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false,
+      });
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      await videoRef.current.play();
+    }
+  }, []);
+
   const refreshQuietly = useCallback(() => {
     if (typeof onRefresh === "function") void onRefresh({ silent: true });
   }, [onRefresh]);
@@ -187,17 +229,20 @@ function PiCameraControl({
   const handleFinalScan = useCallback(
     (next) => {
       clearPoll();
+      clearSampleLoop();
       scanSessionRef.current = null;
+      const cameraLabel = next.source === "client_camera" ? "This device camera" : "Pi camera";
 
       if (next.state === "granted") {
         refreshQuietly();
         if (next.purpose === "ignition") {
-          popToast("ok", "Ignition start", isMockApi ? "Fake Pi verified the same driver." : "Pi camera verified the same driver.");
+          popToast("ok", "Ignition start", isMockApi ? "Fake Pi verified the same driver." : `${cameraLabel} was verified by the Pi.`);
+          stopClientCamera();
           setFlowStage("unlock_verify");
         } else {
           unlockOwnerRef.current = next.user || null;
           setUnlockOwner(next.user || null);
-          popToast("ok", "Device unlock", isMockApi ? "Fake Pi verified access." : "Pi camera verified access.");
+          popToast("ok", "Device unlock", isMockApi ? "Fake Pi verified access." : `${cameraLabel} was verified by the Pi.`);
           {
             const max = Math.max(0, Number(promptAutoLockSeconds) || 0);
             setPromptCountdown(max > 0 ? max : null);
@@ -208,17 +253,19 @@ function PiCameraControl({
       }
 
       if (next.state === "cancelled") {
-        popToast("info", "Scan cancelled", isMockApi ? "Fake Pi scan stopped." : "Pi camera scan stopped.");
+        stopClientCamera();
+        popToast("info", "Scan cancelled", isMockApi ? "Fake Pi scan stopped." : `${cameraLabel} scan stopped.`);
         setFlowStage("unlock_verify");
         return;
       }
 
       if (next.state === "denied" || next.state === "timeout" || next.state === "error") {
+        stopClientCamera();
         popToast("err", "Scan failed", next.message || (isMockApi ? "Fake Pi did not grant access." : "Pi camera did not grant access."));
         setFlowStage("unlock_verify");
       }
     },
-    [clearPoll, isMockApi, popToast, promptAutoLockSeconds, refreshQuietly],
+    [clearPoll, clearSampleLoop, isMockApi, popToast, promptAutoLockSeconds, refreshQuietly, stopClientCamera],
   );
 
   const applyScanUpdate = useCallback(
@@ -255,11 +302,22 @@ function PiCameraControl({
   const startScan = useCallback(
     async (purpose) => {
       clearPoll();
+      clearSampleLoop();
       const expectedUser = purpose === "ignition" ? unlockOwnerRef.current : null;
+      const source = isMockApi ? "pi_camera" : scanSource;
+      if (source === "client_camera") {
+        try {
+          await ensureClientCamera();
+        } catch (e) {
+          popToast("err", "Camera", e.message || "Camera permission denied.");
+          return;
+        }
+      }
       const starting = normalizeScan(
         {
           state: "starting",
           purpose,
+          source,
           message: purpose === "ignition" ? "Starting ignition verification." : "Starting unlock verification.",
         },
         purpose,
@@ -269,6 +327,7 @@ function PiCameraControl({
       try {
         const raw = await api.scanStart({
           purpose,
+          source,
           expectedUser,
           expected_user: expectedUser,
         });
@@ -280,18 +339,80 @@ function PiCameraControl({
           scanSessionRef.current = null;
         }
       } catch (e) {
-        const next = normalizeScan({ state: "error", purpose, message: e.message || "Could not start scan." }, purpose);
+        const next = normalizeScan({ state: "error", purpose, source, message: e.message || "Could not start scan." }, purpose);
         setScan(next);
         handleFinalScan(next);
       }
     },
-    [api, applyScanUpdate, clearPoll, handleFinalScan, pollScan],
+    [
+      api,
+      applyScanUpdate,
+      clearPoll,
+      clearSampleLoop,
+      ensureClientCamera,
+      handleFinalScan,
+      isMockApi,
+      pollScan,
+      popToast,
+      scanSource,
+    ],
   );
+
+  useEffect(() => {
+    clearSampleLoop();
+    const sessionId = scan?.sessionId;
+    if (!sessionId || scan?.source !== "client_camera" || scan?.state !== "scanning") return undefined;
+    let cancelled = false;
+
+    const uploadFrame = async () => {
+      if (cancelled || sampleInFlightRef.current) return;
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas || video.readyState < 2) return;
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      if (width < 2 || height < 2) return;
+
+      sampleInFlightRef.current = true;
+      try {
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(video, 0, 0, width, height);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
+        if (!blob || cancelled) return;
+        const raw = await api.scanSample(sessionId, blob);
+        if (!cancelled) applyScanUpdate(raw, scan.purpose || "unlock");
+      } catch (e) {
+        if (!cancelled) {
+          applyScanUpdate(
+            {
+              state: "error",
+              session_id: sessionId,
+              purpose: scan.purpose,
+              source: "client_camera",
+              message: e.message || "Could not upload camera frame to the Pi.",
+            },
+            scan.purpose || "unlock",
+          );
+        }
+      } finally {
+        if (!cancelled) sampleInFlightRef.current = false;
+      }
+    };
+
+    sampleTimerRef.current = setInterval(uploadFrame, 500);
+    void uploadFrame();
+    return () => {
+      cancelled = true;
+      clearSampleLoop();
+    };
+  }, [api, applyScanUpdate, clearSampleLoop, scan?.purpose, scan?.sessionId, scan?.source, scan?.state]);
 
   const cancelScan = useCallback(async () => {
     const sessionId = scanSessionRef.current || scan?.sessionId;
     clearPoll();
     if (!sessionId) {
+      stopClientCamera();
       setScan(normalizeScan({ state: "cancelled" }, scan?.purpose || "unlock"));
       return;
     }
@@ -303,18 +424,19 @@ function PiCameraControl({
       setScan(next);
       handleFinalScan(next);
     }
-  }, [api, applyScanUpdate, clearPoll, handleFinalScan, scan]);
+  }, [api, applyScanUpdate, clearPoll, handleFinalScan, scan, stopClientCamera]);
 
   const handleIgnitionPromptNo = useCallback(async () => {
     const ok = await doLock();
     if (ok) {
+      stopClientCamera();
       unlockOwnerRef.current = null;
       setUnlockOwner(null);
       setPromptCountdown(null);
       setFlowStage("unlock_verify");
       setScan(null);
     }
-  }, [doLock]);
+  }, [doLock, stopClientCamera]);
 
   const handleIgnitionPromptYes = useCallback(async () => {
     setFlowStage("ignition_verify");
@@ -326,16 +448,18 @@ function PiCameraControl({
     clearPoll();
     const ok = await doFullReset();
     if (ok) {
+      stopClientCamera();
       unlockOwnerRef.current = null;
       setUnlockOwner(null);
       setPromptCountdown(null);
       setFlowStage("unlock_verify");
       setScan(null);
     }
-  }, [clearPoll, doFullReset]);
+  }, [clearPoll, doFullReset, stopClientCamera]);
 
   useEffect(() => {
     if (locked) {
+      stopClientCamera();
       unlockOwnerRef.current = null;
       const timer = setTimeout(() => {
         setUnlockOwner(null);
@@ -344,9 +468,15 @@ function PiCameraControl({
       }, 0);
       return () => clearTimeout(timer);
     }
-  }, [locked]);
+  }, [locked, stopClientCamera]);
 
-  useEffect(() => () => clearPoll(), [clearPoll]);
+  useEffect(
+    () => () => {
+      clearPoll();
+      stopClientCamera();
+    },
+    [clearPoll, stopClientCamera],
+  );
 
   useEffect(() => {
     if (flowStage !== "prompt" || promptCountdown == null) return;
@@ -373,14 +503,52 @@ function PiCameraControl({
             <ScanFace className="h-5 w-5 text-violet-400" strokeWidth={1.75} />
           </div>
           <div className="mt-4 min-w-0 max-w-lg">
-            <div className="text-lg font-semibold tracking-tight text-slate-100">{isMockApi ? "Fake Pi scan" : "Pi camera scan"}</div>
+            <div className="text-lg font-semibold tracking-tight text-slate-100">
+              {isMockApi ? "Fake Pi scan" : scanSource === "client_camera" ? "This device camera" : "Pi camera scan"}
+            </div>
             <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
               {isMockApi
                 ? "The in-browser Fake Pi exercises scan sessions without a server."
-                : "Device API mode starts a scan on the Pi and waits for the Pi to return the result."}
+                : scanSource === "client_camera"
+                ? "This browser captures frames; the Pi verifies them and controls unlock and ignition."
+                : "The Pi captures and verifies frames with its attached camera."}
             </p>
           </div>
         </div>
+
+        {!isMockApi ? (
+          <div className="mx-auto mt-5 grid max-w-md grid-cols-2 gap-2 rounded-xl border border-white/[0.08] bg-black/20 p-1.5">
+            <Btn
+              variant={scanSource === "client_camera" ? "primary" : "secondary"}
+              disabled={busy || isScanning || flowStage === "prompt"}
+              onClick={() => {
+                stopClientCamera();
+                setScan(null);
+                setScanSource("client_camera");
+              }}
+            >
+              This device camera
+            </Btn>
+            <Btn
+              variant={scanSource === "pi_camera" ? "primary" : "secondary"}
+              disabled={busy || isScanning || flowStage === "prompt"}
+              onClick={() => {
+                stopClientCamera();
+                setScan(null);
+                setScanSource("pi_camera");
+              }}
+            >
+              Pi camera
+            </Btn>
+          </div>
+        ) : null}
+
+        {!isMockApi && scanSource === "client_camera" ? (
+          <div className="mx-auto mt-5 max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+            <video ref={videoRef} className="aspect-video w-full object-cover" playsInline muted />
+            <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
+          </div>
+        ) : null}
 
         <div className="mx-auto mt-5 max-w-2xl rounded-2xl border border-white/10 bg-dna-bg/70 px-4 py-4 text-center sm:mt-6 sm:px-5 sm:py-5">
           <div className="flex flex-wrap items-center justify-center gap-2">
@@ -419,7 +587,7 @@ function PiCameraControl({
             </Btn>
           ) : flowStage === "prompt" ? null : (
             <Btn disabled={busy} onClick={() => startScan("unlock")} className="w-full sm:w-auto">
-              {isMockApi ? "Start fake Pi scan" : "Start Pi face scan"}
+              {isMockApi ? "Start fake Pi scan" : scanSource === "client_camera" ? "Scan with this device" : "Start Pi face scan"}
             </Btn>
           )}
           <Btn variant="danger" disabled={busy} onClick={handleFullReset} className="w-full sm:w-auto">

@@ -80,14 +80,19 @@ export default function UsersTab({
   }, [api, mode, setDeviceUsers]);
 
   const refreshLocalFaces = useCallback(async () => {
-    if (!cleanApi) {
-      setLocalFaceNames([]);
-      return;
-    }
     try {
-      const r = await fetch(`${cleanApi}/api/face-status`, { cache: "no-store" });
-      if (!r.ok) return;
-      const j = await r.json();
+      let j;
+      if (mode === "device") {
+        j = await api.faceStatus();
+      } else {
+        if (!cleanApi) {
+          setLocalFaceNames([]);
+          return;
+        }
+        const r = await fetch(`${cleanApi}/api/face-status`, { cache: "no-store" });
+        if (!r.ok) return;
+        j = await r.json();
+      }
       const next = j.enrolled || [];
       setLocalFaceNames((prev) => {
         const a = [...prev].sort().join("\0");
@@ -98,7 +103,7 @@ export default function UsersTab({
     } catch {
       setLocalFaceNames([]);
     }
-  }, [cleanApi]);
+  }, [api, cleanApi, mode]);
 
   useEffect(() => {
     refreshLocalFaces();
@@ -251,8 +256,13 @@ export default function UsersTab({
   }, [popToast]);
 
   const cancelRemoteSession = async (sid) => {
-    if (!cleanApi || !sid) return;
+    if (!sid) return;
     try {
+      if (mode === "device") {
+        await api.piEnrollCancel(sid);
+        return;
+      }
+      if (!cleanApi) return;
       await fetch(`${cleanApi}/api/enroll/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -279,6 +289,7 @@ export default function UsersTab({
   };
 
   const postSample = async (sessionId, blob) => {
+    if (mode === "device") return api.piEnrollSample(sessionId, blob);
     const form = new FormData();
     form.append("session_id", sessionId);
     form.append("image", blob, "sample.jpg");
@@ -289,6 +300,13 @@ export default function UsersTab({
   };
 
   const finishEnrollWithId = async (sessionId) => {
+    if (mode === "device") {
+      const data = await api.piEnrollFinish(sessionId);
+      if (!data.ok || data.state !== "completed") throw new Error(data.message || "Pi could not save face enrollment");
+      popToast("ok", "Face enrolled", `${data.user} — ${data.count || SAMPLES_NEEDED} samples saved to Pi.`);
+      setFaceAccessAllowed((prev) => ({ ...prev, [data.user]: true }));
+      return data;
+    }
     const r = await fetch(`${cleanApi}/api/enroll/finish`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -408,7 +426,7 @@ export default function UsersTab({
       await runPiCameraEnroll(n);
       return;
     }
-    if (!cleanApi) return popToast("err", "Face API", "Set Face API URL under Control → Connection.");
+    if (mode !== "device" && !cleanApi) return popToast("err", "Face API", "Set Face API URL under Control → Connection.");
 
     cancelAutoRef.current = false;
     setEnrollingAuto(true);
@@ -433,13 +451,18 @@ export default function UsersTab({
 
     let sessionId;
     try {
-      const r = await fetch(`${cleanApi}/api/enroll/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: n }),
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : r.statusText);
+      let data;
+      if (mode === "device") {
+        data = await api.piEnrollStart({ name: n, source: "client_camera" });
+      } else {
+        const r = await fetch(`${cleanApi}/api/enroll/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: n }),
+        });
+        data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : r.statusText);
+      }
       sessionId = data.session_id;
       setEnrollSession(sessionId);
     } catch (e) {
@@ -528,8 +551,8 @@ export default function UsersTab({
 
   const onCancelEnroll = async () => {
     cancelAutoRef.current = true;
-    if (enrollSource === "pi_camera") {
-      const sessionId = piEnrollStatus?.session_id || piEnrollStatus?.sessionId;
+    if (enrollSource === "pi_camera" || mode === "device") {
+      const sessionId = piEnrollStatus?.session_id || piEnrollStatus?.sessionId || enrollSession;
       clearPiEnrollPoll();
       if (sessionId) {
         try {
@@ -540,7 +563,7 @@ export default function UsersTab({
       }
       await cleanupCreatedEnrollUser();
       resetEnrollUi();
-      popToast("info", "Cancelled", "Pi camera enrollment stopped.");
+      popToast("info", "Cancelled", `${enrollSource === "pi_camera" ? "Pi" : "Client"} camera enrollment stopped.`);
     }
   };
 
@@ -571,7 +594,7 @@ export default function UsersTab({
               {AUTO_CAPTURE_MS / 1000}s automatically.
             </div>
           </div>
-          <Badge>{localFaceNames.length} in local DB</Badge>
+          <Badge>{localFaceNames.length} in {mode === "device" ? "Pi DB" : "local DB"}</Badge>
         </div>
 
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
@@ -593,11 +616,13 @@ export default function UsersTab({
             onClick={() => setEnrollSource("phone_camera")}
           >
             <div className="font-medium">This device camera</div>
-            <div className="mt-1 text-xs text-slate-500">Uses the Face API upload flow.</div>
+            <div className="mt-1 text-xs text-slate-500">
+              {mode === "device" ? "Uploads frames to the Pi for enrollment." : "Uses the Face API upload flow."}
+            </div>
           </button>
         </div>
 
-        {enrollSource === "phone_camera" && !cleanApi ? (
+        {enrollSource === "phone_camera" && mode !== "device" && !cleanApi ? (
           <div className="mt-4 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-200/90">
             Set <span className="font-medium">Face API</span> under Control → Connection to use this device camera.
           </div>
@@ -609,7 +634,7 @@ export default function UsersTab({
             <Input id="display-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" disabled={enrollingAuto} />
           </div>
           <Btn
-            disabled={busy || enrollingAuto || (enrollSource === "phone_camera" && !cleanApi)}
+            disabled={busy || enrollingAuto || (enrollSource === "phone_camera" && mode !== "device" && !cleanApi)}
             onClick={runAddAndEnroll}
             className="shrink-0 sm:min-w-[11rem]"
           >
@@ -656,7 +681,7 @@ export default function UsersTab({
 
         {localFaceNames.length > 0 ? (
           <div className="mt-4 text-xs text-slate-500">
-            Local DB: <span className="text-slate-400">{localFaceNames.join(", ")}</span>
+            {mode === "device" ? "Pi DB" : "Local DB"}: <span className="text-slate-400">{localFaceNames.join(", ")}</span>
           </div>
         ) : null}
       </Card>

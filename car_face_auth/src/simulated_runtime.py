@@ -156,6 +156,12 @@ class _SimulatedFaceEngine:
             return None, frame["face_count"]
         return {"identity": frame["identity"], "sample": time.monotonic_ns()}, 1
 
+    def decode_image_bytes(self, data: bytes) -> dict[str, Any] | None:
+        if not data:
+            return None
+        with self.runtime._simulation_lock:
+            return deepcopy(self.runtime._scenario["frames"][0])
+
     def save_user_embedding(self, name: str, embeddings: list[Any]) -> dict[str, Any]:
         name = (name or "").strip()
         if not name:

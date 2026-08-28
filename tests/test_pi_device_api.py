@@ -7,6 +7,7 @@ dependencies.  Flask's in-process test client does not open a network socket.
 
 from __future__ import annotations
 
+import io
 import unittest
 from threading import Event
 import tempfile
@@ -43,6 +44,9 @@ class FakeDb:
 
     def get_all_users(self):
         return list(self.users)
+
+    def get_all_face_encodings(self):
+        return [user for user in self.users if user.get("has_template")]
 
     def set_unlock(self, reason="manual_ui"):
         self.lock_state = "unlocked"
@@ -117,6 +121,10 @@ class FakeFaceEngine:
     def extract_single_face_embedding(self, _model, _frame):
         sample = object()
         return sample, 1
+
+    @staticmethod
+    def decode_image_bytes(data):
+        return object() if data else None
 
     def save_user_embedding(self, name, embeddings):
         self.persisted = (name, list(embeddings))
@@ -248,6 +256,7 @@ class FakeRuntime:
         return self._new_session(
             "scan",
             purpose=purpose,
+            source="pi_camera",
             expected_user=expected_user,
             user=None,
             score=None,
@@ -256,6 +265,42 @@ class FakeRuntime:
             window={"matches": 0, "needed": 6, "size": 10},
             message="Pi camera scan starting.",
         )
+
+    def start_client_scan(self, purpose="unlock", expected_user=None):
+        purpose = (purpose or "unlock").strip().lower()
+        if purpose not in ("unlock", "ignition"):
+            raise RuntimeRequestError("purpose must be unlock or ignition", 400)
+        if purpose == "ignition" and not (expected_user or "").strip():
+            raise RuntimeRequestError("expected_user is required for ignition scans", 400)
+        return self._new_session(
+            "scan",
+            state="scanning",
+            purpose=purpose,
+            source="client_camera",
+            expected_user=expected_user,
+            user=None,
+            score=None,
+            face_count=0,
+            matches=0,
+            window={"matches": 0, "needed": 6, "size": 10},
+            message="Client camera scan is ready for frames.",
+        )
+
+    def add_client_scan_sample(self, session_id, image_bytes):
+        if not image_bytes:
+            raise RuntimeRequestError("image is required", 400)
+        session = self._session_status(session_id, "scan")
+        if session.get("source") != "client_camera":
+            raise RuntimeRequestError("session does not accept client camera frames", 409)
+        session["face_count"] = 1
+        session["matches"] = min(6, session.get("matches", 0) + 1)
+        session["user"] = "Ada"
+        session["window"] = {"matches": session["matches"], "needed": 6, "size": 10}
+        if session["matches"] >= 6:
+            session["state"] = "granted"
+            self.busy = False
+        self.sessions[session_id] = session
+        return dict(session)
 
     def scan_status(self, session_id):
         return self._session_status(session_id, "scan")
@@ -280,6 +325,41 @@ class FakeRuntime:
             source="pi_camera",
             message="Pi camera enrollment starting.",
         )
+
+    def start_client_enrollment(self, name):
+        name = (name or "").strip()
+        if not name:
+            raise RuntimeRequestError("name is required", 400)
+        return self._new_session(
+            "enroll",
+            user=name,
+            count=0,
+            samples_needed=10,
+            source="client_camera",
+            message="Client camera enrollment is ready for samples.",
+        )
+
+    def add_client_enrollment_sample(self, session_id, image_bytes):
+        if not image_bytes:
+            raise RuntimeRequestError("image is required", 400)
+        session = self._session_status(session_id, "enroll")
+        if session.get("source") != "client_camera":
+            raise RuntimeRequestError("session does not accept client camera samples", 409)
+        session["count"] = min(10, session.get("count", 0) + 1)
+        session["face_count"] = 1
+        self.sessions[session_id] = session
+        return dict(session)
+
+    def finish_client_enrollment(self, session_id):
+        session = self._session_status(session_id, "enroll")
+        if session.get("source") != "client_camera":
+            raise RuntimeRequestError("session does not accept client camera finish", 409)
+        if session.get("count", 0) < 10:
+            raise RuntimeRequestError(f"Need 10 samples, have {session.get('count', 0)}", 400)
+        session.update(state="completed", recognition_available=True)
+        self.sessions[session_id] = session
+        self.busy = False
+        return dict(session)
 
     def enrollment_status(self, session_id):
         return self._session_status(session_id, "enroll")
@@ -330,6 +410,50 @@ class PiDeviceApiTests(unittest.TestCase):
         self.assertEqual(cancelled.status_code, 200)
         self.assertEqual(self.json(cancelled)["state"], "cancelled")
 
+    def test_client_camera_scan_upload_contract(self):
+        started = self.client.post(
+            "/api/scan/start",
+            json={"purpose": "unlock", "source": "client_camera"},
+        )
+        self.assertEqual(started.status_code, 200)
+        session = self.json(started)
+        self.assertEqual(session["source"], "client_camera")
+        self.assertEqual(session["state"], "scanning")
+
+        for expected_matches in range(1, 7):
+            sample = self.client.post(
+                "/api/scan/sample",
+                data={
+                    "session_id": session["session_id"],
+                    "image": (io.BytesIO(b"jpeg"), "frame.jpg", "image/jpeg"),
+                },
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(sample.status_code, 200)
+            payload = self.json(sample)
+            self.assertEqual(payload["matches"], expected_matches)
+
+        self.assertEqual(payload["state"], "granted")
+        self.assertEqual(payload["user"], "Ada")
+
+    def test_client_camera_scan_upload_validation(self):
+        started = self.json(
+            self.client.post("/api/scan/start", json={"purpose": "unlock", "source": "client_camera"})
+        )
+        session_id = started["session_id"]
+
+        missing = self.client.post("/api/scan/sample", data={"session_id": session_id})
+        self.assertEqual(missing.status_code, 400)
+        wrong_type = self.client.post(
+            "/api/scan/sample",
+            data={"session_id": session_id, "image": (io.BytesIO(b"text"), "frame.txt", "text/plain")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(wrong_type.status_code, 415)
+
+        bad_source = self.client.post("/api/scan/start", json={"purpose": "unlock", "source": "door_camera"})
+        self.assertEqual(bad_source.status_code, 400)
+
     def test_scan_validation_busy_conflict_and_unknown_errors(self):
         bad_purpose = self.client.post("/api/scan/start", json={"purpose": "door"})
         self.assertEqual(bad_purpose.status_code, 400)
@@ -371,6 +495,51 @@ class PiDeviceApiTests(unittest.TestCase):
 
         unknown = self.client.post("/api/enroll/cancel", json={"session_id": "enroll_missing"})
         self.assertEqual(unknown.status_code, 404)
+
+    def test_client_camera_enrollment_upload_and_finish_contract(self):
+        started = self.client.post("/api/enroll/start", json={"name": "Ada", "source": "client_camera"})
+        self.assertEqual(started.status_code, 200)
+        session = self.json(started)
+        self.assertEqual(session["source"], "client_camera")
+        session_id = session["session_id"]
+
+        for expected_count in range(1, 11):
+            sample = self.client.post(
+                "/api/enroll/sample",
+                data={"session_id": session_id, "image": (io.BytesIO(b"jpeg"), "sample.jpg", "image/jpeg")},
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(sample.status_code, 200)
+            self.assertEqual(self.json(sample)["count"], expected_count)
+
+        finished = self.client.post("/api/enroll/finish", json={"session_id": session_id})
+        self.assertEqual(finished.status_code, 200)
+        self.assertEqual(self.json(finished)["state"], "completed")
+
+    def test_client_camera_upload_validation(self):
+        started = self.json(self.client.post("/api/enroll/start", json={"name": "Ada", "source": "client_camera"}))
+        session_id = started["session_id"]
+
+        missing = self.client.post("/api/enroll/sample", data={"session_id": session_id})
+        self.assertEqual(missing.status_code, 400)
+        wrong_type = self.client.post(
+            "/api/enroll/sample",
+            data={"session_id": session_id, "image": (io.BytesIO(b"text"), "sample.txt", "text/plain")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(wrong_type.status_code, 415)
+
+        incomplete = self.client.post("/api/enroll/finish", json={"session_id": session_id})
+        self.assertEqual(incomplete.status_code, 400)
+
+    def test_face_status_reports_only_users_with_templates(self):
+        self.db.users = [
+            {"id": "u1", "name": "Ada", "has_template": True},
+            {"id": "u2", "name": "Bob", "has_template": False},
+        ]
+        response = self.client.get("/api/face-status")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.json(response), {"enrolled": ["Ada"], "count": 1})
 
     def test_ignition_scan_requires_expected_driver(self):
         missing_driver = self.client.post("/api/scan/start", json={"purpose": "ignition"})
@@ -482,6 +651,33 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
         self.assertEqual(self.runtime.commands[:1], ["UNLOCK"])
         self.assertEqual(self.db.unlock_reasons, [f"scan:{session['session_id']}"])
 
+    def test_client_camera_unlock_and_same_driver_ignition_run_on_pi(self):
+        unlock_engine = FakeFaceEngine(["Ada"] * 6)
+        self.runtime._face_engine = unlock_engine
+        unlock = self.runtime.start_client_scan("unlock")
+        self.assertEqual(unlock["source"], "client_camera")
+
+        for _ in range(6):
+            unlock_result = self.runtime.add_client_scan_sample(unlock["session_id"], b"jpeg")
+
+        self.assertEqual(unlock_result["state"], "granted")
+        self.assertEqual(unlock_result["user"], "Ada")
+        self.assertEqual(self.runtime.commands, ["UNLOCK"])
+        self.assertIsNone(self.runtime._camera)
+        self.assertIsNone(self.runtime.status()["active_session"])
+
+        ignition_engine = FakeFaceEngine(["Ada"] * 6)
+        self.runtime._face_engine = ignition_engine
+        ignition = self.runtime.start_client_scan("ignition", expected_user="Ada")
+        for _ in range(6):
+            ignition_result = self.runtime.add_client_scan_sample(ignition["session_id"], b"jpeg")
+
+        self.assertEqual(ignition_result["state"], "granted")
+        self.assertEqual(ignition_result["user"], "Ada")
+        self.assertEqual(self.runtime.commands[-1], "START")
+        self.assertTrue(self.runtime.status()["ignitionOn"])
+        self.assertIsNone(self.runtime._camera)
+
     def test_ignition_grants_only_for_expected_user(self):
         _unlock_session, unlock_result = self.run_scan(FakeFaceEngine(["Ada"] * 6))
         self.assertEqual(unlock_result["state"], "granted")
@@ -529,6 +725,24 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
         self.assertIsNotNone(face_engine.persisted)
         self.assertEqual(face_engine.persisted[0], "Ada")
         self.assertEqual(len(face_engine.persisted[1]), 10)
+
+    def test_client_camera_enrollment_persists_on_pi_without_opening_camera(self):
+        face_engine = FakeFaceEngine([])
+        self.runtime._face_engine = face_engine
+        session = self.runtime.start_client_enrollment("Ada")
+        self.assertEqual(session["source"], "client_camera")
+
+        for expected_count in range(1, 11):
+            status = self.runtime.add_client_enrollment_sample(session["session_id"], b"jpeg")
+            self.assertEqual(status["count"], expected_count)
+
+        result = self.runtime.finish_client_enrollment(session["session_id"])
+        self.assertEqual(result["state"], "completed")
+        self.assertTrue(result["recognition_available"])
+        self.assertEqual(face_engine.persisted[0], "Ada")
+        self.assertEqual(len(face_engine.persisted[1]), 10)
+        self.assertIsNone(self.runtime._camera)
+        self.assertIsNone(self.runtime.status()["active_session"])
 
     def test_camera_ownership_rejects_conflict_and_cancel_releases_it(self):
         self.runtime.capture_gate = Event()
@@ -579,6 +793,18 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
             )
         self.assertEqual(final["state"], "cancelled")
         self.assertEqual(self.runtime.commands[-2:], ["STOP", "LOCK"])
+
+    def test_force_lock_releases_client_camera_scan_immediately(self):
+        scan = self.runtime.start_client_scan()
+        result = self.runtime.force_lock("client_scan_reset")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.runtime.scan_status(scan["session_id"])["state"], "cancelled")
+        self.assertIsNone(self.runtime.status()["active_session"])
+
+        next_scan = self.runtime.start_client_scan()
+        self.assertEqual(next_scan["state"], "scanning")
+        self.runtime.cancel_scan(next_scan["session_id"])
 
     def test_force_lock_reports_camera_teardown_timeout(self):
         self.runtime._camera = object()

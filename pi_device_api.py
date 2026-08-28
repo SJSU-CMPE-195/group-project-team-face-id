@@ -19,6 +19,9 @@ import db_api
 from car_face_auth.src.pi_runtime import PiRuntime, RuntimeRequestError
 
 
+MAX_CLIENT_IMAGE_BYTES = 8 * 1024 * 1024
+
+
 def create_app(db_module: Any = db_api, runtime: PiRuntime | None = None) -> Flask:
     """Build the API, with a small injection seam for off-Pi route tests."""
 
@@ -103,6 +106,15 @@ def create_app(db_module: Any = db_api, runtime: PiRuntime | None = None) -> Fla
     def api_users():
         return jsonify(db_module.list_users_for_ui())
 
+    @app.get("/api/face-status")
+    def api_face_status():
+        try:
+            rows = db_module.get_all_face_encodings()
+            names = sorted({str(row["name"]).strip() for row in rows if str(row["name"]).strip()})
+        except Exception as exc:
+            return json_error(f"face database unavailable: {exc}", 503)
+        return jsonify({"enrolled": names, "count": len(names)})
+
     @app.post("/api/users")
     def api_add_user():
         body = json_object()
@@ -162,14 +174,39 @@ def create_app(db_module: Any = db_api, runtime: PiRuntime | None = None) -> Fla
     @app.post("/api/scan/start")
     def api_scan_start():
         body = json_object()
+        source = str(body.get("source") or "pi_camera").strip().lower()
         try:
-            result = runtime_impl.start_scan(
-                purpose=body.get("purpose") or "unlock",
-                expected_user=body.get("expected_user") or body.get("expectedUser"),
-            )
+            scan_args = {
+                "purpose": body.get("purpose") or "unlock",
+                "expected_user": body.get("expected_user") or body.get("expectedUser"),
+            }
+            if source == "pi_camera":
+                result = runtime_impl.start_scan(**scan_args)
+            elif source in {"client_camera", "device_camera", "phone_camera"}:
+                result = runtime_impl.start_client_scan(**scan_args)
+            else:
+                raise RuntimeRequestError("source must be pi_camera or client_camera", 400)
         except RuntimeRequestError as exc:
             return runtime_error(exc)
         return jsonify(result)
+
+    @app.post("/api/scan/sample")
+    def api_scan_sample():
+        session_id = request.form.get("session_id") or request.form.get("sessionId")
+        if not session_id:
+            return json_error("session_id is required", 400)
+        image = request.files.get("image")
+        if image is None:
+            return json_error("image is required", 400)
+        if not (image.mimetype or "").lower().startswith("image/"):
+            return json_error("image must use an image content type", 415)
+        image_bytes = image.stream.read(MAX_CLIENT_IMAGE_BYTES + 1)
+        if len(image_bytes) > MAX_CLIENT_IMAGE_BYTES:
+            return json_error("image is too large", 413)
+        try:
+            return jsonify(runtime_impl.add_client_scan_sample(session_id, image_bytes))
+        except RuntimeRequestError as exc:
+            return runtime_error(exc)
 
     @app.get("/api/scan/status")
     def api_scan_status():
@@ -195,10 +232,47 @@ def create_app(db_module: Any = db_api, runtime: PiRuntime | None = None) -> Fla
     @app.post("/api/enroll/start")
     def api_enroll_start():
         body = json_object()
+        source = str(body.get("source") or "pi_camera").strip().lower()
         try:
-            return jsonify(runtime_impl.start_enrollment(body.get("name") or ""))
+            if source == "pi_camera":
+                result = runtime_impl.start_enrollment(body.get("name") or "")
+            elif source in {"client_camera", "device_camera", "phone_camera"}:
+                result = runtime_impl.start_client_enrollment(body.get("name") or "")
+            else:
+                raise RuntimeRequestError("source must be pi_camera or client_camera", 400)
+            return jsonify(result)
         except RuntimeRequestError as exc:
             return runtime_error(exc)
+
+    @app.post("/api/enroll/sample")
+    def api_enroll_sample():
+        session_id = request.form.get("session_id") or request.form.get("sessionId")
+        if not session_id:
+            return json_error("session_id is required", 400)
+        image = request.files.get("image")
+        if image is None:
+            return json_error("image is required", 400)
+        if not (image.mimetype or "").lower().startswith("image/"):
+            return json_error("image must use an image content type", 415)
+        image_bytes = image.stream.read(MAX_CLIENT_IMAGE_BYTES + 1)
+        if len(image_bytes) > MAX_CLIENT_IMAGE_BYTES:
+            return json_error("image is too large", 413)
+        try:
+            return jsonify(runtime_impl.add_client_enrollment_sample(session_id, image_bytes))
+        except RuntimeRequestError as exc:
+            return runtime_error(exc)
+
+    @app.post("/api/enroll/finish")
+    def api_enroll_finish():
+        body = json_object()
+        session_id = body.get("session_id") or body.get("sessionId")
+        if not session_id:
+            return json_error("session_id is required", 400)
+        try:
+            result = runtime_impl.finish_client_enrollment(session_id)
+        except RuntimeRequestError as exc:
+            return runtime_error(exc)
+        return jsonify(result), 200 if result.get("ok") else 503
 
     @app.get("/api/enroll/status")
     def api_enroll_status():

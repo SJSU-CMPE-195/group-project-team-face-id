@@ -19,6 +19,18 @@ async function fetchJson(url, opts = {}) {
   return data;
 }
 
+async function fetchFormJson(url, form) {
+  const res = await fetch(url, { method: "POST", body: form, cache: "no-store" });
+  const ct = res.headers.get("content-type") || "";
+  const data = ct.includes("application/json") ? await res.json().catch(() => null) : null;
+  if (!res.ok) {
+    const detail = data?.error || data?.detail;
+    throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status} ${res.statusText}`);
+  }
+  if (!ct.includes("application/json")) throw new Error(`Expected JSON response from ${url}`);
+  return data;
+}
+
 function isMockPiUrl(url) {
   return (url || "").trim().replace(/\/$/, "").toLocaleLowerCase() === "fake://pi";
 }
@@ -87,6 +99,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             return { ok: true };
           },
           users: async () => simRef.current.users,
+          faceStatus: async () => ({ enrolled: [], count: 0 }),
           addUser: async (name) => {
             const displayName = name.trim();
             const existing = simRef.current.users.find(
@@ -184,6 +197,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             window: { matches: 6, needed: 6, size: 10 },
           }),
           scanCancel: async (sessionId) => ({ ok: true, session_id: sessionId, state: "cancelled" }),
+          scanSample: async (sessionId) => ({ ok: true, session_id: sessionId, state: "scanning" }),
           piEnrollStart: async ({ name } = {}) => ({
             ok: true,
             session_id: genId("enroll"),
@@ -204,6 +218,23 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             recognition_available: false,
           }),
           piEnrollCancel: async (sessionId) => ({ ok: true, session_id: sessionId, state: "cancelled" }),
+          piEnrollSample: async (sessionId) => ({
+            ok: true,
+            session_id: sessionId,
+            state: "capturing",
+            count: 10,
+            samples_needed: 10,
+            source: "client_camera",
+          }),
+          piEnrollFinish: async (sessionId) => ({
+            ok: true,
+            session_id: sessionId,
+            state: "completed",
+            count: 10,
+            samples_needed: 10,
+            source: "client_camera",
+            recognition_available: false,
+          }),
         };
       }
       if (!clean) {
@@ -217,6 +248,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           ignitionStop: missingBaseUrl,
           fullReset: missingBaseUrl,
           users: missingBaseUrl,
+          faceStatus: missingBaseUrl,
           addUser: missingBaseUrl,
           delUser: missingBaseUrl,
           setAccess: missingBaseUrl,
@@ -227,9 +259,12 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           scanStart: missingBaseUrl,
           scanStatus: missingBaseUrl,
           scanCancel: missingBaseUrl,
+          scanSample: missingBaseUrl,
           piEnrollStart: missingBaseUrl,
           piEnrollStatus: missingBaseUrl,
           piEnrollCancel: missingBaseUrl,
+          piEnrollSample: missingBaseUrl,
+          piEnrollFinish: missingBaseUrl,
         };
       }
       return {
@@ -241,6 +276,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         ignitionStop: () => fetchJson(`${clean}/api/ignition/stop`, { method: "POST" }),
         fullReset: () => fetchJson(`${clean}/api/full-reset`, { method: "POST" }),
         users: () => fetchJson(`${clean}/api/users`),
+        faceStatus: () => fetchJson(`${clean}/api/face-status`),
         addUser: (name) =>
           fetchJson(`${clean}/api/users`, { method: "POST", body: JSON.stringify({ name }) }),
         delUser: (id) =>
@@ -259,12 +295,26 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           fetchJson(`${clean}/api/scan/status?session_id=${encodeURIComponent(sessionId)}`),
         scanCancel: (sessionId) =>
           fetchJson(`${clean}/api/scan/cancel`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
+        scanSample: (sessionId, blob) => {
+          const form = new FormData();
+          form.append("session_id", sessionId);
+          form.append("image", blob, "frame.jpg");
+          return fetchFormJson(`${clean}/api/scan/sample`, form);
+        },
         piEnrollStart: (payload = {}) =>
           fetchJson(`${clean}/api/enroll/start`, { method: "POST", body: JSON.stringify(payload) }),
         piEnrollStatus: (sessionId) =>
           fetchJson(`${clean}/api/enroll/status?session_id=${encodeURIComponent(sessionId)}`),
         piEnrollCancel: (sessionId) =>
           fetchJson(`${clean}/api/enroll/cancel`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
+        piEnrollSample: (sessionId, blob) => {
+          const form = new FormData();
+          form.append("session_id", sessionId);
+          form.append("image", blob, "sample.jpg");
+          return fetchFormJson(`${clean}/api/enroll/sample`, form);
+        },
+        piEnrollFinish: (sessionId) =>
+          fetchJson(`${clean}/api/enroll/finish`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
       };
     }
 
@@ -314,6 +364,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         return { ok: true };
       },
       users: async () => simRef.current.users,
+      faceStatus: async () => ({ enrolled: [], count: 0 }),
       addUser: async (name) => {
         const displayName = name.trim();
         const existing = simRef.current.users.find(
@@ -396,6 +447,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         window: { matches: 6, needed: 6, size: 10 },
       }),
       scanCancel: async (sessionId) => ({ ok: true, session_id: sessionId, state: "cancelled" }),
+      scanSample: async (sessionId) => ({ ok: true, session_id: sessionId, state: "scanning" }),
       piEnrollStart: async ({ name } = {}) => {
         const displayName = (name || "Demo Driver").trim();
         return {
@@ -419,6 +471,23 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         recognition_available: false,
       }),
       piEnrollCancel: async (sessionId) => ({ ok: true, session_id: sessionId, state: "cancelled" }),
+      piEnrollSample: async (sessionId) => ({
+        ok: true,
+        session_id: sessionId,
+        state: "capturing",
+        count: 10,
+        samples_needed: 10,
+        source: "client_camera",
+      }),
+      piEnrollFinish: async (sessionId) => ({
+        ok: true,
+        session_id: sessionId,
+        state: "completed",
+        count: 10,
+        samples_needed: 10,
+        source: "client_camera",
+        recognition_available: false,
+      }),
     };
   }, [mode, baseUrl, setSim]);
 }
