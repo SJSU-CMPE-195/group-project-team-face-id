@@ -1,46 +1,59 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { genId } from "../utils/helpers";
 
 async function fetchJson(url, opts = {}) {
   const res = await fetch(url, {
+    cache: "no-store",
     ...opts,
     headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   const ct = res.headers.get("content-type") || "";
+  const data = ct.includes("application/json") ? await res.json().catch(() => null) : null;
+  if (!res.ok) {
+    const detail = data?.error || data?.detail;
+    throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status} ${res.statusText}`);
+  }
   if (!ct.includes("application/json")) {
     throw new Error(`Expected JSON response from ${url}`);
   }
-  return res.json();
+  return data;
 }
 
 function isMockPiUrl(url) {
-  const raw = (url || "").trim();
-  if (!raw) return false;
-  try {
-    return new URL(raw).port === "5055";
-  } catch {
-    return /(^|:)5055(\/|$)/.test(raw);
-  }
+  return (url || "").trim().replace(/\/$/, "").toLocaleLowerCase() === "fake://pi";
 }
 
 export default function useApi(mode, baseUrl, sim, setSim) {
+  const simRef = useRef(sim);
+
+  useLayoutEffect(() => {
+    simRef.current = sim;
+  }, [sim]);
+
   return useMemo(() => {
+    const updateSim = (updater) => {
+      setSim((current) => {
+        const next = updater(current);
+        simRef.current = next;
+        return next;
+      });
+    };
+
     if (mode === "device") {
       const clean = (baseUrl || "").trim().replace(/\/$/, "");
       if (isMockPiUrl(clean)) {
         return {
           status: async () => ({
             online: true,
-            lockState: sim.locked ? "locked" : "unlocked",
-            ignitionOn: !!sim.ignitionOn,
-            deviceName: "FakePi-5055",
-            battery: sim.battery,
-            signal: sim.signal,
+            lockState: simRef.current.locked ? "locked" : "unlocked",
+            ignitionOn: !!simRef.current.ignitionOn,
+            deviceName: "FakePi-Browser",
+            battery: simRef.current.battery,
+            signal: simRef.current.signal,
             lastSeen: Date.now(),
           }),
           unlock: async () => {
-            setSim((s) => ({
+            updateSim((s) => ({
               ...s,
               locked: false,
               logs: [{ id: genId("log"), ts: Date.now(), type: "unlock", ok: true, detail: "fake_pi_manual" }, ...s.logs].slice(0, 80),
@@ -48,7 +61,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             return { ok: true };
           },
           lock: async () => {
-            setSim((s) => ({
+            updateSim((s) => ({
               ...s,
               locked: true,
               ignitionOn: false,
@@ -56,17 +69,8 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             }));
             return { ok: true };
           },
-          ignitionStart: async () => {
-            if (sim.locked) throw new Error("device is locked");
-            setSim((s) => ({
-              ...s,
-              ignitionOn: true,
-              logs: [{ id: genId("log"), ts: Date.now(), type: "ignition", ok: true, detail: "fake_start" }, ...s.logs].slice(0, 80),
-            }));
-            return { ok: true };
-          },
           ignitionStop: async () => {
-            setSim((s) => ({
+            updateSim((s) => ({
               ...s,
               ignitionOn: false,
               logs: [{ id: genId("log"), ts: Date.now(), type: "ignition", ok: true, detail: "fake_stop" }, ...s.logs].slice(0, 80),
@@ -74,7 +78,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             return { ok: true };
           },
           fullReset: async () => {
-            setSim((s) => ({
+            updateSim((s) => ({
               ...s,
               locked: true,
               ignitionOn: false,
@@ -82,12 +86,15 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             }));
             return { ok: true };
           },
-          users: async () => sim.users,
+          users: async () => simRef.current.users,
           addUser: async (name) => {
-            const existing = sim.users.find((u) => u.name === name);
-            if (existing) return existing;
-            const u = { id: genId("u"), name, createdAt: Date.now(), faceAccess: true };
-            setSim((s) => ({
+            const displayName = name.trim();
+            const existing = simRef.current.users.find(
+              (u) => u.name.trim().toLocaleLowerCase() === displayName.toLocaleLowerCase(),
+            );
+            if (existing) throw new Error("active user with that name already exists");
+            const u = { id: genId("u"), name: displayName, createdAt: Date.now(), faceAccess: true };
+            updateSim((s) => ({
               ...s,
               users: [u, ...s.users],
               logs: [{ id: genId("log"), ts: Date.now(), type: "enroll", ok: true, detail: `Fake Pi added ${name}` }, ...s.logs].slice(0, 80),
@@ -95,7 +102,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             return u;
           },
           delUser: async (id) => {
-            setSim((s) => {
+            updateSim((s) => {
               const removed = s.users.find((u) => u.id === id);
               return {
                 ...s,
@@ -109,19 +116,18 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             return { ok: true };
           },
           setAccess: async (id, allowed) => {
-            setSim((s) => ({
+            updateSim((s) => ({
               ...s,
               users: s.users.map((u) => (u.id === id ? { ...u, faceAccess: allowed } : u)),
               logs: [{ id: genId("log"), ts: Date.now(), type: "access_change", ok: true, detail: `${allowed ? "allowed" : "blocked"}:${id}` }, ...s.logs].slice(0, 80),
             }));
             return { ok: true };
           },
-          setEmbedding: async () => ({ ok: true }),
-          logs: async () => sim.logs,
+          logs: async () => simRef.current.logs,
           verifyLog: async () => ({ ok: true }),
-          getSettings: async () => sim.settings,
+          getSettings: async () => simRef.current.settings,
           saveSettings: async (next) => {
-            setSim((s) => ({
+            updateSim((s) => ({
               ...s,
               settings: { ...s.settings, ...next },
               logs: [{ id: genId("log"), ts: Date.now(), type: "settings", ok: true, detail: "Fake Pi settings updated" }, ...s.logs].slice(0, 80),
@@ -129,9 +135,9 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             return { ok: true };
           },
           scanStart: async ({ purpose = "unlock", expectedUser = null } = {}) => {
-            const user = expectedUser || sim.users[0]?.name || "Demo Driver";
+            const user = expectedUser || simRef.current.users[0]?.name || "Demo Driver";
             if (purpose === "ignition") {
-              if (sim.locked) {
+              if (simRef.current.locked) {
                 return {
                   ok: false,
                   session_id: genId("scan"),
@@ -144,13 +150,13 @@ export default function useApi(mode, baseUrl, sim, setSim) {
                   window: { matches: 0, needed: 6, size: 10 },
                 };
               }
-              setSim((s) => ({
+              updateSim((s) => ({
                 ...s,
                 ignitionOn: true,
                 logs: [{ id: genId("log"), ts: Date.now(), type: "face_scan", ok: true, detail: `Fake ignition granted for ${user}` }, ...s.logs].slice(0, 80),
               }));
             } else {
-              setSim((s) => ({
+              updateSim((s) => ({
                 ...s,
                 locked: false,
                 logs: [{ id: genId("log"), ts: Date.now(), type: "face_scan", ok: true, detail: `Fake unlock granted for ${user}` }, ...s.logs].slice(0, 80),
@@ -172,7 +178,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             ok: true,
             session_id: sessionId,
             state: "granted",
-            user: sim.users[0]?.name || "Demo Driver",
+            user: simRef.current.users[0]?.name || "Demo Driver",
             score: 0.82,
             face_count: 1,
             window: { matches: 6, needed: 6, size: 10 },
@@ -186,6 +192,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             count: 10,
             samples_needed: 10,
             source: "pi_camera",
+            recognition_available: false,
           }),
           piEnrollStatus: async (sessionId) => ({
             ok: true,
@@ -194,6 +201,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
             count: 10,
             samples_needed: 10,
             source: "pi_camera",
+            recognition_available: false,
           }),
           piEnrollCancel: async (sessionId) => ({ ok: true, session_id: sessionId, state: "cancelled" }),
         };
@@ -206,18 +214,22 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           status: missingBaseUrl,
           unlock: missingBaseUrl,
           lock: missingBaseUrl,
-          ignitionStart: missingBaseUrl,
           ignitionStop: missingBaseUrl,
           fullReset: missingBaseUrl,
           users: missingBaseUrl,
           addUser: missingBaseUrl,
           delUser: missingBaseUrl,
           setAccess: missingBaseUrl,
-          setEmbedding: missingBaseUrl,
           logs: missingBaseUrl,
           verifyLog: missingBaseUrl,
           getSettings: missingBaseUrl,
           saveSettings: missingBaseUrl,
+          scanStart: missingBaseUrl,
+          scanStatus: missingBaseUrl,
+          scanCancel: missingBaseUrl,
+          piEnrollStart: missingBaseUrl,
+          piEnrollStatus: missingBaseUrl,
+          piEnrollCancel: missingBaseUrl,
         };
       }
       return {
@@ -226,7 +238,6 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           fetchJson(`${clean}/api/unlock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
         lock: () =>
           fetchJson(`${clean}/api/lock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
-        ignitionStart: () => fetchJson(`${clean}/api/ignition/start`, { method: "POST" }),
         ignitionStop: () => fetchJson(`${clean}/api/ignition/stop`, { method: "POST" }),
         fullReset: () => fetchJson(`${clean}/api/full-reset`, { method: "POST" }),
         users: () => fetchJson(`${clean}/api/users`),
@@ -236,8 +247,6 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           fetchJson(`${clean}/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
         setAccess: (id, allowed) =>
           fetchJson(`${clean}/api/users/${encodeURIComponent(id)}/access`, { method: "PATCH", body: JSON.stringify({ allowed }) }),
-        setEmbedding: (id, blob) =>
-          fetchJson(`${clean}/api/users/${encodeURIComponent(id)}/embedding`, { method: "PATCH", body: JSON.stringify({ blob }) }),
         logs: () => fetchJson(`${clean}/api/logs`),
         verifyLog: (result, detail, user_id) =>
           fetchJson(`${clean}/api/verify-log`, { method: "POST", body: JSON.stringify({ result, detail, user_id }) }),
@@ -263,15 +272,15 @@ export default function useApi(mode, baseUrl, sim, setSim) {
     return {
       status: async () => ({
         online: true,
-        lockState: sim.locked ? "locked" : "unlocked",
-        ignitionOn: !!sim.ignitionOn,
-        deviceName: sim.deviceName,
-        battery: sim.battery,
-        signal: sim.signal,
+        lockState: simRef.current.locked ? "locked" : "unlocked",
+        ignitionOn: !!simRef.current.ignitionOn,
+        deviceName: simRef.current.deviceName,
+        battery: simRef.current.battery,
+        signal: simRef.current.signal,
         lastSeen: Date.now(),
       }),
       unlock: async () => {
-        setSim((s) => ({
+        updateSim((s) => ({
           ...s,
           locked: false,
           logs: [{ id: genId("log"), ts: Date.now(), type: "unlock", ok: true, detail: "manual_ui" }, ...s.logs].slice(0, 80),
@@ -279,7 +288,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         return { ok: true };
       },
       lock: async () => {
-        setSim((s) => ({
+        updateSim((s) => ({
           ...s,
           locked: true,
           ignitionOn: false,
@@ -287,16 +296,8 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         }));
         return { ok: true };
       },
-      ignitionStart: async () => {
-        setSim((s) => ({
-          ...s,
-          ignitionOn: true,
-          logs: [{ id: genId("log"), ts: Date.now(), type: "ignition", ok: true, detail: "start" }, ...s.logs].slice(0, 80),
-        }));
-        return { ok: true };
-      },
       ignitionStop: async () => {
-        setSim((s) => ({
+        updateSim((s) => ({
           ...s,
           ignitionOn: false,
           logs: [{ id: genId("log"), ts: Date.now(), type: "ignition", ok: true, detail: "stop" }, ...s.logs].slice(0, 80),
@@ -304,7 +305,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         return { ok: true };
       },
       fullReset: async () => {
-        setSim((s) => ({
+        updateSim((s) => ({
           ...s,
           locked: true,
           ignitionOn: false,
@@ -312,10 +313,15 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         }));
         return { ok: true };
       },
-      users: async () => sim.users,
+      users: async () => simRef.current.users,
       addUser: async (name) => {
-        const u = { id: genId("u"), name, createdAt: Date.now() };
-        setSim((s) => ({
+        const displayName = name.trim();
+        const existing = simRef.current.users.find(
+          (u) => u.name.trim().toLocaleLowerCase() === displayName.toLocaleLowerCase(),
+        );
+        if (existing) throw new Error("active user with that name already exists");
+        const u = { id: genId("u"), name: displayName, createdAt: Date.now(), faceAccess: true };
+        updateSim((s) => ({
           ...s,
           users: [u, ...s.users],
           logs: [{ id: genId("log"), ts: Date.now(), type: "enroll", ok: true, detail: `Added ${name}` }, ...s.logs].slice(0, 80),
@@ -323,7 +329,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         return u;
       },
       delUser: async (id) => {
-        setSim((s) => {
+        updateSim((s) => {
           const removed = s.users.find((x) => x.id === id);
           const label = removed?.name?.trim() || id;
           return {
@@ -335,19 +341,18 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         return { ok: true };
       },
       setAccess: async (id, allowed) => {
-        setSim((s) => ({
+        updateSim((s) => ({
           ...s,
           users: s.users.map((u) => u.id === id ? { ...u, faceAccess: allowed } : u),
           logs: [{ id: genId("log"), ts: Date.now(), type: "access_change", ok: true, detail: `${allowed ? "granted" : "revoked"} for ${id}` }, ...s.logs].slice(0, 80),
         }));
         return { ok: true };
       },
-      setEmbedding: async () => ({ ok: true }),
       verifyLog: async () => ({ ok: true }),
-      logs: async () => sim.logs,
-      getSettings: async () => sim.settings,
+      logs: async () => simRef.current.logs,
+      getSettings: async () => simRef.current.settings,
       saveSettings: async (next) => {
-        setSim((s) => ({
+        updateSim((s) => ({
           ...s,
           settings: { ...s.settings, ...next },
           logs: [{ id: genId("log"), ts: Date.now(), type: "settings", ok: true, detail: "Updated settings" }, ...s.logs].slice(0, 80),
@@ -355,15 +360,15 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         return { ok: true };
       },
       scanStart: async ({ purpose = "unlock", expectedUser = null } = {}) => {
-        const user = expectedUser || sim.users[0]?.name || "Demo Driver";
+        const user = expectedUser || simRef.current.users[0]?.name || "Demo Driver";
         if (purpose === "ignition") {
-          setSim((s) => ({
+          updateSim((s) => ({
             ...s,
             ignitionOn: true,
             logs: [{ id: genId("log"), ts: Date.now(), type: "face_scan", ok: true, detail: `Ignition granted for ${user}` }, ...s.logs].slice(0, 80),
           }));
         } else {
-          setSim((s) => ({
+          updateSim((s) => ({
             ...s,
             locked: false,
             logs: [{ id: genId("log"), ts: Date.now(), type: "face_scan", ok: true, detail: `Unlock granted for ${user}` }, ...s.logs].slice(0, 80),
@@ -385,7 +390,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         ok: true,
         session_id: sessionId,
         state: "granted",
-        user: sim.users[0]?.name || "Demo Driver",
+        user: simRef.current.users[0]?.name || "Demo Driver",
         score: 0.82,
         face_count: 1,
         window: { matches: 6, needed: 6, size: 10 },
@@ -401,6 +406,7 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           count: 10,
           samples_needed: 10,
           source: "pi_camera",
+          recognition_available: false,
         };
       },
       piEnrollStatus: async (sessionId) => ({
@@ -410,8 +416,9 @@ export default function useApi(mode, baseUrl, sim, setSim) {
         count: 10,
         samples_needed: 10,
         source: "pi_camera",
+        recognition_available: false,
       }),
       piEnrollCancel: async (sessionId) => ({ ok: true, session_id: sessionId, state: "cancelled" }),
     };
-  }, [mode, baseUrl, sim, setSim]);
+  }, [mode, baseUrl, setSim]);
 }

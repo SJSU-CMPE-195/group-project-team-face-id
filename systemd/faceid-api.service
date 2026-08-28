@@ -1,16 +1,18 @@
 [Unit]
 Description=FaceID Device API (Flask)
-After=network.target
-Wants=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/faceid/group-project-team-face-id-main
-Environment=FACEID_DB_PATH=/home/pi/faceid/faceid.db
+WorkingDirectory="/home/pi/faceid/group-project-team-face-id-main"
+EnvironmentFile=-/etc/default/faceid
+Environment="FACEID_DB_PATH=/home/pi/faceid/faceid.db"
 Environment=PORT=5000
-ExecStartPre=/usr/bin/python3 /home/pi/faceid/group-project-team-face-id-main/db.py
-ExecStart=/usr/bin/python3 /home/pi/faceid/group-project-team-face-id-main/pi_device_api.py
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre="/home/pi/faceid/group-project-team-face-id-main/.venv/bin/python" "/home/pi/faceid/group-project-team-face-id-main/db.py"
+ExecStart="/home/pi/faceid/group-project-team-face-id-main/.venv/bin/python" "/home/pi/faceid/group-project-team-face-id-main/pi_device_api.py"
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

@@ -14,7 +14,7 @@ export default function Toast({ toast }) {
   const msgClass = toast.type === "err" ? "text-rose-200/90" : "text-slate-400";
 
   return (
-    <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 px-4">
+    <div className="app-toast fixed left-1/2 z-50 -translate-x-1/2 px-4">
       <div className={`rounded-xl bg-dna-surface px-4 py-3 shadow-panel backdrop-blur-md ${ringClass}`}>
         <div className={`text-sm font-semibold ${titleClass}`}>{toast.title}</div>
         {toast.msg ? <div className={`mt-1 text-xs ${msgClass}`}>{toast.msg}</div> : null}

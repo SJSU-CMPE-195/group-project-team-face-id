@@ -19,13 +19,13 @@ export default function StatusPanel({ locked, busy, doUnlock, doLock, mode, sim,
               ? "Use Face scan above for automatic unlock when verified. Manual Unlock sends a command to your Pi in Device mode."
               : "Use Lock to return the device to a secure starting state before your next face-unlock test."}
           </p>
-          <div className="mt-5 flex justify-center">
+          <div className="mt-5 flex w-full justify-center sm:w-auto">
             {locked ? (
-              <Btn disabled={busy} onClick={() => doUnlock()}>
+              <Btn disabled={busy} onClick={() => doUnlock()} className="w-full sm:w-auto">
                 Unlock
               </Btn>
             ) : (
-              <Btn variant="secondary" disabled={busy} onClick={() => doLock()}>
+              <Btn variant="secondary" disabled={busy} onClick={() => doLock()} className="w-full sm:w-auto">
                 Lock
               </Btn>
             )}

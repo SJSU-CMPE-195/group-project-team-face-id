@@ -56,6 +56,7 @@ export default function UsersTab({
   const enrollStreamRef = useRef(null);
   const cancelAutoRef = useRef(false);
   const piEnrollPollRef = useRef(null);
+  const createdEnrollUserRef = useRef(null);
   /** Previous Face API name list — only sync *new* names into sim (avoids re-adding after Remove when fetch returns same set with a new array ref). */
   const prevFaceNamesRef = useRef(null);
 
@@ -66,13 +67,25 @@ export default function UsersTab({
     }
   }, []);
 
+  const cleanupCreatedEnrollUser = useCallback(async () => {
+    const createdUser = createdEnrollUserRef.current;
+    if (!createdUser?.id) return;
+    try {
+      await api.delUser(createdUser.id);
+      createdEnrollUserRef.current = null;
+      if (mode === "device") setDeviceUsers(await api.users());
+    } catch {
+      /* The original enrollment error remains the actionable message. */
+    }
+  }, [api, mode, setDeviceUsers]);
+
   const refreshLocalFaces = useCallback(async () => {
     if (!cleanApi) {
       setLocalFaceNames([]);
       return;
     }
     try {
-      const r = await fetch(`${cleanApi}/api/face-status`);
+      const r = await fetch(`${cleanApi}/api/face-status`, { cache: "no-store" });
       if (!r.ok) return;
       const j = await r.json();
       const next = j.enrolled || [];
@@ -300,13 +313,20 @@ export default function UsersTab({
     clearPiEnrollPoll();
     const state = status?.state || "error";
     if (state === "completed") {
-      popToast("ok", "Face enrolled", `${displayName} enrolled from Pi camera.`);
+      createdEnrollUserRef.current = null;
+      if (status?.recognition_available === false) {
+        popToast("info", "Enrollment simulated", `${displayName} was added, but this fake does not store a recognition template.`);
+      } else {
+        popToast("ok", "Face enrolled", `${displayName} enrolled from Pi camera.`);
+      }
       setFaceAccessAllowed((prev) => ({ ...prev, [displayName]: true }));
       setName("");
       await refreshLocalFaces();
     } else if (state === "cancelled") {
+      await cleanupCreatedEnrollUser();
       popToast("info", "Cancelled", "Pi camera enrollment stopped.");
     } else {
+      await cleanupCreatedEnrollUser();
       popToast("err", "Enrollment failed", status?.message || "Pi camera enrollment did not complete.");
     }
     resetEnrollUi();
@@ -324,7 +344,7 @@ export default function UsersTab({
     setPiEnrollStatus({ state: "starting", count: 0, samples_needed: SAMPLES_NEEDED, source: "pi_camera" });
 
     try {
-      await addUserToDirectory(displayName);
+      createdEnrollUserRef.current = await addUserToDirectory(displayName);
     } catch (e) {
       popToast("err", "Add user failed", e.message);
       resetEnrollUi();
@@ -349,6 +369,7 @@ export default function UsersTab({
         return;
       }
     } catch (e) {
+      await cleanupCreatedEnrollUser();
       popToast("err", "Enrollment start failed", e.message);
       resetEnrollUi();
       return;
@@ -394,7 +415,7 @@ export default function UsersTab({
     setEnrollCount(0);
 
     try {
-      await addUserToDirectory(n);
+      createdEnrollUserRef.current = await addUserToDirectory(n);
     } catch (e) {
       popToast("err", "Add user failed", e.message);
       setEnrollingAuto(false);
@@ -402,6 +423,7 @@ export default function UsersTab({
     }
 
     if (cancelAutoRef.current) {
+      await cleanupCreatedEnrollUser();
       setEnrollingAuto(false);
       popToast("info", "Cancelled", "Enrollment stopped.");
       return;
@@ -421,6 +443,7 @@ export default function UsersTab({
       sessionId = data.session_id;
       setEnrollSession(sessionId);
     } catch (e) {
+      await cleanupCreatedEnrollUser();
       popToast("err", "Enrollment start failed", e.message);
       setEnrollingAuto(false);
       return;
@@ -428,6 +451,7 @@ export default function UsersTab({
 
     if (cancelAutoRef.current) {
       await cancelRemoteSession(sessionId);
+      await cleanupCreatedEnrollUser();
       resetEnrollUi();
       popToast("info", "Cancelled", "Enrollment stopped.");
       return;
@@ -436,6 +460,7 @@ export default function UsersTab({
     const camOk = await startEnrollCamera();
     if (!camOk) {
       await cancelRemoteSession(sessionId);
+      await cleanupCreatedEnrollUser();
       resetEnrollUi();
       return;
     }
@@ -462,12 +487,14 @@ export default function UsersTab({
     } catch (e) {
       popToast("err", "Capture failed", e.message);
       await cancelRemoteSession(sessionId);
+      await cleanupCreatedEnrollUser();
       resetEnrollUi();
       return;
     }
 
     if (cancelAutoRef.current) {
       await cancelRemoteSession(sessionId);
+      await cleanupCreatedEnrollUser();
       resetEnrollUi();
       popToast("info", "Cancelled", "Enrollment stopped.");
       return;
@@ -480,15 +507,19 @@ export default function UsersTab({
         `Got ${count}/${SAMPLES_NEEDED} valid samples. Keep one face in frame and try again.`,
       );
       await cancelRemoteSession(sessionId);
+      await cleanupCreatedEnrollUser();
       resetEnrollUi();
       return;
     }
 
     try {
       await finishEnrollWithId(sessionId);
+      createdEnrollUserRef.current = null;
       setName("");
       await refreshLocalFaces();
     } catch (e) {
+      await cancelRemoteSession(sessionId);
+      await cleanupCreatedEnrollUser();
       popToast("err", "Finish failed", e.message);
     } finally {
       resetEnrollUi();
@@ -507,6 +538,7 @@ export default function UsersTab({
           /* ignore cancel failures */
         }
       }
+      await cleanupCreatedEnrollUser();
       resetEnrollUi();
       popToast("info", "Cancelled", "Pi camera enrollment stopped.");
     }

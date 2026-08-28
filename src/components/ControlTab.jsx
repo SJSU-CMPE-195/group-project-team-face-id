@@ -73,13 +73,7 @@ function scanLabel(state) {
 }
 
 function isMockPiUrl(baseUrl) {
-  const raw = (baseUrl || "").trim();
-  if (!raw) return false;
-  try {
-    return new URL(raw).port === "5055";
-  } catch {
-    return /(^|:)5055(\/|$)/.test(raw);
-  }
+  return (baseUrl || "").trim().replace(/\/$/, "").toLocaleLowerCase() === "fake://pi";
 }
 
 export default function ControlTab({
@@ -93,16 +87,16 @@ export default function ControlTab({
   promptAutoLockSeconds = 0,
   doUnlock,
   doLock,
-  doIgnitionStart,
   doIgnitionStop,
   doFullReset,
   popToast,
   busy,
   onRefresh,
 }) {
-  const useMockPiScan = mode === "device" && isMockPiUrl(baseUrl);
+  const usePiScan = mode === "device";
+  const isMockApi = usePiScan && isMockPiUrl(baseUrl);
 
-  if (!useMockPiScan) {
+  if (!usePiScan) {
     return (
       <LocalCameraControl
         mode={mode}
@@ -111,7 +105,6 @@ export default function ControlTab({
         locked={locked}
         ignitionOn={ignitionOn}
         doUnlock={doUnlock}
-        doIgnitionStart={doIgnitionStart}
         doIgnitionStop={doIgnitionStop}
         doFullReset={doFullReset}
         popToast={popToast}
@@ -133,7 +126,7 @@ export default function ControlTab({
       popToast={popToast}
       busy={busy}
       onRefresh={onRefresh}
-      isMockApi={useMockPiScan}
+      isMockApi={isMockApi}
     />
   );
 }
@@ -374,7 +367,7 @@ function PiCameraControl({
 
   return (
     <div className="w-full pt-1">
-      <Card contentClassName="p-5 sm:p-6">
+      <Card contentClassName="p-4 sm:p-6">
         <div className="flex flex-col items-center text-center">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10">
             <ScanFace className="h-5 w-5 text-violet-400" strokeWidth={1.75} />
@@ -383,13 +376,13 @@ function PiCameraControl({
             <div className="text-lg font-semibold tracking-tight text-slate-100">{isMockApi ? "Fake Pi scan" : "Pi camera scan"}</div>
             <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
               {isMockApi
-                ? "Port 5055 uses the local Fake Pi API for scan-session testing."
+                ? "The in-browser Fake Pi exercises scan sessions without a server."
                 : "Device API mode starts a scan on the Pi and waits for the Pi to return the result."}
             </p>
           </div>
         </div>
 
-        <div className="mx-auto mt-6 max-w-2xl rounded-2xl border border-white/10 bg-dna-bg/70 px-5 py-5 text-center">
+        <div className="mx-auto mt-5 max-w-2xl rounded-2xl border border-white/10 bg-dna-bg/70 px-4 py-4 text-center sm:mt-6 sm:px-5 sm:py-5">
           <div className="flex flex-wrap items-center justify-center gap-2">
             <Badge variant={scanBadge(scan?.state || "idle")}>{scan ? scanLabel(scan.state) : "Ready"}</Badge>
             <Badge variant={locked ? "warn" : "ok"}>{locked ? "Locked" : "Unlocked"}</Badge>
@@ -419,21 +412,21 @@ function PiCameraControl({
           ) : null}
         </div>
 
-        <div className="mt-4 flex flex-wrap justify-center gap-2">
+        <div className="mt-4 grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:justify-center">
           {isScanning ? (
-            <Btn variant="secondary" disabled={busy} onClick={cancelScan}>
+            <Btn variant="secondary" disabled={busy} onClick={cancelScan} className="w-full sm:w-auto">
               Cancel scan
             </Btn>
           ) : flowStage === "prompt" ? null : (
-            <Btn disabled={busy} onClick={() => startScan("unlock")}>
+            <Btn disabled={busy} onClick={() => startScan("unlock")} className="w-full sm:w-auto">
               {isMockApi ? "Start fake Pi scan" : "Start Pi face scan"}
             </Btn>
           )}
-          <Btn variant="danger" disabled={busy} onClick={handleFullReset}>
+          <Btn variant="danger" disabled={busy} onClick={handleFullReset} className="w-full sm:w-auto">
             FULL RESET
           </Btn>
           {ignitionOn ? (
-            <Btn variant="secondary" disabled={busy} onClick={doIgnitionStop}>
+            <Btn variant="secondary" disabled={busy} onClick={doIgnitionStop} className="w-full sm:w-auto">
               Stop ignition
             </Btn>
           ) : null}
@@ -549,7 +542,7 @@ function LocalCameraControl({
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${cleanApi}/api/face-status`);
+        const res = await fetch(`${cleanApi}/api/face-status`, { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (cancelled) return;
@@ -644,7 +637,7 @@ function LocalCameraControl({
 
   return (
     <div className="w-full pt-1">
-      <Card contentClassName="p-5 sm:p-6">
+      <Card contentClassName="p-4 sm:p-6">
         <div className="flex flex-col items-center text-center">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-violet-500/25 bg-violet-500/10">
             <ScanFace className="h-5 w-5 text-violet-400" strokeWidth={1.75} />
@@ -653,8 +646,8 @@ function LocalCameraControl({
             <div className="text-lg font-semibold tracking-tight text-slate-100">Local camera scan</div>
             <p className="mt-1.5 text-sm leading-relaxed text-slate-400">
               {mode === "device"
-                ? "Device API mode uses this browser camera unless the Base URL is the Fake Pi API on port 5055."
-                : "Simulation mode keeps the original browser camera unlock flow."}
+                ? "Device API mode sends face scans to the configured Pi camera."
+                : "Simulation mode keeps the browser camera unlock flow."}
             </p>
           </div>
         </div>
@@ -664,21 +657,21 @@ function LocalCameraControl({
           <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
         </div>
 
-        <div className="mt-4 flex flex-wrap justify-center gap-2">
+        <div className="mt-4 grid grid-cols-1 gap-2 sm:flex sm:flex-wrap sm:justify-center">
           {!camOn ? (
-            <Btn disabled={busy} onClick={startCamera}>
+            <Btn disabled={busy} onClick={startCamera} className="w-full sm:w-auto">
               Turn on camera and scan
             </Btn>
           ) : (
-            <Btn variant="secondary" disabled={busy} onClick={stopCamera}>
+            <Btn variant="secondary" disabled={busy} onClick={stopCamera} className="w-full sm:w-auto">
               Stop camera
             </Btn>
           )}
-          <Btn variant="danger" disabled={busy} onClick={handleFullReset}>
+          <Btn variant="danger" disabled={busy} onClick={handleFullReset} className="w-full sm:w-auto">
             FULL RESET
           </Btn>
           {ignitionOn ? (
-            <Btn variant="secondary" disabled={busy} onClick={doIgnitionStop}>
+            <Btn variant="secondary" disabled={busy} onClick={doIgnitionStop} className="w-full sm:w-auto">
               Stop ignition
             </Btn>
           ) : null}

@@ -130,6 +130,9 @@ export default function useAppActions(state) {
       setDeviceLogs([]);
       return;
     }
+    if (mode === "device") {
+      setStatus((p) => ({ ...p, online: false }));
+    }
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, baseUrl]);
@@ -243,32 +246,6 @@ export default function useAppActions(state) {
     }
   };
 
-  const doIgnitionStart = async () => {
-    setBusy(true);
-    try {
-      await api.ignitionStart();
-      if (mode === "sim") scheduleSimIgnitionStop();
-      if (mode === "device") {
-        clearDeviceIgnitionStopCheckTimer();
-        const secs = Math.max(0, Number(settings?.ignitionAutoStopSeconds) || 0);
-        if (secs > 0) {
-          deviceIgnitionStopCheckTimerRef.current = setTimeout(() => {
-            deviceIgnitionStopCheckTimerRef.current = null;
-            void refresh({ silent: true });
-          }, secs * 1000 + 1200);
-        }
-      }
-      await refresh({ silent: true });
-      popToast("ok", "Ignition", "Ignition started.");
-      return true;
-    } catch (e) {
-      popToast("err", "Ignition start failed", e.message);
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const doIgnitionStop = async () => {
     setBusy(true);
     try {
@@ -309,11 +286,12 @@ export default function useAppActions(state) {
   const addUserToDirectory = async (displayName) => {
     const n = displayName.trim();
     if (!n) throw new Error("Name required");
-    await api.addUser(n);
+    const user = await api.addUser(n);
     if (mode === "device") {
       const users = await api.users();
       setDeviceUsers(users);
     }
+    return user;
   };
 
   const delUser = async (id) => {
@@ -382,7 +360,6 @@ export default function useAppActions(state) {
     refresh,
     doUnlock,
     doLock,
-    doIgnitionStart,
     doIgnitionStop,
     doFullReset,
     addUser,

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">BASS vehicle control</title>
+  <desc id="desc">A face scan inside a protective shield.</desc>
+  <defs>
+    <linearGradient id="ring" x1="96" y1="80" x2="420" y2="432" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38bdf8"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#13141a"/>
+  <circle cx="256" cy="256" r="184" fill="#1c1e28" stroke="url(#ring)" stroke-width="18"/>
+  <path d="M256 112 374 158v92c0 82-48 133-118 166-70-33-118-84-118-166v-92l118-46Z" fill="none" stroke="#a78bfa" stroke-width="20" stroke-linejoin="round"/>
+  <circle cx="256" cy="230" r="49" fill="none" stroke="#f8fafc" stroke-width="18"/>
+  <path d="M178 345c13-49 45-75 78-75s65 26 78 75" fill="none" stroke="#f8fafc" stroke-width="18" stroke-linecap="round"/>
+  <g fill="none" stroke="#38bdf8" stroke-width="16" stroke-linecap="round">
+    <path d="M166 208v-35h35"/>
+    <path d="M311 173h35v35"/>
+    <path d="M166 304v35h35"/>
+    <path d="M311 339h35v-35"/>
+  </g>
+</svg>

@@ -16,13 +16,18 @@ import useAppActions from "./hooks/useAppActions";
 export default function App() {
   const state = useAppState();
   const actions = useAppActions(state);
+  const mainRef = React.useRef(null);
 
   const locked = state.mode === "sim" ? state.sim.locked : state.status.lockState === "locked";
   const ignitionOn = state.mode === "sim" ? !!state.sim.ignitionOn : !!state.status.ignitionOn;
   const online = state.status.online;
 
+  React.useEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+  }, [state.tab]);
+
   return (
-    <div className="flex min-h-screen text-slate-100">
+    <div className="app-shell flex overflow-hidden text-slate-100">
       <Toast toast={state.toast} />
       <SidebarNav tab={state.tab} setTab={state.setTab} />
 
@@ -37,7 +42,7 @@ export default function App() {
           onRefresh={actions.refresh}
         />
 
-        <main className="flex-1 overflow-y-auto px-5 py-6 md:px-8">
+        <main ref={mainRef} className="app-content flex-1 overflow-y-auto overscroll-y-contain px-4 pt-4 sm:px-5 sm:pt-6 md:px-8 md:py-6">
           {state.tab === "control" && (
             <div className="mx-auto w-full max-w-6xl space-y-6">
               <ControlTab
@@ -55,7 +60,6 @@ export default function App() {
                 }
                 doUnlock={actions.doUnlock}
                 doLock={actions.doLock}
-                doIgnitionStart={actions.doIgnitionStart}
                 doIgnitionStop={actions.doIgnitionStop}
                 doFullReset={actions.doFullReset}
                 popToast={state.popToast}
@@ -123,7 +127,7 @@ export default function App() {
             />
           )}
 
-          <footer className="mt-10 flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center text-xs text-slate-500">
+          <footer className="mt-10 hidden flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center text-xs text-slate-500 sm:flex">
             <Badge>v1 UI</Badge>
             <span className="text-slate-600">•</span>
             <span>DNA Builder–inspired layout</span>

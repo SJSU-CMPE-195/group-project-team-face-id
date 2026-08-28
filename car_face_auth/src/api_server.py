@@ -1,10 +1,11 @@
-"""Local HTTP API: browser webcam frames -> InsightFace (same DB as enroll.py)."""
-"""Handles everything face-ML-related:
+"""Local HTTP API for browser-camera InsightFace development.
 
-Receive webcam frames from the browser
-Run InsightFace on them
-Save embeddings to SQLite
-from __future__ import annotations"""
+Receives webcam frames, runs InsightFace, and stores embeddings in the same
+canonical SQLite database used by the Pi Device API.
+"""
+
+from __future__ import annotations
+
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -21,7 +22,6 @@ from .face_engine import (
     delete_embedding_for_name,
     extract_single_face_embedding,
     load_database,
-    save_database,
     save_user_embedding,
 )
 
@@ -163,14 +163,10 @@ def enroll_finish(body: EnrollSessionBody):
             status_code=400,
             detail=f"Need {SAMPLES_NEEDED} samples, have {len(embs)}",
         )
-    db = load_database()
-    db[s["name"]] = embs
-    save_database(db)
-    # also persist into SQLite so verify_live.py and the Pi API can read it
-    try:
-        save_user_embedding(s["name"], embs)
-    except Exception:
-        pass  # SQLite not available in standalone mode; .pkl is the fallback
+    result = save_user_embedding(s["name"], embs)
+    if not result.get("ok"):
+        status_code = 503 if result.get("error") == "database unavailable" else 409
+        raise HTTPException(status_code=status_code, detail=result.get("error") or "Could not store embedding")
     return {"ok": True, "user": s["name"], "samples": len(embs)}
 
 

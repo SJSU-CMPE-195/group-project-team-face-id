@@ -1,3 +1,6 @@
+# Picamera2 is supplied by Raspberry Pi OS: apt install python3-picamera2.
+# The Pi venv is created with --system-site-packages so that apt package is
+# available to the service while pip manages the remaining dependencies.
 insightface
 onnxruntime
 opencv-python

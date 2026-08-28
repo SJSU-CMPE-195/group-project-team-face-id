@@ -1,6 +1,6 @@
 # Car face auth (Python PoC)
 
-Facial-recognition vehicle access: Raspberry Pi (or desktop) enrollment and live verification live in this folder. The system identifies authorized users in real time and simulates unlocking when a valid face is detected with high confidence.
+Facial-recognition enrollment and development utilities live in this folder. The root `pi_device_api.py` is the deployed Pi runtime and owns camera recognition plus ESP32 lock/ignition commands.
 
 **Full documentation** (repo overview, frontend UI, installation, and running the PoC) is in the [root README](../README.md).
 
@@ -13,16 +13,15 @@ The proof of concept demonstrates:
 - Identity verification using a local database  
 - Confidence-based access decisions with a rolling window  
 
-**Not included yet:**
+**Still prototype-only:**
 
-- Physical door lock / ignition control  
 - Multi-user robustness testing  
 - Anti-spoofing (photo/video protection)  
-- Full vehicle system integration  
+- Authenticated/TLS network control and full vehicle acceptance testing
 
 ## Prerequisites
 
-- Python 3.8+  
+- Python 3.9+ (3.11 recommended)
 - Raspberry Pi (or PC for development)  
 - Camera (Pi Camera Module or USB webcam)  
 - Virtual environment (recommended)  
@@ -34,12 +33,22 @@ The proof of concept demonstrates:
 - insightface  
 - onnxruntime (or onnxruntime-gpu)  
 
-**Branch note:** use the **Machine-Learning** branch and work from `car_face_auth/` so paths and dependencies match this PoC.
+Use the `wired-main` branch. Raspberry Pi deployment should use the root `install.sh`; the commands below are only for desktop/CLI development.
+
+## Hardware-free Device API simulator
+
+From the repository root, run `npm run mock:pi`, then set the dashboard Device API
+Base URL to `http://localhost:5055`. The simulator reuses the deployed `PiRuntime`
+scan, enrollment, authorization, and actuator state machine while replacing the Pi
+camera, InsightFace model, and ESP32 serial connection with deterministic seams.
+See the root README's **Develop the remote-camera flow without a Pi** section for
+scenario and failure-injection examples. Simulator results are development evidence,
+not physical hardware acceptance.
 
 ## Quick reference — installation and run
 
 ```bash
-git checkout Machine-Learning   # branch that carries this PoC
+git checkout wired-main
 cd car_face_auth
 python -m venv venv
 # activate venv (Windows: venv\Scripts\activate; macOS/Linux: source venv/bin/activate)

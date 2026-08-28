@@ -1,8 +1,16 @@
 import uuid
 import time
+import sqlite3
 from db import get_conn
 
 # ── Device status (face-ui /api/status) ─────────────────────────────────────────
+
+
+def _insert_log(conn, stage: str, result: str, detail: str = "", user_id: str = None):
+    conn.execute(
+        "INSERT INTO auth_logs (id, user_id, stage, result, detail, ts) VALUES (?,?,?,?,?,?)",
+        (str(uuid.uuid4()), user_id, stage, result, detail, int(time.time())),
+    )
 
 def get_status():
     with get_conn() as conn:
@@ -36,7 +44,7 @@ def set_unlock(reason: str = "manual_ui"):
             "UPDATE device_state SET lock_state = 'unlocked', last_seen = ? WHERE id = 1",
             (now_ms,),
         )
-    log_event("unlock", "ok", detail=reason)
+        _insert_log(conn, "unlock", "ok", detail=reason)
 
 def set_lock(reason: str = "auto_relock"):
     now_ms = int(time.time() * 1000)
@@ -45,7 +53,7 @@ def set_lock(reason: str = "auto_relock"):
             "UPDATE device_state SET lock_state = 'locked', last_seen = ? WHERE id = 1",
             (now_ms,),
         )
-    log_event("lock", "ok", detail=reason)
+        _insert_log(conn, "lock", "ok", detail=reason)
 
 # ── Users ──────────────────────────────────────────────────────────────────────
 
@@ -69,13 +77,30 @@ def list_users_for_ui():
     ]
 
 def add_user(name: str, face_encoding: bytes = None):
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name is required"}
     user_id = str(uuid.uuid4())
     ts = int(time.time())
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO users (id, name, face_encoding, created_at) VALUES (?,?,?,?)",
-            (user_id, name, face_encoding, ts)
-        )
+        # Serialize the check with the insert.  The partial unique index made
+        # by init_db handles clean databases; the transaction also protects
+        # legacy databases where that index cannot be created safely.
+        conn.execute("BEGIN IMMEDIATE")
+        duplicate = conn.execute(
+            "SELECT id FROM users WHERE active=1 "
+            "AND lower(trim(name))=lower(trim(?)) LIMIT 1",
+            (name,),
+        ).fetchone()
+        if duplicate:
+            return {"ok": False, "error": "active user with that name already exists"}
+        try:
+            conn.execute(
+                "INSERT INTO users (id, name, face_encoding, created_at) VALUES (?,?,?,?)",
+                (user_id, name, face_encoding, ts),
+            )
+        except sqlite3.IntegrityError:
+            return {"ok": False, "error": "active user with that name already exists"}
     log_event("enroll", "ok", detail=f"Added {name}", user_id=user_id)
     return {"id": user_id, "name": name, "createdAt": ts * 1000}
 
@@ -103,19 +128,25 @@ def get_user_by_id(user_id: str):
 
 def set_user_access(user_id: str, allowed: bool):
     with get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE users SET face_access=? WHERE id=? AND active=1",
             (1 if allowed else 0, user_id),
         )
+        if cur.rowcount != 1:
+            return {"ok": False, "error": "user not found"}
     log_event("access_change", "ok", detail=f"{'granted' if allowed else 'revoked'} for {user_id}", user_id=user_id)
     return {"ok": True}
 
 def set_user_embedding(user_id: str, blob: bytes):
+    if not isinstance(blob, (bytes, bytearray, memoryview)) or not blob:
+        return {"ok": False, "error": "embedding is required"}
     with get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE users SET face_encoding=? WHERE id=? AND active=1",
-            (blob, user_id),
+            (bytes(blob), user_id),
         )
+        if cur.rowcount != 1:
+            return {"ok": False, "error": "user not found"}
     log_event("enroll_embedding", "ok", detail=f"Embedding stored for {user_id}", user_id=user_id)
     return {"ok": True}
 
@@ -123,7 +154,11 @@ def get_all_face_encodings():
     """Returns all active users with their face encodings — used by ML partner."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, name, face_encoding FROM users WHERE active=1 AND face_encoding IS NOT NULL"
+            "SELECT u.id, u.name, u.face_encoding FROM users AS u "
+            "WHERE u.active=1 AND u.face_access=1 AND u.face_encoding IS NOT NULL "
+            "AND (SELECT COUNT(*) FROM users AS same "
+            "     WHERE same.active=1 "
+            "       AND lower(trim(same.name))=lower(trim(u.name)))=1"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -131,10 +166,7 @@ def get_all_face_encodings():
 
 def log_event(stage: str, result: str, detail: str = "", user_id: str = None):
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO auth_logs (id, user_id, stage, result, detail, ts) VALUES (?,?,?,?,?,?)",
-            (str(uuid.uuid4()), user_id, stage, result, detail, int(time.time()))
-        )
+        _insert_log(conn, stage, result, detail=detail, user_id=user_id)
 
 def get_logs(limit: int = 80):
     with get_conn() as conn:
