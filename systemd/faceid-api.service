@@ -18,5 +18,25 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# This process drives a vehicle lock and holds biometric data. It needs the
+# camera, the serial port, and its own database directory -- and nothing else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/faceid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+# Uncomment once TLS terminates in front of this service so session cookies
+# are marked Secure and HSTS is sent:
+# Environment=FACEID_REQUIRE_HTTPS=1
+
 [Install]
 WantedBy=multi-user.target

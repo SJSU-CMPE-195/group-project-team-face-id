@@ -6,12 +6,16 @@ canonical SQLite database used by the Pi Device API.
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from insightface.app import FaceAnalysis
 from pydantic import BaseModel
 
@@ -45,13 +49,72 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="FaceLock local verify API", lifespan=lifespan)
+
+# This service writes users.face_encoding in the same database the Pi unlocks
+# from, so enrolling a face here is equivalent to cutting a key.  It is a
+# development tool and a trusted internal callee -- never a public endpoint.
+INTERNAL_TOKEN = (
+    os.environ.get("FACEID_INTERNAL_TOKEN")
+    or os.environ.get("FACEID_API_TOKEN")
+    or ""
+).strip()
+
+# Previously allow_origins=["*"] together with allow_credentials=True, which
+# makes Starlette echo back whatever origin asks and permits credentialed
+# cross-site calls from any page.  Credentials are not used here at all, so the
+# flag is gone and origins are an explicit allowlist.
+_DEFAULT_DEV_ORIGINS = (
+    "http://localhost:5173,http://127.0.0.1:5173,"
+    "http://localhost:4173,http://127.0.0.1:4173"
+)
+ALLOWED_ORIGINS = [
+    o.strip().rstrip("/")
+    for o in os.environ.get("FACEID_FACE_API_ORIGINS", _DEFAULT_DEV_ORIGINS).split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Internal-Token"],
 )
+
+
+def _is_loopback(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@app.middleware("http")
+async def require_internal_caller(request: Request, call_next):
+    """Fail safe: only the local host, or a caller holding the service token.
+
+    With no token configured the service still runs for local development but
+    refuses anything arriving from another machine, so an accidental
+    ``--host 0.0.0.0`` cannot quietly expose face enrollment to the network.
+    """
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    presented = (request.headers.get("X-Internal-Token") or "").strip()
+    if INTERNAL_TOKEN and presented and hmac.compare_digest(presented, INTERNAL_TOKEN):
+        return await call_next(request)
+
+    client_host = request.client.host if request.client else None
+    if _is_loopback(client_host):
+        return await call_next(request)
+
+    print(f"Refused Face API request from {client_host} to {request.url.path}")
+    return JSONResponse(
+        {"ok": False, "detail": "this service is not reachable from the network"},
+        status_code=403,
+    )
 
 
 class EnrollStartBody(BaseModel):
@@ -174,3 +237,19 @@ def enroll_finish(body: EnrollSessionBody):
 def enroll_cancel(body: EnrollSessionBody):
     ENROLL_SESSIONS.pop(body.session_id, None)
     return {"ok": True}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # Loopback by default, and binding wider takes a deliberate opt-in.  The
+    # host is chosen here rather than left to whatever --host a command line
+    # happens to carry.
+    host = "127.0.0.1"
+    if os.environ.get("FACEID_FACE_API_PUBLIC", "").strip() in ("1", "true", "yes"):
+        if not INTERNAL_TOKEN:
+            raise SystemExit(
+                "Refusing to bind publicly without FACEID_INTERNAL_TOKEN set."
+            )
+        host = "0.0.0.0"
+    uvicorn.run(app, host=host, port=int(os.environ.get("FACE_API_PORT", "8765")))

@@ -37,12 +37,12 @@ else
 fi
 
 echo ""
-echo "[1/6] Installing Raspberry Pi OS packages..."
+echo "[1/7] Installing Raspberry Pi OS packages..."
 $SUDO apt-get update
 $SUDO apt-get install -y curl python3-dev python3-venv python3-picamera2
 
 echo ""
-echo "[2/6] Creating the project virtual environment..."
+echo "[2/7] Creating the project virtual environment..."
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   # Picamera2 is an apt-managed system package; expose it to this venv.
   python3 -m venv --system-site-packages "$VENV_DIR"
@@ -54,11 +54,11 @@ fi
 "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
 
 echo ""
-echo "[3/6] Installing Python runtime dependencies..."
+echo "[3/7] Installing Python runtime dependencies..."
 "$VENV_DIR/bin/python" -m pip install -r "$PROJECT_DIR/requirements-pi-device-api.txt"
 
 echo ""
-echo "[4/6] Initializing the SQLite database and device permissions..."
+echo "[4/7] Initializing the SQLite database and device permissions..."
 $SUDO install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$DB_DIR"
 if [[ "$(id -un)" == "$SERVICE_USER" ]]; then
   FACEID_DB_PATH="$DB_DIR/faceid.db" "$VENV_DIR/bin/python" "$PROJECT_DIR/db.py"
@@ -75,7 +75,27 @@ if [[ -n "$DEVICE_GROUPS" ]]; then
 fi
 
 echo ""
-echo "[5/6] Installing the API systemd unit..."
+echo "[5/7] Provisioning the internal service token..."
+# Browsers authenticate with session cookies, not this token.  It remains only
+# as the credential for trusted internal callers and to bootstrap upgrades from
+# older installs.  systemd already reads this file
+# (EnvironmentFile=-/etc/default/faceid), so it never lives in the repo, and an
+# existing value is kept so reinstalling does not disturb a working device.
+ENV_FILE=/etc/default/faceid
+$SUDO touch "$ENV_FILE"
+$SUDO chown root:"$SERVICE_GROUP" "$ENV_FILE"
+$SUDO chmod 640 "$ENV_FILE"
+if $SUDO grep -qE '^[[:space:]]*FACEID_API_TOKEN=.+' "$ENV_FILE"; then
+  echo "  Kept the existing FACEID_API_TOKEN in $ENV_FILE."
+else
+  GENERATED_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  printf 'FACEID_API_TOKEN=%s\n' "$GENERATED_TOKEN" | $SUDO tee -a "$ENV_FILE" >/dev/null
+  echo "  Wrote a new FACEID_API_TOKEN to $ENV_FILE."
+fi
+API_TOKEN_VALUE="$($SUDO sed -nE 's/^[[:space:]]*FACEID_API_TOKEN=(.+)$/\1/p' "$ENV_FILE" | tail -n 1)"
+
+echo ""
+echo "[6/7] Installing the API systemd unit..."
 # The checked-in unit keeps a readable Pi default path; replace it for the
 # actual checkout so the same installer works from any clone directory.
 escape_sed_replacement() {
@@ -83,9 +103,14 @@ escape_sed_replacement() {
 }
 PROJECT_REPLACEMENT="$(escape_sed_replacement "$PROJECT_DIR")"
 DB_FILE_REPLACEMENT="$(escape_sed_replacement "$DB_DIR/faceid.db")"
+DB_DIR_REPLACEMENT="$(escape_sed_replacement "$DB_DIR")"
 USER_REPLACEMENT="$(escape_sed_replacement "$SERVICE_USER")"
+# ProtectSystem=strict makes the filesystem read-only apart from ReadWritePaths,
+# so that path must name the real database directory or the service cannot
+# write its own database.
 sed \
   -e "s|User=pi|User=$USER_REPLACEMENT|" \
+  -e "s|ReadWritePaths=/home/pi/faceid|ReadWritePaths=$DB_DIR_REPLACEMENT|" \
   -e "s|/home/pi/faceid/group-project-team-face-id-main|$PROJECT_REPLACEMENT|g" \
   -e "s|FACEID_DB_PATH=/home/pi/faceid/faceid.db|FACEID_DB_PATH=$DB_FILE_REPLACEMENT|" \
   "$PROJECT_DIR/systemd/faceid-api.service" \
@@ -98,8 +123,25 @@ $SUDO rm -f "$SYSTEMD_DIR/faceid-verify.service"
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable "$SERVICE_NAME"
 
+# Small wrappers so administration does not require remembering paths or the
+# database location.
+$SUDO tee /usr/local/bin/faceid-manage >/dev/null <<WRAPPER
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ -r /etc/default/faceid ]] && set -a && . /etc/default/faceid && set +a
+export FACEID_DB_PATH="\${FACEID_DB_PATH:-$DB_DIR/faceid.db}"
+exec "$VENV_DIR/bin/python" "$PROJECT_DIR/manage.py" "\$@"
+WRAPPER
+$SUDO chmod 0755 /usr/local/bin/faceid-manage
+$SUDO tee /usr/local/bin/faceid-pair >/dev/null <<'WRAPPER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec /usr/local/bin/faceid-manage pair "$@"
+WRAPPER
+$SUDO chmod 0755 /usr/local/bin/faceid-pair
+
 echo ""
-echo "[6/6] Starting the API and running a health smoke check..."
+echo "[7/7] Starting the API and running a health smoke check..."
 $SUDO systemctl restart "$SERVICE_NAME"
 SERVICE_PORT=5000
 if [[ -r /etc/default/faceid ]]; then
@@ -120,6 +162,37 @@ for attempt in {1..20}; do
   sleep 1
 done
 
+# There is no loopback exemption: an unauthenticated caller must be refused
+# even from the device itself.
+echo ""
+echo "Verifying that unauthenticated writes are rejected..."
+UNAUTH_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  -X POST --data '{"name":"install-check"}' \
+  "http://127.0.0.1:$SERVICE_PORT/api/users" || echo "000")"
+if [[ "$UNAUTH_STATUS" == "401" ]]; then
+  echo "  OK: the API refused an unauthenticated write (401)."
+else
+  echo "  WARNING: expected HTTP 401 for an unauthenticated write, got $UNAUTH_STATUS." >&2
+fi
+
+# Bootstrap the first administrator.  Nothing can authorize a pairing before an
+# admin exists, so this has to happen from the console.  Only ever runs once:
+# if an administrator is already present the database is left alone.
+echo ""
+echo "Setting up the first administrator..."
+ADMIN_COUNT="$(FACEID_DB_PATH="$DB_DIR/faceid.db" "$VENV_DIR/bin/python" -c \
+  "import db_api; print(db_api.count_admins())" 2>/dev/null || echo "0")"
+if [[ "$ADMIN_COUNT" == "0" ]]; then
+  ADMIN_NAME="${FACEID_ADMIN_NAME:-$SERVICE_USER}"
+  FACEID_DB_PATH="$DB_DIR/faceid.db" "$VENV_DIR/bin/python" \
+    "$PROJECT_DIR/manage.py" create-admin "$ADMIN_NAME"
+  $SUDO chown "$SERVICE_USER":"$SERVICE_GROUP" "$DB_DIR/faceid.db" 2>/dev/null || true
+else
+  echo "  $ADMIN_COUNT administrator(s) already exist; leaving them unchanged."
+  echo "  Run 'sudo faceid-pair <name>' to pair another device."
+fi
+
 echo ""
 echo "=== Done ==="
 echo "  faceid-api: $($SUDO systemctl is-active "$SERVICE_NAME")"
@@ -129,3 +202,6 @@ echo ""
 echo "Useful commands:"
 echo "  sudo journalctl -u faceid-api -f"
 echo "  sudo systemctl restart faceid-api"
+echo "  sudo faceid-pair <name>               # one-time code to pair a device"
+echo "  sudo faceid-manage list-users         # who exists, and their role"
+echo "  sudo faceid-manage revoke <name>      # sign out all of someone's devices"

@@ -9,6 +9,7 @@ import ControlTab from "./components/ControlTab";
 import UsersTab from "./components/UsersTab";
 import LogsTab from "./components/LogsTab";
 import SettingsTab from "./components/SettingsTab";
+import PairingScreen from "./components/PairingScreen";
 import Badge from "./components/Badge";
 import useAppState from "./hooks/useAppState";
 import useAppActions from "./hooks/useAppActions";
@@ -26,10 +27,38 @@ export default function App() {
     if (mainRef.current) mainRef.current.scrollTop = 0;
   }, [state.tab]);
 
+  // Ask the Pi who this browser is whenever the connection target changes.
+  React.useEffect(() => {
+    actions.loadMe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.mode, state.baseUrl]);
+
+  // Admin-only tabs are hidden for ordinary drivers. This is a convenience so
+  // the UI does not offer actions that will fail -- it is NOT the security
+  // boundary. Every one of these endpoints is enforced server-side, and a
+  // driver who navigates here by hand still gets 403 from the Pi.
+  const isAdmin = state.mode !== "device" || state.isAdmin;
+
+  React.useEffect(() => {
+    if (!isAdmin && ["users", "logs", "settings"].includes(state.tab)) {
+      state.setTab("control");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, state.tab]);
+
+  if (state.mode === "device" && state.authState === "out") {
+    return (
+      <div className="app-shell flex flex-col overflow-y-auto text-slate-100">
+        <Toast toast={state.toast} />
+        <PairingScreen onPair={actions.pairDevice} busy={state.busy} />
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell flex overflow-hidden text-slate-100">
       <Toast toast={state.toast} />
-      <SidebarNav tab={state.tab} setTab={state.setTab} />
+      <SidebarNav tab={state.tab} setTab={state.setTab} isAdmin={isAdmin} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
@@ -82,6 +111,8 @@ export default function App() {
                   setMode={state.setMode}
                   baseUrl={state.baseUrl}
                   setBaseUrl={state.setBaseUrl}
+                  me={state.me}
+                  onSignOut={actions.signOut}
                   faceApiUrl={state.faceApiUrl}
                   setFaceApiUrl={state.setFaceApiUrl}
                 />
@@ -89,7 +120,7 @@ export default function App() {
             </div>
           )}
 
-          {state.tab === "users" && (
+          {state.tab === "users" && isAdmin && (
             <UsersTab
               mode={state.mode}
               sim={state.sim}
@@ -109,7 +140,7 @@ export default function App() {
             />
           )}
 
-          {state.tab === "logs" && (
+          {state.tab === "logs" && isAdmin && (
             <LogsTab
               mode={state.mode}
               sim={state.sim}
@@ -118,7 +149,7 @@ export default function App() {
             />
           )}
 
-          {state.tab === "settings" && (
+          {state.tab === "settings" && isAdmin && (
             <SettingsTab
               settings={state.settings}
               setSettings={state.setSettings}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { genId } from "../utils/helpers";
+import { AuthError } from "./useApi";
 
 export default function useAppActions(state) {
   const {
@@ -20,6 +21,9 @@ export default function useAppActions(state) {
     sim,
     deviceUsers,
     setSimFaceAccessAllowed,
+    setMe,
+    setAuthState,
+    isAdmin,
   } = state;
   const simRelockTimerRef = useRef(null);
   const simIgnitionStopTimerRef = useRef(null);
@@ -100,26 +104,115 @@ export default function useAppActions(state) {
     const silent = !!opts.silent;
     setBusy(true);
     try {
+      // Reachability is decided by /api/status alone. The admin reads below are
+      // allowed to fail with 403 for an ordinary driver -- that is a permission
+      // outcome, not the device being offline, and it must not blank the UI.
       const s = await api.status();
       setStatus(s);
-      if (mode === "device") {
-        const [users, logs, remoteSettings] = await Promise.all([
+
+      // Only an administrator may read these, so a driver does not ask at all.
+      // allSettled is still used because the session can expire mid-refresh.
+      if (mode === "device" && isAdmin) {
+        const [users, logs, remoteSettings] = await Promise.allSettled([
           api.users(),
           api.logs(),
           api.getSettings(),
         ]);
-        setDeviceUsers(users);
-        setDeviceLogs(logs);
-        setSettings((prev) => ({ ...prev, ...remoteSettings }));
+        if (users.status === "fulfilled") setDeviceUsers(users.value);
+        if (logs.status === "fulfilled") setDeviceLogs(logs.value);
+        if (remoteSettings.status === "fulfilled") {
+          setSettings((prev) => ({ ...prev, ...remoteSettings.value }));
+        }
+        // A 401 anywhere means the session is gone; send the user back to pairing.
+        const expired = [users, logs, remoteSettings].some(
+          (r) => r.status === "rejected" && r.reason instanceof AuthError && r.reason.status === 401,
+        );
+        if (expired) {
+          setMe(null);
+          setAuthState("out");
+          return;
+        }
       }
       if (!silent) {
-        popToast("ok", "Refreshed", mode === "device" ? `Connected to ${baseUrl}` : "Simulation updated");
+        popToast(
+          "ok",
+          "Refreshed",
+          mode === "device" ? "Connected to the device" : "Simulation updated",
+        );
       }
     } catch (e) {
+      if (e instanceof AuthError && e.status === 401) {
+        setMe(null);
+        setAuthState("out");
+        return;
+      }
       setStatus((p) => ({ ...p, online: false }));
       popToast("err", "Connection failed", e.message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // ── Session lifecycle ──────────────────────────────────────────────────
+
+  const loadMe = useCallback(async () => {
+    if (mode !== "device") {
+      setAuthState("in");
+      return null;
+    }
+    try {
+      const profile = await api.me();
+      setMe(profile);
+      setAuthState("in");
+      return profile;
+    } catch (e) {
+      if (e instanceof AuthError) {
+        setMe(null);
+        setAuthState("out");
+        return null;
+      }
+      // A network failure is not the same as being signed out; leave the
+      // session alone so a flaky connection does not force re-pairing.
+      setAuthState("unknown");
+      return null;
+    }
+  }, [api, mode, setAuthState, setMe]);
+
+  const pairDevice = async (code) => {
+    const trimmed = (code || "").trim();
+    if (!trimmed) {
+      popToast("err", "Pairing", "Enter the code shown on the Pi.");
+      return false;
+    }
+    setBusy(true);
+    try {
+      const profile = await api.pairRedeem(trimmed);
+      setMe(profile);
+      setAuthState("in");
+      popToast("ok", "Paired", `Signed in as ${profile.name}.`);
+      await refresh({ silent: true });
+      return true;
+    } catch (e) {
+      popToast("err", "Pairing failed", e.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const signOut = async () => {
+    setBusy(true);
+    try {
+      await api.logout();
+    } catch {
+      /* Signing out locally matters even if the server call fails. */
+    } finally {
+      setMe(null);
+      setAuthState("out");
+      setDeviceUsers([]);
+      setDeviceLogs([]);
+      setBusy(false);
+      popToast("ok", "Signed out", "This device is no longer paired.");
     }
   };
 
@@ -303,7 +396,12 @@ export default function useAppActions(state) {
 
     setBusy(true);
     try {
-      if (cleanFace && displayName) {
+      // In device mode the template is cleared through the authenticated Device
+      // API. This used to POST a bare name to the Face API, which required no
+      // credential at all -- anyone able to reach that port could wipe any
+      // driver's face. Sim mode still talks to the local Face API directly
+      // because there is no Pi in that path.
+      if (mode === "sim" && cleanFace && displayName) {
         try {
           const r = await fetch(`${cleanFace}/api/face/remove`, {
             method: "POST",
@@ -326,6 +424,8 @@ export default function useAppActions(state) {
         }
       }
 
+      // delUser already clears the stored template server-side; this is the
+      // explicit path for removing a face while keeping the account.
       await api.delUser(id);
       if (mode === "sim" && displayName) {
         setSimFaceAccessAllowed((prev) => {
@@ -358,6 +458,9 @@ export default function useAppActions(state) {
 
   return {
     refresh,
+    loadMe,
+    pairDevice,
+    signOut,
     doUnlock,
     doLock,
     doIgnitionStop,

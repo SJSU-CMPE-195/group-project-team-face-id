@@ -20,6 +20,10 @@ def get_conn():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row  # lets you access columns by name
+    # Two processes write this file (the Flask API and the face engine), and
+    # PiRuntime runs sessions on background threads, so a writer must not fail
+    # the instant it finds the database busy.
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -68,6 +72,43 @@ def init_db():
                 value TEXT NOT NULL
             );
 
+            -- Browser sessions.  "id" is the SHA-256 of the raw session token,
+            -- never the token itself: a stolen database copy cannot be replayed
+            -- as a login.  SHA-256 rather than bcrypt/argon2 is deliberate --
+            -- these are 256-bit values from secrets.token_urlsafe(32), not
+            -- human passwords, so there is no dictionary to slow down and a
+            -- deliberately slow hash would cost real time on every request.
+            CREATE TABLE IF NOT EXISTS sessions (
+                id           TEXT PRIMARY KEY,
+                user_id      TEXT NOT NULL REFERENCES users(id),
+                created_at   INTEGER NOT NULL,
+                expires_at   INTEGER NOT NULL,
+                last_used_at INTEGER NOT NULL,
+                revoked      INTEGER NOT NULL DEFAULT 0,
+                user_agent   TEXT
+            );
+
+            -- One-time pairing codes.  Same hashing rule as sessions.
+            -- "used_at" going non-NULL is what makes a code single-use.
+            CREATE TABLE IF NOT EXISTS pairing_codes (
+                id         TEXT PRIMARY KEY,
+                user_id    TEXT NOT NULL REFERENCES users(id),
+                created_by TEXT REFERENCES users(id),
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used_at    INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_user
+                ON sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_expires
+                ON sessions(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_pairing_expires
+                ON pairing_codes(expires_at);
+            -- get_logs only ever reads ORDER BY ts DESC.
+            CREATE INDEX IF NOT EXISTS idx_auth_logs_ts
+                ON auth_logs(ts DESC);
+
             CREATE TABLE IF NOT EXISTS device_state (
                 id          INTEGER PRIMARY KEY CHECK (id = 1),
                 device_name TEXT NOT NULL DEFAULT 'FaceLock-Pi',
@@ -92,7 +133,22 @@ def init_db():
         # existing users and make the access flag explicit for new queries.
         _ensure_column(conn, "users", "active", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(conn, "users", "face_access", "INTEGER NOT NULL DEFAULT 1")
+        # Everyone already in the database becomes an ordinary USER.  The first
+        # ADMIN is seeded explicitly by install.sh, so an upgrade never silently
+        # promotes an existing row to administrator.
+        _ensure_column(conn, "users", "role", "TEXT NOT NULL DEFAULT 'USER'")
         _ensure_active_name_index(conn)
+
+        # WAL lets the face engine read while the API writes instead of the two
+        # blocking each other.  It is a persistent property of the file, so
+        # setting it once here is enough.
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.DatabaseError:
+            # A database on a filesystem without shared-memory support (some
+            # network mounts) keeps its existing journal mode rather than
+            # failing the whole migration.
+            pass
 
 if __name__ == "__main__":
     init_db()

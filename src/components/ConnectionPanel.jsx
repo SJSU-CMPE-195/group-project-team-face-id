@@ -1,5 +1,5 @@
 import React from "react";
-import { Download } from "lucide-react";
+import { Download, LogOut } from "lucide-react";
 import Card from "./Card";
 import Badge from "./Badge";
 import Btn from "./Btn";
@@ -7,7 +7,12 @@ import Switch from "./Switch";
 import Input from "./Input";
 import usePwaInstall from "../hooks/usePwaInstall";
 
-export default function ConnectionPanel({ mode, setMode, baseUrl, setBaseUrl, faceApiUrl, setFaceApiUrl }) {
+// The in-browser Fake Pi never reaches the network, so it needs no token.
+function isMockPiUrl(url) {
+  return (url || "").trim().replace(/\/$/, "").toLocaleLowerCase() === "fake://pi";
+}
+
+export default function ConnectionPanel({ mode, setMode, baseUrl, setBaseUrl, me, onSignOut, faceApiUrl, setFaceApiUrl }) {
   const pwa = usePwaInstall();
   const httpsPage = typeof window !== "undefined" && window.location.protocol === "https:";
   const insecureDeviceApi = httpsPage && mode === "device" && /^http:\/\//i.test(baseUrl.trim());
@@ -49,8 +54,36 @@ export default function ConnectionPanel({ mode, setMode, baseUrl, setBaseUrl, fa
               onChange={(e) => setBaseUrl(e.target.value)}
               placeholder="http://192.168.4.1:5000"
             />
-            <p className="text-xs text-slate-500">Pi address and port (default 5000).</p>
-            <p className="text-xs text-slate-500">Use fake://pi for the in-browser fake, or an HTTP URL for a real/mock server.</p>
+            <p className="text-xs text-slate-500">
+              Leave blank when the Pi serves this app (same origin). Use fake://pi
+              for the in-browser fake, or an HTTP URL for a mock server.
+            </p>
+
+            {mode === "device" && !isMockPiUrl(baseUrl) && (
+              <div className="mt-4 rounded-lg border border-white/[0.08] bg-black/20 px-3 py-3 text-left">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                  Signed in as
+                </div>
+                {me ? (
+                  <>
+                    <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-slate-200">{me.name}</span>
+                      <Badge variant={me.role === "ADMIN" ? "ok" : "info"}>{me.role}</Badge>
+                    </div>
+                    <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                      This browser holds a session cookie, not a shared key. Nothing
+                      secret is stored where a script can read it.
+                    </p>
+                    <Btn onClick={onSignOut} className="mt-3 w-full gap-2">
+                      <LogOut aria-hidden="true" size={16} />
+                      Sign out
+                    </Btn>
+                  </>
+                ) : (
+                  <p className="mt-1 text-xs text-slate-500">Not paired yet.</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

@@ -187,6 +187,18 @@ export default function UsersTab({
       await handleRemoveUser(u.id);
       return;
     }
+    // Reaching here means a face template exists with no matching user row.
+    // In device mode there is no id to authorize against, and the Face API is
+    // no longer callable without a credential, so this is surfaced rather than
+    // silently sent to an unauthenticated endpoint.
+    if (mode === "device") {
+      popToast(
+        "info",
+        "Orphaned template",
+        `"${n}" has no user record. Clear it on the Pi with faceid-manage.`,
+      );
+      return;
+    }
     if (!confirm(`Remove "${n}" from the face database and access list?`)) return;
     try {
       if (cleanApi) {

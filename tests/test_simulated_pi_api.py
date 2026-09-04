@@ -19,6 +19,7 @@ import unittest
 
 import db as db_module
 import db_api
+from support import admin_client
 
 
 FINAL_SCAN_STATES = {"granted", "denied", "error", "timeout", "cancelled"}
@@ -77,6 +78,8 @@ class SimulatedPiApiTests(unittest.TestCase):
                 os.environ[key] = value
         cls._tempdir.cleanup()
 
+    ADMIN_TOKEN = "sim-test-admin-token"
+
     def setUp(self):
         # Keep each test independent while preserving the same isolated DB.
         with db_module.get_conn() as conn:
@@ -84,8 +87,9 @@ class SimulatedPiApiTests(unittest.TestCase):
             conn.execute("DELETE FROM users")
             conn.execute("UPDATE device_state SET lock_state='locked'")
         db_module.init_db()
-        self.app = self.mock_module.create_mock_app(db_module=db_api)
-        self.client = self.app.test_client()
+        self.app = self.mock_module.create_mock_app(db_module=db_api,
+                                                    api_token=self.ADMIN_TOKEN)
+        self.client = admin_client(self.app, self.ADMIN_TOKEN)
         self.runtime = self.app.config["SIMULATED_RUNTIME"]
 
     def tearDown(self):

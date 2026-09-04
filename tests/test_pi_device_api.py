@@ -14,7 +14,9 @@ import tempfile
 import time
 from unittest.mock import patch
 
+import auth
 from pi_device_api import create_app
+from support import admin_client, session_client, REMOTE
 from car_face_auth.src.pi_runtime import PiRuntime, RuntimeBusyError, RuntimeRequestError
 import db as db_module
 import db_api as real_db_api
@@ -380,12 +382,18 @@ class FakeRuntime:
 
 
 class PiDeviceApiTests(unittest.TestCase):
+    ADMIN_TOKEN = "route-test-admin-token"
+
     def setUp(self):
         self.db = FakeDb()
         self.runtime = FakeRuntime(self.db)
-        self.app = create_app(db_module=self.db, runtime=self.runtime)
+        self.app = create_app(db_module=self.db, runtime=self.runtime,
+                              api_token=self.ADMIN_TOKEN)
         self.app.testing = True
-        self.client = self.app.test_client()
+        # These tests cover route behavior, not authentication, so the client
+        # holds an administrator credential throughout.  Authorization itself
+        # is covered by AuthorizationTests below.
+        self.client = admin_client(self.app, self.ADMIN_TOKEN)
 
     def json(self, response):
         self.assertIsNotNone(response.json, response.data)
@@ -895,6 +903,418 @@ class DatabaseContractTests(unittest.TestCase):
         logs = real_db_api.get_logs()
         self.assertEqual(logs[0]["stage"], "unlock")
         self.assertEqual(logs[0]["detail"], "contract_test")
+
+
+class AuthorizationTests(unittest.TestCase):
+    """Authentication, RBAC, pairing, sessions, and ownership.
+
+    Runs against a real SQLite database so the session and pairing SQL is
+    genuinely exercised rather than mocked, with a fake runtime so no camera or
+    serial port is needed.  Every request comes from a non-loopback address:
+    the gate has no loopback exemption, and the tests say so explicitly.
+    """
+
+    LEGACY_TOKEN = "legacy-admin-token"
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.original_path = db_module.DB_PATH
+        db_module.DB_PATH = f"{self.tempdir.name}/faceid.db"
+        db_module.init_db()
+
+        self.admin = real_db_api.add_user("Admin Ada")
+        real_db_api.set_user_role(self.admin["id"], "ADMIN")
+        self.driver = real_db_api.add_user("Driver Bob")
+        self.other = real_db_api.add_user("Driver Cleo")
+
+        self.runtime = FakeRuntime(real_db_api)
+        self.app = create_app(db_module=real_db_api, runtime=self.runtime,
+                              api_token=self.LEGACY_TOKEN)
+        self.app.testing = True
+        self.anon = self.app.test_client()
+
+    def tearDown(self):
+        db_module.DB_PATH = self.original_path
+        self.tempdir.cleanup()
+
+    # -- helpers ---------------------------------------------------------
+
+    def as_user(self, user):
+        return session_client(self.app, real_db_api, user["id"])
+
+    def as_admin(self):
+        return self.as_user(self.admin)
+
+    def as_driver(self):
+        return self.as_user(self.driver)
+
+    def get(self, client, path, **kw):
+        return client.get(path, environ_base=REMOTE, **kw)
+
+    def post(self, client, path, **kw):
+        return client.post(path, environ_base=REMOTE, **kw)
+
+    # -- unauthenticated -------------------------------------------------
+
+    def test_unauthenticated_cannot_reach_protected_routes(self):
+        for method, path in [
+            ("get", "/api/me"), ("get", "/api/status"), ("get", "/api/users"),
+            ("get", "/api/logs"), ("get", "/api/settings"),
+            ("post", "/api/unlock"), ("post", "/api/users"),
+            ("post", "/api/enroll/start"), ("post", "/api/pair/create"),
+            ("delete", "/api/users/anything"),
+        ]:
+            with self.subTest(path=f"{method.upper()} {path}"):
+                res = getattr(self.anon, method)(path, environ_base=REMOTE)
+                self.assertEqual(res.status_code, 401)
+
+    def test_unauthenticated_cannot_enroll_or_list_users(self):
+        self.assertEqual(self.post(self.anon, "/api/enroll/start",
+                                   json={"name": "Mallory"}).status_code, 401)
+        self.assertEqual(self.get(self.anon, "/api/users").status_code, 401)
+
+    def test_health_and_ready_stay_public(self):
+        self.assertEqual(self.get(self.anon, "/health").status_code, 200)
+        self.assertIn(self.get(self.anon, "/ready").status_code, (200, 503))
+
+    # -- USER role -------------------------------------------------------
+
+    def test_user_can_read_own_profile(self):
+        res = self.get(self.as_driver(), "/api/me")
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertEqual(body["name"], "Driver Bob")
+        self.assertEqual(body["role"], "USER")
+
+    def test_user_can_operate_the_lock(self):
+        client = self.as_driver()
+        self.assertEqual(self.get(client, "/api/status").status_code, 200)
+        self.assertEqual(self.post(client, "/api/unlock", json={}).status_code, 200)
+
+    def test_user_cannot_reach_admin_routes(self):
+        client = self.as_driver()
+        for method, path in [
+            ("get", "/api/users"), ("get", "/api/logs"), ("get", "/api/settings"),
+            ("get", "/api/face-status"), ("post", "/api/users"),
+            ("post", "/api/settings"), ("post", "/api/pair/create"),
+            ("delete", f"/api/users/{self.other['id']}"),
+        ]:
+            with self.subTest(path=f"{method.upper()} {path}"):
+                res = getattr(client, method)(path, environ_base=REMOTE, json={})
+                self.assertEqual(res.status_code, 403)
+
+    def test_user_cannot_change_roles(self):
+        res = self.as_driver().patch(f"/api/users/{self.driver['id']}/role",
+                                     json={"role": "ADMIN"}, environ_base=REMOTE)
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(real_db_api.get_user_by_id(self.driver["id"])["role"], "USER")
+
+    def test_user_cannot_read_another_users_record(self):
+        # The IDOR case: a valid session, someone else's id in the URL.
+        res = self.get(self.as_driver(), f"/api/users/{self.other['id']}")
+        self.assertEqual(res.status_code, 403)
+
+    def test_user_can_read_their_own_record(self):
+        res = self.get(self.as_driver(), f"/api/users/{self.driver['id']}")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["id"], self.driver["id"])
+
+    def test_no_response_ever_carries_a_face_embedding(self):
+        real_db_api.set_user_embedding(self.driver["id"], b"\xde\xad\xbe\xef")
+        admin = self.as_admin()
+        for path in ("/api/users", f"/api/users/{self.driver['id']}",
+                     "/api/face-status", "/api/me"):
+            with self.subTest(path=path):
+                raw = self.get(admin, path).data.lower()
+                self.assertNotIn(b"face_encoding", raw)
+                self.assertNotIn(b"deadbeef", raw)
+                self.assertNotIn(b"\xde\xad\xbe\xef", raw)
+
+    def test_user_enrollment_cannot_target_another_account(self):
+        # A non-admin's client-supplied name is ignored entirely: Bob asking to
+        # enroll "Driver Cleo" enrolls Bob, not Cleo.
+        res = self.post(self.as_driver(), "/api/enroll/start",
+                        json={"name": "Driver Cleo"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["user"], "Driver Bob")
+
+    def test_admin_enrollment_may_target_another_account(self):
+        res = self.post(self.as_admin(), "/api/enroll/start",
+                        json={"name": "Driver Cleo"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["user"], "Driver Cleo")
+
+    def test_user_cannot_feed_another_users_enrollment_session(self):
+        # Cleo starts enrolling; Bob must not be able to push frames into it.
+        started = self.post(self.as_user(self.other), "/api/enroll/start", json={})
+        session_id = started.get_json()["session_id"]
+        hijack = self.get(self.as_driver(),
+                          f"/api/enroll/status?session_id={session_id}")
+        self.assertEqual(hijack.status_code, 403)
+
+    # -- ADMIN role ------------------------------------------------------
+
+    def test_admin_can_perform_administration(self):
+        client = self.as_admin()
+        self.assertEqual(self.get(client, "/api/users").status_code, 200)
+        self.assertEqual(self.get(client, "/api/logs").status_code, 200)
+        self.assertEqual(self.get(client, "/api/settings").status_code, 200)
+        created = self.post(client, "/api/users", json={"name": "Dana"})
+        self.assertEqual(created.status_code, 201)
+
+    def test_admin_can_read_any_user(self):
+        res = self.get(self.as_admin(), f"/api/users/{self.driver['id']}")
+        self.assertEqual(res.status_code, 200)
+
+    def test_legacy_token_still_authenticates_as_admin(self):
+        res = self.anon.get("/api/users", environ_base=REMOTE,
+                            headers={"Authorization": f"Bearer {self.LEGACY_TOKEN}"})
+        self.assertEqual(res.status_code, 200)
+
+    def test_wrong_legacy_token_is_rejected(self):
+        res = self.anon.get("/api/users", environ_base=REMOTE,
+                            headers={"Authorization": "Bearer nope"})
+        self.assertEqual(res.status_code, 401)
+
+    # -- pairing ---------------------------------------------------------
+
+    def test_pairing_code_works_exactly_once(self):
+        issued = self.post(self.as_admin(), "/api/pair/create",
+                           json={"user_id": self.driver["id"]})
+        self.assertEqual(issued.status_code, 201)
+        code = issued.get_json()["code"]
+
+        first = self.post(self.anon, "/api/pair/redeem", json={"code": code})
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.get_json()["name"], "Driver Bob")
+
+        second = self.app.test_client().post("/api/pair/redeem", json={"code": code},
+                                             environ_base=REMOTE)
+        self.assertEqual(second.status_code, 401)
+
+    def test_redeeming_sets_an_httponly_session_cookie(self):
+        code = self.post(self.as_admin(), "/api/pair/create",
+                         json={"user_id": self.driver["id"]}).get_json()["code"]
+        res = self.post(self.anon, "/api/pair/redeem", json={"code": code})
+        cookie = res.headers.get("Set-Cookie", "")
+        self.assertIn("faceid_session=", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        # The redeemed session actually works.
+        self.assertEqual(self.get(self.anon, "/api/me").status_code, 200)
+
+    def test_invalid_and_expired_pairing_codes_fail(self):
+        self.assertEqual(
+            self.post(self.anon, "/api/pair/redeem", json={"code": "garbage"}).status_code, 401)
+        expired = real_db_api.create_pairing_code(self.driver["id"], ttl_seconds=-1)
+        self.assertEqual(
+            self.post(self.anon, "/api/pair/redeem",
+                      json={"code": expired["code"]}).status_code, 401)
+
+    def test_pairing_is_rate_limited(self):
+        codes = [self.post(self.anon, "/api/pair/redeem", json={"code": "bad"})
+                 for _ in range(7)]
+        self.assertEqual(codes[-1].status_code, 429)
+
+    def test_only_admin_can_mint_pairing_codes(self):
+        res = self.post(self.as_driver(), "/api/pair/create",
+                        json={"user_id": self.driver["id"]})
+        self.assertEqual(res.status_code, 403)
+
+    # -- sessions --------------------------------------------------------
+
+    def test_logout_invalidates_the_session(self):
+        client = self.as_driver()
+        self.assertEqual(self.get(client, "/api/me").status_code, 200)
+        self.assertEqual(self.post(client, "/api/auth/logout").status_code, 200)
+        self.assertEqual(self.get(client, "/api/me").status_code, 401)
+
+    def test_revoked_session_is_rejected(self):
+        issued = real_db_api.create_session(self.driver["id"])
+        client = self.app.test_client()
+        client.set_cookie("faceid_session", issued["token"], domain="localhost")
+        self.assertEqual(self.get(client, "/api/me").status_code, 200)
+        real_db_api.revoke_all_sessions_for_user(self.driver["id"])
+        self.assertEqual(self.get(client, "/api/me").status_code, 401)
+
+    def test_expired_session_is_rejected(self):
+        issued = real_db_api.create_session(self.driver["id"], absolute_seconds=-1)
+        client = self.app.test_client()
+        client.set_cookie("faceid_session", issued["token"], domain="localhost")
+        self.assertEqual(self.get(client, "/api/me").status_code, 401)
+
+    def test_disabling_an_account_kills_its_sessions(self):
+        client = self.as_driver()
+        self.assertEqual(self.get(client, "/api/me").status_code, 200)
+        real_db_api.delete_user(self.driver["id"])
+        self.assertEqual(self.get(client, "/api/me").status_code, 401)
+
+    def test_demoting_an_admin_revokes_their_sessions(self):
+        second = real_db_api.add_user("Second Admin")
+        real_db_api.set_user_role(second["id"], "ADMIN")
+        victim = self.as_user(second)
+        self.assertEqual(self.get(victim, "/api/users").status_code, 200)
+        self.as_admin().patch(f"/api/users/{second['id']}/role",
+                              json={"role": "USER"}, environ_base=REMOTE)
+        self.assertEqual(self.get(victim, "/api/users").status_code, 401)
+
+    def test_garbage_cookie_is_rejected(self):
+        client = self.app.test_client()
+        client.set_cookie("faceid_session", "not-a-real-token", domain="localhost")
+        self.assertEqual(self.get(client, "/api/me").status_code, 401)
+
+    # -- injection -------------------------------------------------------
+
+    def test_sql_like_input_is_stored_as_data(self):
+        payload = "Robert'); DROP TABLE users;--"
+        res = self.post(self.as_admin(), "/api/users", json={"name": payload})
+        self.assertEqual(res.status_code, 201)
+        names = [u["name"] for u in real_db_api.list_users_for_ui()]
+        self.assertIn(payload, names)
+        # The table is still there and still holds everyone.
+        self.assertGreaterEqual(len(names), 4)
+
+    # -- face templates --------------------------------------------------
+
+    def test_user_can_delete_only_their_own_face(self):
+        real_db_api.set_user_embedding(self.driver["id"], b"\x01\x02")
+        real_db_api.set_user_embedding(self.other["id"], b"\x03\x04")
+        client = self.as_driver()
+
+        stolen = client.delete(f"/api/users/{self.other['id']}/face", environ_base=REMOTE)
+        self.assertEqual(stolen.status_code, 403)
+        self.assertTrue(real_db_api.get_user_by_id(self.other["id"])["face_enrolled"])
+
+        own = client.delete(f"/api/users/{self.driver['id']}/face", environ_base=REMOTE)
+        self.assertEqual(own.status_code, 200)
+        self.assertFalse(real_db_api.get_user_by_id(self.driver["id"])["face_enrolled"])
+
+    def test_admin_can_delete_any_face(self):
+        real_db_api.set_user_embedding(self.driver["id"], b"\x01\x02")
+        res = self.as_admin().delete(f"/api/users/{self.driver['id']}/face",
+                                     environ_base=REMOTE)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(real_db_api.get_user_by_id(self.driver["id"])["face_enrolled"])
+
+    def test_unauthenticated_cannot_delete_a_face(self):
+        real_db_api.set_user_embedding(self.driver["id"], b"\x01\x02")
+        res = self.anon.delete(f"/api/users/{self.driver['id']}/face", environ_base=REMOTE)
+        self.assertEqual(res.status_code, 401)
+        self.assertTrue(real_db_api.get_user_by_id(self.driver["id"])["face_enrolled"])
+
+    # -- static serving --------------------------------------------------
+
+    def test_static_routes_refuse_path_traversal(self):
+        client = self.as_admin()
+        for path in (
+            "/assets/../db.py",
+            "/assets/../../etc/passwd",
+            "/assets/%2e%2e/db.py",
+            "/icons/../../db_api.py",
+            "/assets/..%2fdb.py",
+        ):
+            with self.subTest(path=path):
+                res = client.get(path, environ_base=REMOTE)
+                self.assertEqual(res.status_code, 404)
+                self.assertNotIn(b"import ", res.data[:200])
+
+    def test_static_serving_does_not_shadow_the_api(self):
+        # A GET on a POST-only endpoint must stay a 405 from the API, not turn
+        # into the SPA shell served with 200.
+        client = self.as_admin()
+        self.assertEqual(client.get("/api/unlock", environ_base=REMOTE).status_code, 405)
+        self.assertEqual(client.get("/api/nope", environ_base=REMOTE).status_code, 405)
+
+    # -- input validation and error shape --------------------------------
+
+    def test_malformed_input_returns_json_not_a_stack_trace(self):
+        """Type-confused input must never produce an HTML 500."""
+        self.app.config["PROPAGATE_EXCEPTIONS"] = False
+        client = self.as_admin()
+        cases = [
+            ("post", "/api/users", {"name": 123}),
+            ("post", "/api/users", {"name": "A" * 999}),
+            ("post", "/api/users", {"name": "a\x00b"}),
+            ("post", "/api/enroll/start", {"name": 5}),
+            ("post", "/api/scan/start", {"purpose": 1}),
+            ("post", "/api/scan/start", {"purpose": "not-a-purpose"}),
+            ("post", "/api/scan/cancel", {"session_id": {"a": 1}}),
+            ("post", "/api/verify-log", {"detail": {"a": 1}}),
+            ("post", "/api/settings", {"autoRelockSeconds": "abc"}),
+            ("post", "/api/settings", {"autoRelockSeconds": -5}),
+            ("post", "/api/settings", {"liveness": "no"}),
+        ]
+        for method, path, payload in cases:
+            with self.subTest(path=path, payload=payload):
+                res = getattr(client, method)(path, json=payload, environ_base=REMOTE)
+                self.assertEqual(res.status_code, 400)
+                self.assertTrue(res.content_type.startswith("application/json"),
+                                f"{path} answered {res.content_type}")
+                self.assertFalse(res.get_json()["ok"])
+
+    def test_settings_bounds_are_enforced(self):
+        client = self.as_admin()
+        self.assertEqual(
+            client.post("/api/settings", json={"autoRelockSeconds": 99999},
+                        environ_base=REMOTE).status_code, 400)
+        self.assertEqual(
+            client.post("/api/settings", json={"unknownKey": 1},
+                        environ_base=REMOTE).status_code, 400)
+        self.assertEqual(
+            client.post("/api/settings", json={"autoRelockSeconds": 30},
+                        environ_base=REMOTE).status_code, 200)
+
+    def test_oversized_upload_is_refused_before_the_view_runs(self):
+        self.app.config["PROPAGATE_EXCEPTIONS"] = False
+        # Running this under -W always reports a ResourceWarning for an unclosed
+        # temp file: Werkzeug spools the oversized body to disk and abandons the
+        # handle when it aborts the parse. It surfaces at collection time, so it
+        # cannot be caught around the call, and it is inside Werkzeug rather
+        # than this application.
+        payload = io.BytesIO(b"\xff\xd8" + b"\0" * (9 * 1024 * 1024))
+        res = self.as_admin().post(
+            "/api/enroll/sample",
+            data={"session_id": "s1", "image": (payload, "big.jpg", "image/jpeg")},
+            content_type="multipart/form-data", environ_base=REMOTE,
+        )
+        self.assertEqual(res.status_code, 413)
+        self.assertTrue(res.content_type.startswith("application/json"))
+
+    def test_security_headers_are_present(self):
+        res = self.get(self.as_admin(), "/api/status")
+        self.assertIn("default-src 'self'", res.headers["Content-Security-Policy"])
+        self.assertIn("frame-ancestors 'none'", res.headers["Content-Security-Policy"])
+        self.assertEqual(res.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(res.headers["X-Frame-Options"], "DENY")
+        self.assertEqual(res.headers["Referrer-Policy"], "no-referrer")
+        # HSTS only once TLS is actually in front; otherwise it strands clients.
+        self.assertNotIn("Strict-Transport-Security", res.headers)
+
+    def test_audit_log_is_pruned(self):
+        real_db_api.prune_logs(keep=5)
+        for i in range(20):
+            real_db_api.log_event("test_event", "ok", detail=f"entry {i}")
+        result = real_db_api.prune_logs(keep=5)
+        self.assertGreater(result["removed"], 0)
+        self.assertLessEqual(result["remaining"], 5)
+
+    # -- policy completeness ---------------------------------------------
+
+    def test_every_route_has_an_explicit_policy(self):
+        """A new route must not inherit access by accident."""
+        missing = []
+        for rule in self.app.url_map.iter_rules():
+            endpoint = rule.endpoint
+            if endpoint == "static" or endpoint.startswith("sim_"):
+                continue
+            if endpoint not in auth.ENDPOINT_POLICY:
+                missing.append(f"{endpoint} ({rule.rule})")
+        self.assertEqual(
+            missing, [],
+            "These routes have no ENDPOINT_POLICY entry, so they silently "
+            "default to admin-only. Add them to auth.ENDPOINT_POLICY:\n  "
+            + "\n  ".join(missing),
+        )
 
 
 if __name__ == "__main__":

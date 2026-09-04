@@ -295,8 +295,87 @@ The install script will:
 - Create the SQLite database under the service user's home (`~/faceid/faceid.db`)
 - Install Raspberry Pi OS's `python3-picamera2` package and all pip dependencies into `.venv`
 - Add your user to the `dialout`, `video`, and `gpio` groups
+- Generate a `FACEID_API_TOKEN` in `/etc/default/faceid` and print it at the end
 - Install and enable the single `faceid-api.service` so the API owns the camera and ESP32
 - Disable and remove the legacy separate verification service if it is present
+
+### Accounts, pairing, and sessions
+
+The Device API listens on `0.0.0.0:5000`, so every device on the network can
+reach it. Nothing but `/health`, `/ready`, and the pairing-redeem endpoint is
+reachable without an authenticated session.
+
+**Identity.** Each row in `users` is one person: a face template *and* a login,
+with a `role` of `ADMIN` or `USER`. `install.sh` creates the first administrator
+and prints a pairing code; everyone else is added by an admin.
+
+**Pairing.** A browser proves itself once by redeeming a single-use code that
+expires in five minutes. Redeeming sets an `HttpOnly`, `SameSite=Strict` session
+cookie — the browser cannot read it, and no shared secret is ever typed into or
+stored by the app.
+
+```bash
+sudo faceid-pair "Bob"            # one-time code for Bob's browser
+sudo faceid-manage list-users     # who exists, and their role
+sudo faceid-manage revoke "Bob"   # sign out all of Bob's devices
+```
+
+An admin can also mint codes from the UI, so the console is normally needed only
+once.
+
+**Authorization** is deny-by-default and enforced server-side for every route.
+A `USER` may see the device, unlock, lock, run a face scan, read *their own*
+record, and manage *their own* face. Everything else — the user list, the audit
+log, settings, enrolling or deleting anyone else — is `ADMIN` only. Changing a
+user id in a URL does not cross that line; the identity always comes from the
+session, never from the request. Hiding tabs in the UI is a convenience, not the
+boundary.
+
+**Sessions** idle out after 12 hours and expire absolutely after 30 days. They
+can be revoked individually, disabling an account kills its sessions
+immediately, and demoting an administrator revokes theirs.
+
+### Same-origin deployment
+
+The Pi serves the built frontend itself, so the app and the API share an origin.
+This is what makes `SameSite=Strict` cookies work — a cross-site cookie is never
+sent — and it removes CORS from the production path. Run `npm run build` so
+`dist/` exists; the API serves it at `/`.
+
+In development, `vite.config.js` proxies `/api` to `http://127.0.0.1:5000`
+(override with `VITE_DEVICE_API`) so the dev server is same-origin too. Leave
+**Base URL** blank in the app for same-origin; it is only needed for `fake://pi`
+or a mock server.
+
+`FACEID_ALLOWED_ORIGINS` (comma-separated) grants credentialed access to
+specific extra origins. Without it, cross-origin requests get `*` and *no*
+credentials, which browsers refuse to send cookies to — deliberately, so the
+supported path stays same-origin.
+
+### The Face API is internal
+
+`car_face_auth/src/api_server.py` (port 8765) writes the same
+`users.face_encoding` column the Pi unlocks from, so enrolling a face there is
+equivalent to cutting a key. It is a development tool and a trusted internal
+callee, never a public endpoint:
+
+* it refuses any request that is not from loopback unless it carries
+  `X-Internal-Token` matching `FACEID_INTERNAL_TOKEN`;
+* `python -m car_face_auth.src.api_server` binds `127.0.0.1` by default, and
+  binding wider requires `FACEID_FACE_API_PUBLIC=1` *and* a configured token;
+* CORS is an explicit origin allowlist with credentials disabled (it previously
+  combined `allow_origins=["*"]` with `allow_credentials=True`, which let any
+  page drive it).
+
+In device mode the app no longer calls it at all — face deletion goes through
+the authenticated `DELETE /api/users/<id>/face` on the Device API.
+
+### The legacy shared token
+
+`FACEID_API_TOKEN` still authenticates as an administrator so existing installs
+keep working across the upgrade, and it doubles as the internal service
+credential. Browsers do not use it and should not hold it. Any value left in a
+browser's `localStorage` by an older build is deleted on first load.
 
 By default the service account is the user that invoked `sudo`; override it
 with `FACEID_SERVICE_USER=<user>` and the database directory with

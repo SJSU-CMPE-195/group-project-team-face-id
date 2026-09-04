@@ -91,12 +91,13 @@ def _register_simulation_routes(app, runtime: SimulatedPiRuntime):
     return app
 
 
-def create_mock_app(db_module: Any = db_api, runtime: SimulatedPiRuntime | None = None):
+def create_mock_app(db_module: Any = db_api, runtime: SimulatedPiRuntime | None = None,
+                    api_token: str | None = None):
     """Build the canonical Device API with hardware-free runtime seams."""
 
     runtime_impl = runtime or SimulatedPiRuntime(db_module)
     return _register_simulation_routes(
-        create_app(db_module=db_module, runtime=runtime_impl),
+        create_app(db_module=db_module, runtime=runtime_impl, api_token=api_token),
         runtime_impl,
     )
 

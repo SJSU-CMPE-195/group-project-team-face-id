@@ -1,17 +1,59 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { genId } from "../utils/helpers";
 
+// The Device API identifies callers by an HttpOnly session cookie, so there is
+// no credential for this module to hold or attach -- the browser sends it.
+// Every request opts into credentials, and nothing here can leak a secret
+// because nothing here has one.
+export class AuthError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = "AuthError";
+    this.status = status;
+  }
+}
+
+function describeError(res, data) {
+  const detail = data?.error || data?.detail;
+  if (res.status === 401) {
+    return "Your session has ended. Pair this device again to continue.";
+  }
+  if (res.status === 403) {
+    return typeof detail === "string" && detail
+      ? detail
+      : "Your account does not have permission for this action.";
+  }
+  if (res.status === 429) {
+    return "Too many attempts. Wait a moment and try again.";
+  }
+  if (typeof detail === "string") return detail;
+  return `HTTP ${res.status} ${res.statusText}`;
+}
+
+// 401 and 403 are authorization outcomes, not connectivity failures. Callers
+// must tell them apart so a permission error does not read as "offline".
+function raise(res, data) {
+  const message = describeError(res, data);
+  if (res.status === 401 || res.status === 403) {
+    throw new AuthError(message, res.status);
+  }
+  throw new Error(message);
+}
+
 async function fetchJson(url, opts = {}) {
   const res = await fetch(url, {
     cache: "no-store",
+    credentials: "include",
     ...opts,
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    },
   });
   const ct = res.headers.get("content-type") || "";
   const data = ct.includes("application/json") ? await res.json().catch(() => null) : null;
   if (!res.ok) {
-    const detail = data?.error || data?.detail;
-    throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status} ${res.statusText}`);
+    raise(res, data);
   }
   if (!ct.includes("application/json")) {
     throw new Error(`Expected JSON response from ${url}`);
@@ -20,12 +62,16 @@ async function fetchJson(url, opts = {}) {
 }
 
 async function fetchFormJson(url, form) {
-  const res = await fetch(url, { method: "POST", body: form, cache: "no-store" });
+  const res = await fetch(url, {
+    method: "POST",
+    body: form,
+    cache: "no-store",
+    credentials: "include",
+  });
   const ct = res.headers.get("content-type") || "";
   const data = ct.includes("application/json") ? await res.json().catch(() => null) : null;
   if (!res.ok) {
-    const detail = data?.error || data?.detail;
-    throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status} ${res.statusText}`);
+    raise(res, data);
   }
   if (!ct.includes("application/json")) throw new Error(`Expected JSON response from ${url}`);
   return data;
@@ -55,6 +101,13 @@ export default function useApi(mode, baseUrl, sim, setSim) {
       const clean = (baseUrl || "").trim().replace(/\/$/, "");
       if (isMockPiUrl(clean)) {
         return {
+          // Fake Pi runs entirely in the browser: no session exists, so it
+          // reports an admin identity rather than gating the UI.
+          me: async () => ({ id: "sim", name: "Simulator", role: "ADMIN", faceEnrolled: false }),
+          logout: async () => ({ ok: true }),
+          pairRedeem: async () => ({ id: "sim", name: "Simulator", role: "ADMIN" }),
+          pairCreate: async () => ({ ok: true, code: "SIMULATED" }),
+          deleteFace: async () => ({ ok: true }),
           status: async () => ({
             online: true,
             lockState: simRef.current.locked ? "locked" : "unlocked",
@@ -267,59 +320,83 @@ export default function useApi(mode, baseUrl, sim, setSim) {
           piEnrollFinish: missingBaseUrl,
         };
       }
+      const apiJson = (url, opts) => fetchJson(url, opts);
+      const apiForm = (url, form) => fetchFormJson(url, form);
+
       return {
-        status: () => fetchJson(`${clean}/api/status`),
+        me: () => apiJson(`${clean}/api/me`),
+        logout: () => apiJson(`${clean}/api/auth/logout`, { method: "POST" }),
+        pairRedeem: (code) =>
+          apiJson(`${clean}/api/pair/redeem`, {
+            method: "POST",
+            body: JSON.stringify({ code }),
+          }),
+        pairCreate: (userId) =>
+          apiJson(`${clean}/api/pair/create`, {
+            method: "POST",
+            body: JSON.stringify({ user_id: userId }),
+          }),
+        status: () => apiJson(`${clean}/api/status`),
         unlock: () =>
-          fetchJson(`${clean}/api/unlock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
+          apiJson(`${clean}/api/unlock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
         lock: () =>
-          fetchJson(`${clean}/api/lock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
-        ignitionStop: () => fetchJson(`${clean}/api/ignition/stop`, { method: "POST" }),
-        fullReset: () => fetchJson(`${clean}/api/full-reset`, { method: "POST" }),
-        users: () => fetchJson(`${clean}/api/users`),
-        faceStatus: () => fetchJson(`${clean}/api/face-status`),
+          apiJson(`${clean}/api/lock`, { method: "POST", body: JSON.stringify({ reason: "manual_ui" }) }),
+        ignitionStop: () => apiJson(`${clean}/api/ignition/stop`, { method: "POST" }),
+        fullReset: () => apiJson(`${clean}/api/full-reset`, { method: "POST" }),
+        users: () => apiJson(`${clean}/api/users`),
+        faceStatus: () => apiJson(`${clean}/api/face-status`),
         addUser: (name) =>
-          fetchJson(`${clean}/api/users`, { method: "POST", body: JSON.stringify({ name }) }),
+          apiJson(`${clean}/api/users`, { method: "POST", body: JSON.stringify({ name }) }),
         delUser: (id) =>
-          fetchJson(`${clean}/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+          apiJson(`${clean}/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }),
+        deleteFace: (id) =>
+          apiJson(`${clean}/api/users/${encodeURIComponent(id)}/face`, { method: "DELETE" }),
         setAccess: (id, allowed) =>
-          fetchJson(`${clean}/api/users/${encodeURIComponent(id)}/access`, { method: "PATCH", body: JSON.stringify({ allowed }) }),
-        logs: () => fetchJson(`${clean}/api/logs`),
+          apiJson(`${clean}/api/users/${encodeURIComponent(id)}/access`, { method: "PATCH", body: JSON.stringify({ allowed }) }),
+        logs: () => apiJson(`${clean}/api/logs`),
         verifyLog: (result, detail, user_id) =>
-          fetchJson(`${clean}/api/verify-log`, { method: "POST", body: JSON.stringify({ result, detail, user_id }) }),
-        getSettings: () => fetchJson(`${clean}/api/settings`),
+          apiJson(`${clean}/api/verify-log`, { method: "POST", body: JSON.stringify({ result, detail, user_id }) }),
+        getSettings: () => apiJson(`${clean}/api/settings`),
         saveSettings: (s) =>
-          fetchJson(`${clean}/api/settings`, { method: "POST", body: JSON.stringify(s) }),
+          apiJson(`${clean}/api/settings`, { method: "POST", body: JSON.stringify(s) }),
         scanStart: (payload = {}) =>
-          fetchJson(`${clean}/api/scan/start`, { method: "POST", body: JSON.stringify(payload) }),
+          apiJson(`${clean}/api/scan/start`, { method: "POST", body: JSON.stringify(payload) }),
         scanStatus: (sessionId) =>
-          fetchJson(`${clean}/api/scan/status?session_id=${encodeURIComponent(sessionId)}`),
+          apiJson(`${clean}/api/scan/status?session_id=${encodeURIComponent(sessionId)}`),
         scanCancel: (sessionId) =>
-          fetchJson(`${clean}/api/scan/cancel`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
+          apiJson(`${clean}/api/scan/cancel`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
         scanSample: (sessionId, blob) => {
           const form = new FormData();
           form.append("session_id", sessionId);
           form.append("image", blob, "frame.jpg");
-          return fetchFormJson(`${clean}/api/scan/sample`, form);
+          return apiForm(`${clean}/api/scan/sample`, form);
         },
         piEnrollStart: (payload = {}) =>
-          fetchJson(`${clean}/api/enroll/start`, { method: "POST", body: JSON.stringify(payload) }),
+          apiJson(`${clean}/api/enroll/start`, { method: "POST", body: JSON.stringify(payload) }),
         piEnrollStatus: (sessionId) =>
-          fetchJson(`${clean}/api/enroll/status?session_id=${encodeURIComponent(sessionId)}`),
+          apiJson(`${clean}/api/enroll/status?session_id=${encodeURIComponent(sessionId)}`),
         piEnrollCancel: (sessionId) =>
-          fetchJson(`${clean}/api/enroll/cancel`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
+          apiJson(`${clean}/api/enroll/cancel`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
         piEnrollSample: (sessionId, blob) => {
           const form = new FormData();
           form.append("session_id", sessionId);
           form.append("image", blob, "sample.jpg");
-          return fetchFormJson(`${clean}/api/enroll/sample`, form);
+          return apiForm(`${clean}/api/enroll/sample`, form);
         },
         piEnrollFinish: (sessionId) =>
-          fetchJson(`${clean}/api/enroll/finish`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
+          apiJson(`${clean}/api/enroll/finish`, { method: "POST", body: JSON.stringify({ session_id: sessionId }) }),
       };
     }
 
     // SIM
     return {
+      // The simulator has no server and therefore no session; it reports an
+      // admin identity so the whole UI stays reachable while developing.
+      me: async () => ({ id: "sim", name: "Simulator", role: "ADMIN", faceEnrolled: false }),
+      logout: async () => ({ ok: true }),
+      pairRedeem: async () => ({ id: "sim", name: "Simulator", role: "ADMIN" }),
+      pairCreate: async () => ({ ok: true, code: "SIMULATED" }),
+      deleteFace: async () => ({ ok: true }),
       status: async () => ({
         online: true,
         lockState: simRef.current.locked ? "locked" : "unlocked",
