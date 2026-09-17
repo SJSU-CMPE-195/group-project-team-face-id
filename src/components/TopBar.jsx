@@ -9,11 +9,10 @@ const titles = {
   settings: "Settings",
 };
 
-export default function TopBar({ tab, mode, locked, ignitionOn, online, busy, onRefresh }) {
+export default function TopBar({ tab, locked, ignitionOn, online, busy, onRefresh }) {
   const { isDark, toggleTheme } = useTheme();
-  const modeLabel = mode === "device" ? "Device API" : "Simulation";
   const lockLabel = locked ? "Locked" : "Unlocked";
-  const linkLabel = mode === "device" ? (online ? "Pi online" : "Pi offline") : "Simulation";
+  const linkLabel = online ? "Host online" : "Host offline";
 
   return (
     <header className="app-safe-top flex min-h-16 shrink-0 items-center justify-between border-b border-white/[0.06] bg-dna-bg/90 px-4 backdrop-blur-md sm:px-5 md:min-h-14">
@@ -29,7 +28,7 @@ export default function TopBar({ tab, mode, locked, ignitionOn, online, busy, on
             </span>
           </div>
           <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500 md:hidden">
-            <span className={`h-1.5 w-1.5 rounded-full ${mode === "device" ? (online ? "bg-emerald-400" : "bg-rose-400") : "bg-violet-400"}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-emerald-400" : "bg-rose-400"}`} />
             <span>{linkLabel}</span>
             <span aria-hidden="true">·</span>
             <span className={locked ? "text-slate-400" : "text-emerald-400"}>{lockLabel}</span>
@@ -38,7 +37,6 @@ export default function TopBar({ tab, mode, locked, ignitionOn, online, busy, on
       </div>
 
       <div className="hidden items-center gap-2 md:flex">
-        <StatPill label="Mode" value={modeLabel} />
         <StatPill label="Link" value={online ? "Online" : "Offline"} accent={online ? "text-violet-300" : "text-rose-400"} />
         <StatPill label="State" value={lockLabel} accent={locked ? "text-fuchsia-300" : "text-emerald-300"} />
         <StatPill label="Ignition" value={ignitionOn ? "On" : "Off"} accent={ignitionOn ? "text-amber-300" : "text-slate-300"} />

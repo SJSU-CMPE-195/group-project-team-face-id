@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BASS</string>
+    <string name="app_tagline">生物辨識門禁與安全系統</string>
+
+    <string name="nav_console">控制台</string>
+    <string name="nav_users">使用者</string>
+    <string name="nav_logs">日誌</string>
+    <string name="nav_settings">設定</string>
+
+    <string name="action_refresh">重新整理</string>
+    <string name="action_retry">重試</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_close">關閉</string>
+    <string name="action_remove">移除</string>
+    <string name="action_save">儲存</string>
+    <string name="action_reset">重設</string>
+    <string name="action_pair">掃描裝置 QR code</string>
+    <string name="action_forget_device">忘記此裝置</string>
+    <string name="action_scan_face">掃描臉部解鎖</string>
+    <string name="action_cancel_scan">取消掃描</string>
+    <string name="action_lock">上鎖</string>
+    <string name="action_stop_ignition">停止點火</string>
+    <string name="action_full_reset">完整復位</string>
+    <string name="action_verify_ignition">是，驗證並點火</string>
+    <string name="action_lock_now">否，立即上鎖</string>
+    <string name="action_add_enroll">新增並註冊臉部</string>
+    <string name="action_enroll_face">註冊臉部</string>
+
+    <string name="forget_device_title">要忘記此裝置嗎？</string>
+    <string name="forget_device_description">移除此手機的配對。下次連線需重新掃描裝置 QR 碼。</string>
+    <string name="forget_reset_pin">同時重設 BASS PIN</string>
+    <string name="forget_reset_pin_description">下次配對時需重新設定並確認 6 位數 BASS PIN。</string>
+    <string name="forget_device_clear_failed">無法移除已儲存的裝置連線，BASS PIN 未變更。請再試一次。</string>
+    <string name="forget_pin_clear_failed">裝置連線已移除，但無法重設 BASS PIN。請保持此對話框開啟並再試一次。</string>
+
+    <string name="pair_title">配對 BASS 裝置</string>
+    <string name="pair_description">請先讓手機與裝置連上同一個 Wi-Fi。掃描固定裝置 QR code 前須輸入 BASS PIN；首次使用時會先建立 PIN。</string>
+    <string name="pair_camera_permission">需要相機權限才能掃描裝置 QR code。</string>
+    <string name="pair_permission_denied">相機權限已被拒絕。請在 Android 設定中允許權限後再掃描。</string>
+    <string name="pair_searching">正在此 Wi-Fi 尋找你的裝置…</string>
+    <string name="pair_connecting">正在連線至此裝置…</string>
+    <string name="pair_unauthorized">配對金鑰遭拒。請向管理員取得目前的 QR code。</string>
+    <string name="pair_offline">找不到裝置。請確認兩台裝置使用同一個 Wi-Fi，且路由器未啟用用戶端隔離。</string>
+    <string name="pair_error">無法連線至此裝置。</string>
+    <string name="pair_scanner_hint">請將完整 QR code 放在框內。</string>
+    <string name="pair_camera_preview">後置相機 QR code 預覽</string>
+
+    <string name="status_connected">已連線</string>
+    <string name="status_disconnected">未連線</string>
+    <string name="status_discovering">正在搜尋</string>
+    <string name="status_connecting">正在連線</string>
+    <string name="status_unauthorized">未授權</string>
+    <string name="status_offline">離線</string>
+    <string name="status_error">錯誤</string>
+    <string name="status_ready">就緒</string>
+    <string name="status_scanning">掃描中</string>
+    <string name="status_locked">已上鎖</string>
+    <string name="status_unlocked">已解鎖</string>
+    <string name="status_ignition_on">點火已啟動</string>
+    <string name="status_ignition_off">點火已關閉</string>
+    <string name="status_allowed">允許</string>
+    <string name="status_blocked">封鎖</string>
+    <string name="status_enrolled">已註冊</string>
+    <string name="status_not_enrolled">沒有臉部範本</string>
+    <string name="status_simulated">模擬執行器</string>
+    <string name="status_live_hardware">實體硬體</string>
+
+    <string name="console_face_title">人臉驗證</string>
+    <string name="console_phone_camera">此手機相機</string>
+    <string name="console_device_camera">已配對裝置相機</string>
+    <string name="console_device_camera_description">每次解鎖與點火驗證都使用已配對裝置連接的相機。</string>
+    <string name="console_device_camera_unavailable">已配對裝置的相機目前無法使用。</string>
+    <string name="console_current_state">目前狀態</string>
+    <string name="console_locked_hint">請先在上方輸入 BASS PIN，再面向已配對裝置的相機解鎖。</string>
+    <string name="console_unlocked_hint">使用完畢後請將裝置上鎖。</string>
+    <string name="console_start_ignition_prompt">現在啟動點火嗎？第二次掃描必須是同一位駕駛：%1$s。</string>
+    <plurals name="console_auto_lock_countdown">
+        <item quantity="other">若未選擇，將在 %1$d 秒後自動上鎖。</item>
+    </plurals>
+    <string name="console_no_auto_lock">沒有自動上鎖倒數，準備好後請選擇操作。</string>
+    <string name="console_battery">電量</string>
+    <string name="console_signal">訊號</string>
+    <string name="console_device">裝置</string>
+    <string name="console_protocol">協定</string>
+    <string name="console_address">位址</string>
+    <string name="console_unknown">未知</string>
+    <string name="console_camera_preview">前置相機臉部預覽</string>
+    <string name="console_connection_title">已配對裝置</string>
+    <string name="console_connection_description">Wi-Fi 位址變更後，App 仍會自動重新尋找此裝置。</string>
+
+    <string name="users_enroll_title">臉部範本</string>
+    <string name="users_enroll_description">新增人員後再收集臉部樣本。使用手機相機註冊時須輸入 BASS PIN；使用已配對裝置相機則不需要。</string>
+    <string name="users_display_name">顯示名稱</string>
+    <string name="users_display_name_hint">輸入名稱</string>
+    <string name="users_people_title">人員與權限</string>
+    <string name="users_people_description">臉部權限決定誰可以解鎖此裝置。</string>
+    <string name="users_empty">目前沒有人員。請在上方新增並註冊臉部。</string>
+    <string name="users_added">新增於 %1$s</string>
+    <string name="users_enroll_progress">樣本 %1$d / %2$d</string>
+    <string name="users_device_capture">已配對裝置相機正在收集樣本。</string>
+    <string name="users_phone_capture">請將單一臉部保持在畫面中央，每次取樣之間稍微移動。</string>
+    <string name="users_retry_note">若註冊取消或失敗，人員仍會保留在目錄中，可從其資料卡重新註冊。</string>
+    <string name="session_failed_retry">操作失敗。請再試一次。</string>
+    <string name="users_remove_title">移除 %1$s？</string>
+    <string name="users_remove_description">這會移除人員資料、臉部範本與存取權限。</string>
+
+    <string name="logs_title">事件日誌</string>
+    <string name="logs_description">近期驗證與裝置活動。</string>
+    <string name="logs_empty">沒有事件。</string>
+    <string name="logs_ok">成功</string>
+    <string name="logs_failed">失敗</string>
+
+    <string name="settings_core_title">核心設定</string>
+    <string name="settings_description">變更會儲存在已配對的裝置上。</string>
+    <string name="settings_auto_relock">自動重新上鎖（秒）</string>
+    <string name="settings_auto_relock_help">0 表示停用，常用值為 5–15 秒。</string>
+    <string name="settings_ignition_stop">點火自動停止（秒）</string>
+    <string name="settings_ignition_stop_help">0 表示停用，常用值為 15–60 秒。</string>
+    <string name="settings_prompt_lock">點火詢問自動上鎖（秒）</string>
+    <string name="settings_prompt_lock_help">解鎖後等待是否點火的時間。0 表示無限期等待。</string>
+    <string name="settings_liveness">活體偵測</string>
+    <string name="settings_liveness_help">為相容性保留。此功能尚未由目前的裝置伺服器執行。</string>
+    <string name="settings_fail_lockout">失敗鎖定</string>
+    <string name="settings_fail_lockout_help">為相容性保留。此功能尚未由目前的裝置伺服器執行。</string>
+    <string name="settings_lockout_after">失敗幾次後鎖定</string>
+    <string name="settings_not_enforced">目前伺服器尚未執行</string>
+
+    <string name="pin_create_title">建立 BASS PIN</string>
+    <string name="pin_confirm_title">確認 BASS PIN</string>
+    <string name="pin_verify_title">輸入 BASS PIN</string>
+    <string name="pin_create_description">請設定 6 位數 PIN，保護此 App 中的敏感操作。</string>
+    <string name="pin_confirm_description">請再次輸入相同的 6 位數。</string>
+    <string name="pin_pair_description">配對 BASS 裝置前，請輸入 PIN。</string>
+    <string name="pin_enroll_description">使用此手機註冊臉部前，請輸入 PIN。</string>
+    <string name="pin_unlock_description">請輸入 PIN，以使用已配對裝置的相機開始人臉掃描。</string>
+    <string name="pin_setup_description">請輸入 PIN 以繼續使用 BASS。</string>
+    <string name="pin_digits_entered">PIN 輸入：已輸入 %1$d／%2$d 位數</string>
+    <string name="pin_delete">刪除最後一位數</string>
+    <string name="pin_submit">確認</string>
+    <string name="pin_invalid">請輸入完整 6 位數。</string>
+    <string name="pin_mismatch">兩次輸入的 PIN 不一致，請重新設定。</string>
+    <string name="pin_wrong">PIN 不正確，剩餘 %1$d 次嘗試機會。</string>
+    <string name="pin_storage_error">無法安全地儲存或驗證 BASS PIN。</string>
+    <plurals name="pin_locked_seconds">
+        <item quantity="other">請在 %1$d 秒後重試。</item>
+    </plurals>
+
+    <string name="error_title">發生錯誤</string>
+</resources>

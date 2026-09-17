@@ -1,0 +1,21 @@
+<resources>
+    <string name="core_pairing_unavailable">無法讀取已儲存的配對，請重新掃描 QR code。</string>
+    <string name="core_invalid_qr">無效的 BASS 配對 QR code。</string>
+    <string name="core_not_found">找不到設備，請檢查 Wi-Fi 與網路隔離設定。</string>
+    <string name="core_no_address">設備沒有可連線的區網位址。</string>
+    <string name="core_identity_mismatch">設備身分不符，已拒絕連線。</string>
+    <string name="core_protocol_unsupported">不支援此設備通訊協定。</string>
+    <string name="core_offline">設備離線，請檢查 Wi-Fi 與設備服務。</string>
+    <string name="core_operation_failed">操作失敗。</string>
+    <string name="core_session_disconnected">作業連線已中斷。</string>
+    <string name="core_upload_failed">相機影像上傳失敗。</string>
+    <string name="core_discovery_failed">設備搜尋失敗（%1$d）。</string>
+    <string name="core_discovery_unavailable">無法搜尋設備。</string>
+    <string name="core_camera_missing">要求的相機無法使用。</string>
+    <string name="core_qr_failed">QR code 掃描失敗。</string>
+    <string name="core_camera_unavailable">相機無法使用。</string>
+    <string name="core_capture_failed">相機拍攝失敗。</string>
+    <string name="core_decode_failed">無法解碼相機影像。</string>
+    <string name="core_pairing_save_failed">無法儲存配對。</string>
+    <string name="core_pairing_clear_failed">無法清除配對。</string>
+</resources>

@@ -38,6 +38,7 @@ build
 coverage
 .cache
 .vite
+.venv-wireless/
 
 # System files
 Thumbs.db

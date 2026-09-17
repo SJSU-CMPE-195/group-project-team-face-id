@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BASS</string>
+    <string name="app_tagline">Biometric Access &amp; Security System</string>
+
+    <string name="nav_console">Console</string>
+    <string name="nav_users">Users</string>
+    <string name="nav_logs">Logs</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="action_refresh">Refresh</string>
+    <string name="action_retry">Try again</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_close">Close</string>
+    <string name="action_remove">Remove</string>
+    <string name="action_save">Save</string>
+    <string name="action_reset">Reset</string>
+    <string name="action_pair">Scan device QR code</string>
+    <string name="action_forget_device">Forget device</string>
+    <string name="action_scan_face">Unlock with face scan</string>
+    <string name="action_cancel_scan">Cancel scan</string>
+    <string name="action_lock">Lock</string>
+    <string name="action_stop_ignition">Stop ignition</string>
+    <string name="action_full_reset">Full reset</string>
+    <string name="action_verify_ignition">Yes, verify ignition</string>
+    <string name="action_lock_now">No, lock now</string>
+    <string name="action_add_enroll">Add &amp; enroll face</string>
+    <string name="action_enroll_face">Enroll face</string>
+
+    <string name="forget_device_title">Forget this device?</string>
+    <string name="forget_device_description">Remove the pairing from this phone. Scan the device QR code to connect again.</string>
+    <string name="forget_reset_pin">Also reset BASS PIN</string>
+    <string name="forget_reset_pin_description">Set and confirm a new 6-digit BASS PIN the next time you pair.</string>
+    <string name="forget_device_clear_failed">Could not remove the saved device connection. The BASS PIN was not changed. Try again.</string>
+    <string name="forget_pin_clear_failed">The device connection was removed, but the BASS PIN could not be reset. Leave this dialog open and try again.</string>
+
+    <string name="pair_title">Pair your BASS device</string>
+    <string name="pair_description">Connect this phone and the device to the same Wi-Fi. Enter your BASS PIN before scanning the fixed device QR code; first use asks you to create one.</string>
+    <string name="pair_camera_permission">Camera access is needed to scan the device QR code.</string>
+    <string name="pair_permission_denied">Camera permission denied. Allow it in Android Settings to scan a QR code.</string>
+    <string name="pair_searching">Looking for your device on this Wi-Fi…</string>
+    <string name="pair_connecting">Connecting securely to this device…</string>
+    <string name="pair_unauthorized">The pairing key was rejected. Ask an administrator for the current QR code.</string>
+    <string name="pair_offline">Device not found. Check that both devices use the same Wi-Fi and that client isolation is off.</string>
+    <string name="pair_error">Could not connect to this device.</string>
+    <string name="pair_scanner_hint">Place the entire QR code inside the frame.</string>
+    <string name="pair_camera_preview">Rear camera QR code preview</string>
+
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_discovering">Discovering</string>
+    <string name="status_connecting">Connecting</string>
+    <string name="status_unauthorized">Unauthorized</string>
+    <string name="status_offline">Offline</string>
+    <string name="status_error">Error</string>
+    <string name="status_ready">Ready</string>
+    <string name="status_scanning">Scanning</string>
+    <string name="status_locked">Locked</string>
+    <string name="status_unlocked">Unlocked</string>
+    <string name="status_ignition_on">Ignition on</string>
+    <string name="status_ignition_off">Ignition off</string>
+    <string name="status_allowed">Allowed</string>
+    <string name="status_blocked">Blocked</string>
+    <string name="status_enrolled">Enrolled</string>
+    <string name="status_not_enrolled">No face template</string>
+    <string name="status_simulated">Simulated actuator</string>
+    <string name="status_live_hardware">Live hardware</string>
+
+    <string name="console_face_title">Face verification</string>
+    <string name="console_phone_camera">This phone camera</string>
+    <string name="console_device_camera">Paired device camera</string>
+    <string name="console_device_camera_description">The paired device uses its attached camera for every unlock and ignition scan.</string>
+    <string name="console_device_camera_unavailable">The paired device camera is unavailable.</string>
+    <string name="console_current_state">Current state</string>
+    <string name="console_locked_hint">Enter your BASS PIN above, then face the paired device camera to unlock.</string>
+    <string name="console_unlocked_hint">Lock the device when you are finished.</string>
+    <string name="console_start_ignition_prompt">Start ignition now? The second scan must match %1$s.</string>
+    <plurals name="console_auto_lock_countdown">
+        <item quantity="one">Auto lock in %1$d second if no choice is made.</item>
+        <item quantity="other">Auto lock in %1$d seconds if no choice is made.</item>
+    </plurals>
+    <string name="console_no_auto_lock">No auto-lock timer. Choose an action when ready.</string>
+    <string name="console_battery">Battery</string>
+    <string name="console_signal">Signal</string>
+    <string name="console_device">Device</string>
+    <string name="console_protocol">Protocol</string>
+    <string name="console_address">Address</string>
+    <string name="console_unknown">Unknown</string>
+    <string name="console_camera_preview">Front camera face preview</string>
+    <string name="console_connection_title">Paired device</string>
+    <string name="console_connection_description">The app automatically rediscovers this device when its Wi-Fi address changes.</string>
+
+    <string name="users_enroll_title">Face templates</string>
+    <string name="users_enroll_description">Add a person, then collect face samples. Phone-camera enrollment requires your BASS PIN; the paired device camera does not.</string>
+    <string name="users_display_name">Display name</string>
+    <string name="users_display_name_hint">Enter a name</string>
+    <string name="users_people_title">People &amp; access</string>
+    <string name="users_people_description">Face access controls who may unlock this device.</string>
+    <string name="users_empty">No people yet. Add and enroll a face above.</string>
+    <string name="users_added">Added %1$s</string>
+    <string name="users_enroll_progress">Samples %1$d / %2$d</string>
+    <string name="users_device_capture">The paired device camera is collecting samples.</string>
+    <string name="users_phone_capture">Keep one face centered and move slightly between samples.</string>
+    <string name="users_retry_note">If enrollment is cancelled or fails, the person remains in the directory so you can retry from their card.</string>
+    <string name="session_failed_retry">The operation failed. Try again.</string>
+    <string name="users_remove_title">Remove %1$s?</string>
+    <string name="users_remove_description">This removes the directory entry, face template, and access permission.</string>
+
+    <string name="logs_title">Event log</string>
+    <string name="logs_description">Recent authentication and device activity.</string>
+    <string name="logs_empty">No events.</string>
+    <string name="logs_ok">OK</string>
+    <string name="logs_failed">FAIL</string>
+
+    <string name="settings_core_title">Core settings</string>
+    <string name="settings_description">Changes are stored on the paired device.</string>
+    <string name="settings_auto_relock">Auto re-lock (seconds)</string>
+    <string name="settings_auto_relock_help">0 disables it. Typical value: 5–15 seconds.</string>
+    <string name="settings_ignition_stop">Ignition auto-stop (seconds)</string>
+    <string name="settings_ignition_stop_help">0 disables it. Typical value: 15–60 seconds.</string>
+    <string name="settings_prompt_lock">Ignition prompt auto-lock (seconds)</string>
+    <string name="settings_prompt_lock_help">After unlock, time to choose whether to start ignition. 0 waits indefinitely.</string>
+    <string name="settings_liveness">Liveness detection</string>
+    <string name="settings_liveness_help">Stored for compatibility. The current device server does not enforce this yet.</string>
+    <string name="settings_fail_lockout">Fail lockout</string>
+    <string name="settings_fail_lockout_help">Stored for compatibility. The current device server does not enforce this yet.</string>
+    <string name="settings_lockout_after">Lockout after (failures)</string>
+    <string name="settings_not_enforced">Not enforced by this server</string>
+
+    <string name="pin_create_title">Create your BASS PIN</string>
+    <string name="pin_confirm_title">Confirm your BASS PIN</string>
+    <string name="pin_verify_title">Enter your BASS PIN</string>
+    <string name="pin_create_description">Choose a 6-digit PIN to protect sensitive actions in this app.</string>
+    <string name="pin_confirm_description">Enter the same 6 digits again.</string>
+    <string name="pin_pair_description">Enter your PIN before pairing a BASS device.</string>
+    <string name="pin_enroll_description">Enter your PIN before enrolling a face with this phone.</string>
+    <string name="pin_unlock_description">Enter your PIN to start a face scan with the paired device camera.</string>
+    <string name="pin_setup_description">Enter your PIN to continue using BASS.</string>
+    <string name="pin_digits_entered">Digits entered: %1$d / %2$d</string>
+    <string name="pin_delete">Delete last digit</string>
+    <string name="pin_submit">Confirm</string>
+    <string name="pin_invalid">Enter all 6 digits.</string>
+    <string name="pin_mismatch">The PINs do not match. Create your PIN again.</string>
+    <string name="pin_wrong">Incorrect PIN. Attempts remaining: %1$d.</string>
+    <string name="pin_storage_error">The BASS PIN could not be securely stored or checked.</string>
+    <plurals name="pin_locked_seconds">
+        <item quantity="one">Try again in %1$d second.</item>
+        <item quantity="other">Try again in %1$d seconds.</item>
+    </plurals>
+
+    <string name="error_title">Something went wrong</string>
+</resources>

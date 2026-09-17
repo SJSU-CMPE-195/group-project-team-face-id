@@ -41,9 +41,14 @@ From the repository root, run `npm run mock:pi`, then set the dashboard Device A
 Base URL to `http://localhost:5055`. The simulator reuses the deployed `PiRuntime`
 scan, enrollment, authorization, and actuator state machine while replacing the Pi
 camera, InsightFace model, and ESP32 serial connection with deterministic seams.
-See the root README's **Develop the remote-camera flow without a Pi** section for
+See the root README's **Developer-only hardware simulator** section for
 scenario and failure-injection examples. Simulator results are development evidence,
 not physical hardware acceptance.
+
+For real PC webcam recognition, run `scripts/start-wireless.cmd` from the root
+and follow [Android wireless operation](../docs/android-wireless.md). Unlock
+always uses the active backend's camera; a client image or PIN cannot grant
+unlock by itself.
 
 ## Quick reference — installation and run
 

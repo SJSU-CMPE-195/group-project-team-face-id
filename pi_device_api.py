@@ -80,11 +80,43 @@ def create_app(db_module: Any = db_api, runtime: PiRuntime | None = None) -> Fla
         status["runtime"] = runtime_status
         return jsonify(status)
 
+    @app.get("/api/camera/status")
+    def api_camera_status():
+        return jsonify(runtime_impl.camera_status())
+
+    @app.get("/api/camera/frame")
+    def api_camera_frame():
+        session_id = (request.args.get("session_id") or "").strip()
+        if not session_id:
+            return json_error("session_id is required", 400)
+        frame = runtime_impl.camera_frame(session_id)
+        if frame is None:
+            return "", 204
+        return app.response_class(frame, mimetype="image/jpeg")
+
+    @app.get("/api/camera/stream")
+    def api_camera_stream():
+        session_id = (request.args.get("session_id") or "").strip()
+        if not session_id:
+            return json_error("session_id is required", 400)
+        stream = runtime_impl.camera_stream(session_id)
+        if stream is None:
+            return "", 204
+        response = app.response_class(
+            stream,
+            content_type="multipart/x-mixed-replace; boundary=frame",
+            direct_passthrough=True,
+        )
+        response.headers["X-Accel-Buffering"] = "no"
+        return response
     @app.post("/api/unlock")
     def api_unlock():
         body = json_object()
-        result = runtime_impl.unlock(reason=body.get("reason") or "manual_ui")
-        return (jsonify(result), 200 if result.get("ok") else 503)
+        result = runtime_impl.start_scan(
+            purpose="unlock",
+            expected_user=body.get("expected_user") or body.get("expectedUser"),
+        )
+        return jsonify(result), 202
 
     @app.post("/api/lock")
     def api_lock():
@@ -174,39 +206,29 @@ def create_app(db_module: Any = db_api, runtime: PiRuntime | None = None) -> Fla
     @app.post("/api/scan/start")
     def api_scan_start():
         body = json_object()
-        source = str(body.get("source") or "pi_camera").strip().lower()
+        source = str(body.get("source") or "device_camera").strip().lower()
         try:
             scan_args = {
                 "purpose": body.get("purpose") or "unlock",
                 "expected_user": body.get("expected_user") or body.get("expectedUser"),
             }
-            if source == "pi_camera":
+            if source in {"device_camera", "pi_camera", "pc_webcam"}:
                 result = runtime_impl.start_scan(**scan_args)
-            elif source in {"client_camera", "device_camera", "phone_camera"}:
-                result = runtime_impl.start_client_scan(**scan_args)
             else:
-                raise RuntimeRequestError("source must be pi_camera or client_camera", 400)
+                raise RuntimeRequestError(
+                    "unlock and ignition verification require the backend host camera",
+                    409,
+                )
         except RuntimeRequestError as exc:
             return runtime_error(exc)
         return jsonify(result)
 
     @app.post("/api/scan/sample")
     def api_scan_sample():
-        session_id = request.form.get("session_id") or request.form.get("sessionId")
-        if not session_id:
-            return json_error("session_id is required", 400)
-        image = request.files.get("image")
-        if image is None:
-            return json_error("image is required", 400)
-        if not (image.mimetype or "").lower().startswith("image/"):
-            return json_error("image must use an image content type", 415)
-        image_bytes = image.stream.read(MAX_CLIENT_IMAGE_BYTES + 1)
-        if len(image_bytes) > MAX_CLIENT_IMAGE_BYTES:
-            return json_error("image is too large", 413)
-        try:
-            return jsonify(runtime_impl.add_client_scan_sample(session_id, image_bytes))
-        except RuntimeRequestError as exc:
-            return runtime_error(exc)
+        return json_error(
+            "verification frames must come from the backend host camera",
+            409,
+        )
 
     @app.get("/api/scan/status")
     def api_scan_status():
@@ -232,14 +254,17 @@ def create_app(db_module: Any = db_api, runtime: PiRuntime | None = None) -> Fla
     @app.post("/api/enroll/start")
     def api_enroll_start():
         body = json_object()
-        source = str(body.get("source") or "pi_camera").strip().lower()
+        source = str(body.get("source") or "device_camera").strip().lower()
         try:
-            if source == "pi_camera":
+            if source in {"device_camera", "pi_camera", "pc_webcam"}:
                 result = runtime_impl.start_enrollment(body.get("name") or "")
-            elif source in {"client_camera", "device_camera", "phone_camera"}:
+            elif source in {"client_camera", "phone_camera"}:
                 result = runtime_impl.start_client_enrollment(body.get("name") or "")
             else:
-                raise RuntimeRequestError("source must be pi_camera or client_camera", 400)
+                raise RuntimeRequestError(
+                    "source must be device_camera or client_camera",
+                    400,
+                )
             return jsonify(result)
         except RuntimeRequestError as exc:
             return runtime_error(exc)

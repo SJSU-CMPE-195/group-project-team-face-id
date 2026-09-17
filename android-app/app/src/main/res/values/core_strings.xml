@@ -1,0 +1,21 @@
+<resources>
+    <string name="core_pairing_unavailable">Saved pairing unavailable. Scan the QR code again.</string>
+    <string name="core_invalid_qr">Invalid BASS pairing QR code.</string>
+    <string name="core_not_found">Device not found. Check Wi-Fi and network isolation.</string>
+    <string name="core_no_address">Device has no reachable local address.</string>
+    <string name="core_identity_mismatch">Device identity mismatch. Connection refused.</string>
+    <string name="core_protocol_unsupported">Unsupported device protocol.</string>
+    <string name="core_offline">Device offline. Check Wi-Fi and device service.</string>
+    <string name="core_operation_failed">Operation failed.</string>
+    <string name="core_session_disconnected">Session disconnected.</string>
+    <string name="core_upload_failed">Camera upload failed.</string>
+    <string name="core_discovery_failed">Device discovery failed (%1$d).</string>
+    <string name="core_discovery_unavailable">Device discovery unavailable.</string>
+    <string name="core_camera_missing">Requested camera is unavailable.</string>
+    <string name="core_qr_failed">QR scan failed.</string>
+    <string name="core_camera_unavailable">Camera unavailable.</string>
+    <string name="core_capture_failed">Camera capture failed.</string>
+    <string name="core_decode_failed">Could not decode camera image.</string>
+    <string name="core_pairing_save_failed">Could not save pairing.</string>
+    <string name="core_pairing_clear_failed">Could not clear pairing.</string>
+</resources>

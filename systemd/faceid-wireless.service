@@ -1,0 +1,26 @@
+[Unit]
+Description=BASS authenticated wireless Device API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory="/home/pi/faceid/group-project-team-face-id-main"
+Environment="BASS_RUNTIME_MODE=pi"
+Environment="BASS_HOST=0.0.0.0"
+Environment="BASS_PORT=5056"
+Environment="BASS_DEVICE_CONFIG=/home/pi/faceid/device.json"
+Environment="FACEID_DB_PATH=/home/pi/faceid/faceid.db"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=-/etc/default/faceid-wireless
+ExecStartPre=/bin/sh -c '! /bin/systemctl --quiet is-active faceid-api.service && ! /bin/systemctl --quiet is-active faceid-verify.service'
+ExecStartPre="/home/pi/faceid/group-project-team-face-id-main/.venv-wireless/bin/python" "/home/pi/faceid/group-project-team-face-id-main/db.py"
+ExecStart="/home/pi/faceid/group-project-team-face-id-main/.venv-wireless/bin/python" "/home/pi/faceid/group-project-team-face-id-main/bass_wireless.py" --mode pi
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

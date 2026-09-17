@@ -1,25 +1,13 @@
 import React from "react";
 import Card from "./Card";
-import Btn from "./Btn";
 import { fmt } from "../utils/helpers";
 
-export default function LogsTab({ mode, sim, deviceLogs, clearLogs }) {
-  const logs = mode === "device" ? deviceLogs : sim.logs;
-  const canClear = mode === "sim";
+export default function LogsTab({ deviceLogs }) {
+  const logs = deviceLogs;
 
   return (
     <Card>
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold text-slate-100">Event log</div>
-          <div className="mt-1 text-xs text-slate-400">
-            {mode === "device" ? "Pi `auth_logs`." : "Simulation history."}
-          </div>
-        </div>
-        <Btn variant="secondary" disabled={!canClear} onClick={clearLogs} title={canClear ? "Clear log" : "Clear available in Simulation only"}>
-          Clear
-        </Btn>
-      </div>
+      <div className="text-sm font-semibold text-slate-100">Event log</div>
 
       <div className="mt-4 space-y-2">
         {logs.length === 0 ? (

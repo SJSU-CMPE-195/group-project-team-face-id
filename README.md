@@ -1,3 +1,11 @@
+## Native Android wireless app
+
+For the native APK, fixed QR pairing, and local Wi-Fi host setup, see
+[Android wireless operation](docs/android-wireless.md). Every unlock requires
+recognition by the selected backend's camera: PC webcam or Pi camera. Android
+and the React dashboard control that same backend; neither UI chooses a
+different camera for unlocking.
+
 ## Team members
 
 | Name | SJSU Email | GitHub |
@@ -57,10 +65,20 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-### Develop the remote-camera flow without a Pi
+For PC webcam operation, also start `scripts/start-wireless.cmd`. The local
+development dashboard connects to this authenticated host by default. Enroll a
+face, then start Unlock from either the dashboard or the paired Android app.
+The PC captures its webcam and unlocks only after a successful match. Its
+actuator output remains simulated. See [host setup](docs/android-wireless.md).
 
-For the fastest UI-only check, turn on **Device API** and set **Base URL** to
-`fake://pi`. This runs the Fake Pi in the browser and needs no second process.
+Keep the host dashboard's Control tab open to see its camera view when Android
+starts a scan. See [watch a phone-triggered scan](docs/android-wireless.md#watch-a-phone-triggered-scan-on-the-host).
+
+### Developer-only hardware simulator
+
+Normal PC operation uses its real webcam. The separate HTTP simulator below is
+for scripted hardware/recognition development, not for verifying a real face.
+It is not a camera or operating mode offered by the normal UI.
 
 To test the real HTTP contract and production `PiRuntime` state machine without
 Raspberry Pi / camera / ESP32 hardware, start the standalone simulator. It replaces
@@ -72,7 +90,7 @@ npm run mock:pi
 # equivalent: python mock_pi_device_api.py
 ```
 
-Then set **Base URL** to:
+Use this developer fixture through its standalone API:
 
 ```text
 http://localhost:5055
@@ -110,80 +128,31 @@ curl -X PUT http://localhost:5055/sim/scenario \
   -d '{"frames":[{"identity":"Demo Driver"}],"fail_commands":["UNLOCK"]}'
 ```
 
-`fake://pi` remains the fastest in-browser UI smoke. The HTTP simulator is the
-stronger workstation test because it exercises the Python API and runtime. HTTP
-URLs always reach the configured server; only the explicit `fake://pi` value selects
-the in-browser implementation.
+The HTTP simulator exercises the Python API and runtime using its scripted
+frames. The normal dashboard uses an HTTP backend and does not offer the old
+in-browser fake as an operating mode.
 
 This simulator cannot certify Picamera2 compatibility or frame rate, InsightFace
 performance on the Pi, USB serial permissions, real ESP32 acknowledgements, motor
 direction/limits/electrical safety, or systemd startup with attached hardware.
 
-### Install on Android (PWA)
+### Android installation and the host dashboard
 
-The production build is an installable Progressive Web App with 192px / 512px /
-maskable icons, a standalone window, an in-app install action, and an offline app
-shell. Device and Face API traffic is never cached or replayed: offline controls
-fail normally instead of pretending that a vehicle command succeeded.
+Use the native APK for phone operation: see [Android wireless operation](docs/android-wireless.md).
+Scan the host's fixed QR once; Android discovers and authenticates that host on
+the local network. No USB forwarding, browser backend address, or separate
+Connect action is needed for normal use.
 
-#### Local Android install test over USB
+The built web dashboard runs on the host at `http://localhost:5056`. Its PWA
+manifest, icons, and offline shell remain available, but live controls and the
+pairing QR always require the host connection. A standalone Vite preview or a
+remote static website does not provide the trusted local API bridge.
 
-This path needs Android Platform Tools (`adb`) and USB debugging, but does not need
-a domain or TLS certificate. `adb reverse` makes the phone see the workstation as
-trusted `localhost`.
+### Standalone Face API (enrollment development)
 
-1. Connect the Android phone over USB and authorize USB debugging.
-2. Start the simulator from the repository root:
-
-   ```bash
-   npm run mock:pi
-   ```
-
-3. In another terminal, build and serve the production PWA:
-
-   ```bash
-   npm run build
-   npm run preview
-   ```
-
-4. Forward the PWA and Device API ports to the phone:
-
-   ```bash
-   adb reverse tcp:4173 tcp:4173
-   adb reverse tcp:5055 tcp:5055
-   ```
-
-   Forward `8765` the same way when testing the browser-camera Face API.
-
-5. In Android Chrome open `http://localhost:4173`. Under **Connection**, turn on
-   Device API and use `http://localhost:5055` as the Base URL.
-6. Tap the page and keep it open briefly. When Chrome reports it installable, use
-   **Install BASS** in the Connection card or Chrome's **Install app** menu.
-7. Launch BASS from the Android home screen and confirm it opens without a browser
-   address bar.
-
-Chrome's install promotion requires user interaction and may take about 30 seconds
-to appear. Run `npm run check:pwa` after an existing build to repeat the manifest,
-icon, offline-shell, and API network-only checks.
-
-#### Production Android installation
-
-Serve `dist/` from a trusted HTTPS origin. Plain `http://192.168.x.x` can open the
-responsive site but is not a normal PWA installation origin. An HTTPS page also
-cannot call an `http://` Pi or Face API because the browser blocks mixed content.
-Use one of these deployment shapes:
-
-- expose the Pi and Face APIs over trusted HTTPS; or
-- reverse proxy them behind the PWA's HTTPS origin, then set Base URL to a relative
-  path such as `/device` (and Face API to `/face`).
-
-See the official [Chrome install criteria](https://web.dev/articles/install-criteria),
-[MDN installability guide](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable),
-and [Android reverse-port documentation](https://developer.android.com/develop/ui/views/layout/webapps/access-local-server).
-
-### Browser + local Face API (dev PC)
-
-Use this when you want **your laptop webcam** in the UI to talk to **InsightFace** on the same machine (no Pi required for this path).
+The optional standalone Face API receives uploaded enrollment frames. It is not
+the unlock service. Normal PC and Pi operation use the Device API and the
+backend's own camera; they need no separate Face API process.
 
 1. **Terminal A — Face API** (from repo root):
 
@@ -207,16 +176,10 @@ Use this when you want **your laptop webcam** in the UI to talk to **InsightFace
    npm run dev
    ```
 
-3. In the app, open **Control** → **Connection** (scroll on the Control page). Set **Face API** to `http://127.0.0.1:8765` (saved in `localStorage`).
-
-4. **Enroll**  
-   - **Users** → enter a **Display name** → **Start face enrollment** → turn on the camera → **Capture sample** ten times (one face in frame) → **Save to face database**. Embeddings are stored in the SQLite database on the Pi.
-
-5. **Verify**  
-   - **Control** → **Turn on camera**. The UI sends JPEG frames to `/api/verify-frame` and shows match / rolling-window status.  
-   - If the API returns `400`, the face database is empty — enroll first (step 4 or CLI below).
-
-**Device mode (Pi):** toggle **Device API mode** and set **Base URL** to your Pi (for example `http://192.168.4.1:5000`).
+Configure `FACEID_DB_PATH` consistently when using this development service.
+Its `/api/verify-frame` response is diagnostic recognition data and does not
+authorize an unlock. The dashboard's Unlock action always asks the selected
+backend to capture and verify its own camera.
 
 ### Components reference
 
@@ -231,12 +194,12 @@ Use this when you want **your laptop webcam** in the UI to talk to **InsightFace
 | **Toast** | `src/components/Toast.jsx` | Notifications |
 | **SidebarNav** | `src/components/SidebarNav.jsx` | Main nav (Control, Users, Logs, Settings) |
 | **TopBar** | `src/components/TopBar.jsx` | Title strip, refresh, status |
-| **Overview** | `src/components/Overview.jsx` | Mode / device / safety summary |
-| **StatusPanel** | `src/components/StatusPanel.jsx` | Lock, battery, signal, unlock |
-| **ConnectionPanel** | `src/components/ConnectionPanel.jsx` | Sim vs device, Pi base URL, Face API URL |
+| **Overview** | `src/components/Overview.jsx` | Backend / device / safety summary |
+| **StatusPanel** | `src/components/StatusPanel.jsx` | Lock state, battery, signal, lock action |
+| **DevicePairingCard** | `src/components/DevicePairingCard.jsx` | The current host's fixed QR for Android pairing |
 | **Tabs** | `src/components/Tabs.jsx` | Tab strip helper where used |
-| **ControlTab** | `src/components/ControlTab.jsx` | Browser camera + live verify via Face API |
-| **UsersTab** | `src/components/UsersTab.jsx` | Sim/Pi user list + browser face enrollment |
+| **ControlTab** | `src/components/ControlTab.jsx` | Backend-camera unlock and same-person ignition |
+| **UsersTab** | `src/components/UsersTab.jsx` | Backend user list and face enrollment |
 | **LogsTab** | `src/components/LogsTab.jsx` | Event log |
 | **SettingsTab** | `src/components/SettingsTab.jsx` | Settings + save |
 
@@ -258,9 +221,9 @@ Use this when you want **your laptop webcam** in the UI to talk to **InsightFace
 
 ### Frontend features
 
-- **Simulation vs device**: demo state vs Pi HTTP API (`useApi`).
-- **Local Face API URL**: browser webcam enrollment and verification against InsightFace.
-- **Persistent UI state**: `localStorage` (mode, base URL, face API URL, sim snapshot).
+- **One backend**: all normal controls use the selected Device API.
+- **Backend camera**: PC webcam or Pi camera, selected by the running host.
+- **Persistent UI state**: saved backend settings; previous simulation data is preserved.
 - **Layout**: sidebar + main content, theme via `ThemeProvider` (`src/context/`).
 
 ---
@@ -347,29 +310,30 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 ## Running the full system
 
-Once the Pi is set up and the UI is running on your laptop:
+Use the [wireless host setup](docs/android-wireless.md) on the PC or Pi:
 
-1. Open [http://localhost:5173](http://localhost:5173)
-2. Go to the **Connection** panel
-3. Set **Base URL** to `http://<pi-ip>:5000`
-4. Switch to **Device mode** and hit **Refresh** — should show Online
+1. Build the dashboard and start the wireless backend. Pi deployment must
+   include the built `dist/` directory; it is not included by Git.
+2. Open [http://localhost:5056](http://localhost:5056) on the backend machine.
+   The dashboard automatically uses that service and its camera.
+3. In **Settings → Device pairing**, select **Show QR** and scan it with BASS
+   Android on the same network. The phone and dashboard share one backend.
+4. Select **Refresh** to load new phone enrollments in **Users**.
 
-In Device mode, the Pi API owns camera enrollment and rolling-window face scans;
-the dashboard does not need a second Face API process on the Pi. The Face API
-URL is only for the optional browser-camera development flow described above.
-
-To find your Pi's IP address, run `hostname -I` on the Pi.
+No backend address or Connect action is needed. For local frontend development,
+`http://localhost:5173` uses the same host through Vite. A custom backend port
+works with the built dashboard URL printed by the backend at startup.
 
 ---
 
 ## Enrolling a user
 
 1. Go to the **Users** tab
-2. Select **Pi camera** as the enrollment source
+2. Select the backend/device camera as the enrollment source
 3. Enter a display name and click **Add & enroll face**
-4. Wait for the Pi to capture the required samples
+4. Wait for the backend to capture the required samples
 
-The face embedding is stored in the SQLite database on the Pi and is available to
+The face embedding is stored in the selected backend's SQLite database and is available to
 the Device API's scan flow.
 
 ---
@@ -377,15 +341,19 @@ the Device API's scan flow.
 ## Face verification (dashboard)
 
 1. Go to the **Control** tab
-2. In Device mode, click **Start Pi face scan**
-3. Look at the Pi camera — after 6 matches in a 10-frame rolling window, access is granted
-4. The Pi sends `UNLOCK` to the ESP32 through the same Device API process
+2. Start the Unlock face scan
+3. Look at the backend's camera: PC webcam or Pi camera. Access requires the
+   configured rolling-window match threshold (6 of 10 observations by default).
+4. Pi sends `UNLOCK` to the ESP32; PC records simulated actuation. A PIN alone
+   or uploaded browser/phone verification frames cannot unlock the device.
 
 ---
 
-## Device mode
+## Backend connection
 
-The canonical store is **SQLite on the Pi** (`db.py` / `db_api.py`). The React app talks to the Pi over HTTP using the same routes as before (`/api/status`, `/api/users`, …).
+The canonical store is **SQLite on the selected backend** (`db.py` / `db_api.py`).
+React and Android read that host's users, settings, and state through the Device
+API (`/api/status`, `/api/users`, ...).
 
 ### On the Pi
 
@@ -417,9 +385,10 @@ is the single owner of the Pi camera and ESP32 serial connection.
 
 ### In the UI
 
-- Switch mode to **device**
-- Set **Base URL** to your Pi, e.g. `http://192.168.4.1:5000` (no trailing slash)
-- Refresh
+Normal dashboard operation uses `faceid-wireless.service` and its local page at
+`http://localhost:5056`; see the [wireless Pi handoff](docs/android-wireless.md#pi-handoff).
+The standalone `faceid-api.service` above is a separate development entrypoint.
+Do not run both camera-owning services together.
 
 ### Schema (see `db.py`)
 
@@ -454,7 +423,7 @@ Facial-recognition vehicle access using a Raspberry Pi and camera: real-time det
 
 - Python 3.8+ (3.11–3.12 recommended on Windows if prebuilt wheels are missing)
 - Raspberry Pi (or PC for development)
-- Camera (Pi Camera Module or USB webcam) for **CLI** scripts; for **browser** enrollment/verify, the laptop webcam is enough.
+- A camera attached to the backend: Pi Camera Module on Pi or a USB webcam on PC.
 - Virtual environment (required on Pi, recommended on dev PC)
 
 **Python dependencies** (`requirements-pi-device-api.txt` includes
@@ -484,9 +453,12 @@ Facial-recognition vehicle access using a Raspberry Pi and camera: real-time det
 
    You should see face bounding boxes, similarity scores, and messages such as `ACCESS PENDING` and `ACCESS GRANTED`.
 
-**Option B — HTTP API + React (browser camera)**
+**Option B — Device API + React or Android**
 
-See the **Browser + local Face API** subsection under [Frontend](#frontend-react-ui): run `uvicorn` on `src.api_server:app` port **8765**, then use **Users** (enroll) and **Control** (verify) in the UI.
+See [Android wireless operation](docs/android-wireless.md) for the PC/Pi host,
+pairing, and local dashboard setup. Both UIs ask the backend to capture the face
+for unlock. Use the optional standalone Face API only for enrollment/recognition
+development; its uploaded frames cannot authorize device unlock.
 
 ### Demo screenshots
 
@@ -509,7 +481,7 @@ See the **Browser + local Face API** subsection under [Frontend](#frontend-react
 | Method | Route | Description |
 |--------|-------|-------------|
 | GET | `/api/status` | Device status, lock state, battery, signal |
-| POST | `/api/unlock` | Unlock the device |
+| POST | `/api/unlock` | Start a backend-camera unlock scan; returns a scan session |
 | POST | `/api/lock` | Lock the device |
 | POST | `/api/ignition/stop` | Stop ignition |
 | POST | `/api/full-reset` | Stop ignition and lock the device |
@@ -518,12 +490,13 @@ See the **Browser + local Face API** subsection under [Frontend](#frontend-react
 | DELETE | `/api/users/<id>` | Remove a user |
 | PATCH | `/api/users/<id>/access` | Enable/disable face access for a user |
 | POST | `/api/verify-log` | Log a face verify event |
-| POST | `/api/scan/start` | Start a Pi-camera unlock or same-driver ignition scan |
+| POST | `/api/scan/start` | Start a backend-camera unlock or same-driver ignition scan |
 | GET | `/api/scan/status?session_id=<id>` | Read scan progress/result |
-| POST | `/api/scan/cancel` | Cancel a running Pi-camera scan |
-| POST | `/api/enroll/start` | Start Pi-camera enrollment |
+| POST | `/api/scan/cancel` | Cancel a running backend-camera scan |
+| POST | `/api/scan/sample` | Rejected: client images cannot verify unlock/ignition |
+| POST | `/api/enroll/start` | Start backend-camera or client-camera enrollment |
 | GET | `/api/enroll/status?session_id=<id>` | Read enrollment progress/result |
-| POST | `/api/enroll/cancel` | Cancel a running Pi-camera enrollment |
+| POST | `/api/enroll/cancel` | Cancel a running enrollment |
 | GET | `/api/logs` | Retrieve auth logs |
 | GET | `/api/settings` | Get device settings |
 | POST | `/api/settings` | Save device settings |
@@ -532,8 +505,10 @@ See the **Browser + local Face API** subsection under [Frontend](#frontend-react
 
 `/health` proves that the HTTP process is alive and includes `runtime_ready` plus
 camera/model/ESP32 details. It does not replace an on-Pi hardware acceptance test.
-The current API is an unauthenticated HTTP LAN prototype; keep it on an isolated
-bench network until pairing/authentication and TLS are implemented.
+The standalone Pi API is an unauthenticated LAN prototype. The wireless host
+wraps these routes with pairing-key authentication, and exposes minimal public
+`/health` data. See [wireless API and recovery](docs/android-wireless.md#api-and-recovery)
+for its contract. Neither entrypoint provides a direct manual unlock.
 
 ---
 

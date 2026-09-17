@@ -4,12 +4,10 @@ import SidebarNav from "./components/SidebarNav";
 import TopBar from "./components/TopBar";
 import Overview from "./components/Overview";
 import StatusPanel from "./components/StatusPanel";
-import ConnectionPanel from "./components/ConnectionPanel";
 import ControlTab from "./components/ControlTab";
 import UsersTab from "./components/UsersTab";
 import LogsTab from "./components/LogsTab";
 import SettingsTab from "./components/SettingsTab";
-import Badge from "./components/Badge";
 import useAppState from "./hooks/useAppState";
 import useAppActions from "./hooks/useAppActions";
 
@@ -34,7 +32,6 @@ export default function App() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
           tab={state.tab}
-          mode={state.mode}
           locked={locked}
           ignitionOn={ignitionOn}
           online={online}
@@ -47,10 +44,15 @@ export default function App() {
             <div className="mx-auto w-full max-w-6xl space-y-6">
               <ControlTab
                 api={state.api}
-                mode={state.mode}
-                baseUrl={state.baseUrl}
-                faceApiUrl={state.faceApiUrl}
-                faceAccessAllowed={state.faceAccessAllowed}
+                cameraSource={
+                  state.status.runtime?.camera_source ||
+                  state.status.camera_source ||
+                  state.status.cameraSource
+                }
+                cameraAvailable={
+                  state.status.capabilities?.device_camera !== false
+                }
+                online={state.status.online}
                 locked={locked}
                 ignitionOn={ignitionOn}
                 promptAutoLockSeconds={
@@ -58,7 +60,6 @@ export default function App() {
                     ? state.settings.promptAutoLockSeconds
                     : 0
                 }
-                doUnlock={actions.doUnlock}
                 doLock={actions.doLock}
                 doIgnitionStop={actions.doIgnitionStop}
                 doFullReset={actions.doFullReset}
@@ -67,23 +68,12 @@ export default function App() {
                 onRefresh={actions.refresh}
               />
               <div id="panel-status" className="scroll-mt-6 space-y-4">
-                <Overview mode={state.mode} sim={state.sim} status={state.status} />
+                <Overview status={state.status} />
                 <StatusPanel
                   locked={locked}
                   busy={state.busy}
-                  doUnlock={actions.doUnlock}
                   doLock={actions.doLock}
-                  mode={state.mode}
-                  sim={state.sim}
                   status={state.status}
-                />
-                <ConnectionPanel
-                  mode={state.mode}
-                  setMode={state.setMode}
-                  baseUrl={state.baseUrl}
-                  setBaseUrl={state.setBaseUrl}
-                  faceApiUrl={state.faceApiUrl}
-                  setFaceApiUrl={state.setFaceApiUrl}
                 />
               </div>
             </div>
@@ -111,10 +101,7 @@ export default function App() {
 
           {state.tab === "logs" && (
             <LogsTab
-              mode={state.mode}
-              sim={state.sim}
               deviceLogs={state.deviceLogs}
-              clearLogs={() => state.setSim((s) => ({ ...s, logs: [] }))}
             />
           )}
 
@@ -127,22 +114,6 @@ export default function App() {
             />
           )}
 
-          <footer className="mt-10 hidden flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center text-xs text-slate-500 sm:flex">
-            <Badge>v1 UI</Badge>
-            <span className="text-slate-600">•</span>
-            <span>DNA Builder–inspired layout</span>
-            <span className="text-slate-600">•</span>
-            <span>Local-first (LAN)</span>
-            <span className="text-slate-600">•</span>
-            <a
-              href="https://github.com/SJSU-CMPE-195/group-project-team-face-id"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-slate-500 transition hover:text-violet-400 hover:underline"
-            >
-              Open on GitHub
-            </a>
-          </footer>
         </main>
       </div>
     </div>

@@ -3,6 +3,7 @@ import Card from "./Card";
 import Input from "./Input";
 import Switch from "./Switch";
 import Btn from "./Btn";
+import DevicePairingCard from "./DevicePairingCard";
 
 export default function SettingsTab({ settings, setSettings, busy, saveSettings }) {
   return (
@@ -25,7 +26,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
                 }
               />
             </div>
-            <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 5-15s.</div>
+            <div className="mt-1 text-xs text-slate-500">0 = disabled.</div>
           </div>
 
           <div>
@@ -45,7 +46,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
                 }
               />
             </div>
-            <div className="mt-1 text-xs text-slate-500">0 = disabled. Typical 15-60s.</div>
+            <div className="mt-1 text-xs text-slate-500">0 = disabled.</div>
           </div>
 
           <div>
@@ -66,23 +67,17 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
               />
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              After unlock, how long to wait on &quot;Start ignition?&quot; before auto-locking. 0 = no countdown (wait forever).
+              Auto-lock if no ignition choice. 0 = disabled.
             </div>
           </div>
 
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium text-slate-200">Liveness detection</div>
-              <div className="text-xs text-slate-500">Reduces simple photo spoofing (v1 simplified).</div>
-            </div>
+            <div className="text-sm font-medium text-slate-200">Liveness detection</div>
             <Switch ariaLabel="Liveness detection" checked={settings.liveness} onChange={(v) => setSettings((s) => ({ ...s, liveness: v }))} />
           </div>
 
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium text-slate-200">Fail lockout</div>
-              <div className="text-xs text-slate-500">Cooldown after repeated failures.</div>
-            </div>
+            <div className="text-sm font-medium text-slate-200">Fail lockout</div>
             <Switch ariaLabel="Fail lockout" checked={settings.failLockout} onChange={(v) => setSettings((s) => ({ ...s, failLockout: v }))} />
           </div>
 
@@ -125,19 +120,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
         </div>
       </Card>
 
-      <Card>
-        <div className="text-sm font-semibold text-slate-100">Notes</div>
-        <div className="mt-3 space-y-3 text-sm text-slate-400">
-          <div className="rounded-xl border border-white/[0.06] bg-dna-bg p-4">
-            <div className="text-xs font-medium uppercase tracking-wider text-violet-400/90">Next</div>
-            <div className="mt-1 text-slate-300">Extend Pi services; keep the same `/api/*` contract.</div>
-          </div>
-          <div className="rounded-xl border border-white/[0.06] bg-dna-bg p-4">
-            <div className="text-xs font-medium uppercase tracking-wider text-fuchsia-400/90">Security</div>
-            <div className="mt-1 text-slate-300">LAN-only prototype; add pairing / TLS later.</div>
-          </div>
-        </div>
-      </Card>
+      <DevicePairingCard />
     </div>
   );
 }

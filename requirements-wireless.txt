@@ -1,0 +1,5 @@
+# Wireless host entrypoint. The venv can reuse installed system packages.
+-r requirements-pi-device-api.txt
+qrcode[pil]==8.2
+zeroconf==0.151.3
+

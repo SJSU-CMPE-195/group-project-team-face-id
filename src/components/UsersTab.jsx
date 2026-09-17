@@ -3,7 +3,7 @@ import Card from "./Card";
 import Badge from "./Badge";
 import Input from "./Input";
 import Btn from "./Btn";
-import { fmt, formatRelativeAgo, genId, isFaceAccessAllowed } from "../utils/helpers";
+import { genId, isFaceAccessAllowed } from "../utils/helpers";
 import Switch from "./Switch";
 
 const SAMPLES_NEEDED = 10;
@@ -47,9 +47,11 @@ export default function UsersTab({
   const [localFaceNames, setLocalFaceNames] = useState([]);
   const [enrollSession, setEnrollSession] = useState(null);
   const [enrollCount, setEnrollCount] = useState(0);
-  const [enrollCamOn, setEnrollCamOn] = useState(false);
+  const [, setEnrollCamOn] = useState(false);
   const [enrollingAuto, setEnrollingAuto] = useState(false);
-  const [enrollSource, setEnrollSource] = useState(mode === "device" ? "pi_camera" : "phone_camera");
+  const [enrollSource, setEnrollSource] = useState(
+    mode === "device" ? "device_camera" : "phone_camera",
+  );
   const [piEnrollStatus, setPiEnrollStatus] = useState(null);
   const enrollVideoRef = useRef(null);
   const enrollCanvasRef = useRef(null);
@@ -123,7 +125,7 @@ export default function UsersTab({
 
   useEffect(() => {
     setEnrollSource((source) => {
-      if (mode === "device" || source !== "pi_camera") return source;
+      if (mode === "device" || source !== "device_camera") return source;
       return "phone_camera";
     });
   }, [mode]);
@@ -185,6 +187,14 @@ export default function UsersTab({
     const u = users.find((x) => x.name === n);
     if (u) {
       await handleRemoveUser(u.id);
+      return;
+    }
+    if (mode === "device") {
+      popToast(
+        "info",
+        "Refresh users",
+        "Refresh the host's user list before removing this person.",
+      );
       return;
     }
     if (!confirm(`Remove "${n}" from the face database and access list?`)) return;
@@ -302,8 +312,8 @@ export default function UsersTab({
   const finishEnrollWithId = async (sessionId) => {
     if (mode === "device") {
       const data = await api.piEnrollFinish(sessionId);
-      if (!data.ok || data.state !== "completed") throw new Error(data.message || "Pi could not save face enrollment");
-      popToast("ok", "Face enrolled", `${data.user} — ${data.count || SAMPLES_NEEDED} samples saved to Pi.`);
+      if (!data.ok || data.state !== "completed") throw new Error(data.message || "Backend host could not save face enrollment");
+      popToast("ok", "Face enrolled", `${data.user} — ${data.count || SAMPLES_NEEDED} samples saved to the backend host.`);
       setFaceAccessAllowed((prev) => ({ ...prev, [data.user]: true }));
       return data;
     }
@@ -335,31 +345,31 @@ export default function UsersTab({
       if (status?.recognition_available === false) {
         popToast("info", "Enrollment simulated", `${displayName} was added, but this fake does not store a recognition template.`);
       } else {
-        popToast("ok", "Face enrolled", `${displayName} enrolled from Pi camera.`);
+        popToast("ok", "Face enrolled", `${displayName} enrolled from the backend camera.`);
       }
       setFaceAccessAllowed((prev) => ({ ...prev, [displayName]: true }));
       setName("");
       await refreshLocalFaces();
     } else if (state === "cancelled") {
       await cleanupCreatedEnrollUser();
-      popToast("info", "Cancelled", "Pi camera enrollment stopped.");
+      popToast("info", "Cancelled", "Backend camera enrollment stopped.");
     } else {
       await cleanupCreatedEnrollUser();
-      popToast("err", "Enrollment failed", status?.message || "Pi camera enrollment did not complete.");
+      popToast("err", "Enrollment failed", status?.message || "Backend camera enrollment did not complete.");
     }
     resetEnrollUi();
   };
 
   const runPiCameraEnroll = async (displayName) => {
     if (mode !== "device") {
-      popToast("err", "Device API", "Turn on Device API mode and point Base URL at the Pi or Fake Pi API.");
+      popToast("err", "Backend host", "Connect to the backend host before starting enrollment.");
       return;
     }
 
     cancelAutoRef.current = false;
     setEnrollingAuto(true);
     setEnrollCount(0);
-    setPiEnrollStatus({ state: "starting", count: 0, samples_needed: SAMPLES_NEEDED, source: "pi_camera" });
+    setPiEnrollStatus({ state: "starting", count: 0, samples_needed: SAMPLES_NEEDED, source: "device_camera" });
 
     try {
       createdEnrollUserRef.current = await addUserToDirectory(displayName);
@@ -371,7 +381,7 @@ export default function UsersTab({
 
     let sessionId;
     try {
-      const start = await api.piEnrollStart({ name: displayName, source: "pi_camera" });
+      const start = await api.piEnrollStart({ name: displayName, source: "device_camera" });
       sessionId = start.session_id || start.sessionId;
       const next = {
         ...start,
@@ -394,7 +404,7 @@ export default function UsersTab({
     }
 
     if (!sessionId) {
-      await finishPiEnroll({ state: "error", message: "Pi did not return an enrollment session." }, displayName);
+      await finishPiEnroll({ state: "error", message: "Backend host did not return an enrollment session." }, displayName);
       return;
     }
 
@@ -422,7 +432,7 @@ export default function UsersTab({
     const n = name.trim();
     if (!n) return popToast("err", "Name required", "Enter a display name.");
     if (enrollingAuto || busy) return;
-    if (enrollSource === "pi_camera") {
+    if (enrollSource === "device_camera") {
       await runPiCameraEnroll(n);
       return;
     }
@@ -551,7 +561,7 @@ export default function UsersTab({
 
   const onCancelEnroll = async () => {
     cancelAutoRef.current = true;
-    if (enrollSource === "pi_camera" || mode === "device") {
+    if (enrollSource === "device_camera" || mode === "device") {
       const sessionId = piEnrollStatus?.session_id || piEnrollStatus?.sessionId || enrollSession;
       clearPiEnrollPoll();
       if (sessionId) {
@@ -563,50 +573,27 @@ export default function UsersTab({
       }
       await cleanupCreatedEnrollUser();
       resetEnrollUi();
-      popToast("info", "Cancelled", `${enrollSource === "pi_camera" ? "Pi" : "Client"} camera enrollment stopped.`);
+      popToast("info", "Cancelled", `${enrollSource === "device_camera" ? "Backend" : "This device"} camera enrollment stopped.`);
     }
   };
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-3">
       <Card>
-        <div className="text-sm font-semibold text-slate-100">Checklist</div>
-        <div className="mt-3 space-y-2 text-sm text-slate-400">
-          <div className="flex gap-2">
-            <span className="text-violet-400">▸</span> Even lighting, one face in frame
-          </div>
-          <div className="flex gap-2">
-            <span className="text-violet-400">▸</span> Hold still ~{(SAMPLES_NEEDED * AUTO_CAPTURE_MS) / 1000}s while samples are taken
-          </div>
-          <div className="flex gap-2">
-            <span className="text-fuchsia-400">▸</span> Samples fire every {AUTO_CAPTURE_MS / 1000}s until {SAMPLES_NEEDED} are accepted
-          </div>
-        </div>
-      </Card>
-
-      <Card>
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <div className="text-sm font-semibold text-slate-100">Face templates (InsightFace)</div>
-            <div className="mt-1 text-xs text-slate-400">
-              Same database as <span className="font-mono text-[11px]">enroll.py</span>. Adds the person to{" "}
-              <span className="text-slate-300">People &amp; Access</span> below, then captures {SAMPLES_NEEDED} samples every{" "}
-              {AUTO_CAPTURE_MS / 1000}s automatically.
-            </div>
-          </div>
-          <Badge>{localFaceNames.length} in {mode === "device" ? "Pi DB" : "local DB"}</Badge>
+          <div className="text-sm font-semibold text-slate-100">Enroll face</div>
+          <Badge>{localFaceNames.length} enrolled</Badge>
         </div>
 
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
           <button
             type="button"
-            aria-pressed={enrollSource === "pi_camera"}
-            className={sourceButtonClass(enrollSource === "pi_camera")}
+            aria-pressed={enrollSource === "device_camera"}
+            className={sourceButtonClass(enrollSource === "device_camera")}
             disabled={enrollingAuto}
-            onClick={() => setEnrollSource("pi_camera")}
+            onClick={() => setEnrollSource("device_camera")}
           >
-            <div className="font-medium">Pi camera</div>
-            <div className="mt-1 text-xs text-slate-500">Best match for unlock scans.</div>
+            <div className="font-medium">Backend camera</div>
           </button>
           <button
             type="button"
@@ -616,9 +603,6 @@ export default function UsersTab({
             onClick={() => setEnrollSource("phone_camera")}
           >
             <div className="font-medium">This device camera</div>
-            <div className="mt-1 text-xs text-slate-500">
-              {mode === "device" ? "Uploads frames to the Pi for enrollment." : "Uses the Face API upload flow."}
-            </div>
           </button>
         </div>
 
@@ -644,78 +628,46 @@ export default function UsersTab({
 
         {enrollingAuto ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Badge>
-              {enrollSource === "pi_camera" ? "Pi capture" : "Auto-capture"} {enrollCount} / {SAMPLES_NEEDED}
-            </Badge>
+            <Badge>Samples {enrollCount} / {SAMPLES_NEEDED}</Badge>
+            <span className="text-xs text-slate-400">
+              Keep one face in frame.
+            </span>
             <Btn variant="secondary" type="button" onClick={onCancelEnroll}>
               Cancel
             </Btn>
           </div>
         ) : null}
 
-        {enrollSource === "pi_camera" ? (
-          <div className="mt-4 rounded-xl border border-white/[0.08] bg-dna-bg/60 px-4 py-3 text-center text-xs text-slate-400">
-            <div className="font-medium text-slate-200">
-              {piEnrollStatus?.state === "starting"
-                ? "Starting Pi camera enrollment."
-                : piEnrollStatus?.state === "capturing"
-                ? "Pi camera is collecting samples."
-                : "Pi camera will collect samples on the device."}
-            </div>
-            {mode !== "device" ? (
-              <div className="mt-1 text-amber-400/90">Turn on Device API mode to use Pi camera enrollment.</div>
-            ) : null}
-          </div>
-        ) : (
-          <>
-            <div className="mt-4 overflow-hidden rounded-xl border border-white/10 bg-black/40">
-              <video ref={enrollVideoRef} className="aspect-video w-full object-cover" playsInline muted />
-              <canvas ref={enrollCanvasRef} className="hidden" aria-hidden="true" />
-            </div>
-
-            {!enrollingAuto && !enrollCamOn ? (
-              <p className="mt-2 text-center text-xs text-slate-500">Camera turns on when you start Add & enroll face.</p>
-            ) : null}
-          </>
-        )}
-
-        {localFaceNames.length > 0 ? (
-          <div className="mt-4 text-xs text-slate-500">
-            {mode === "device" ? "Pi DB" : "Local DB"}: <span className="text-slate-400">{localFaceNames.join(", ")}</span>
+        {enrollSource === "phone_camera" ? (
+          <div className="mt-4 overflow-hidden rounded-xl border border-white/10 bg-black/40">
+            <video ref={enrollVideoRef} className="aspect-video w-full object-cover" playsInline muted />
+            <canvas ref={enrollCanvasRef} className="hidden" aria-hidden="true" />
           </div>
         ) : null}
       </Card>
 
       <Card>
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <div className="text-sm font-semibold text-slate-100">People &amp; Access</div>
-            <div className="mt-1 text-xs text-slate-400">
-              {mode === "device" ? (
-                "Pi directory plus Face API templates. Remove clears directory and face data when possible. Toggle controls who may unlock from face scan."
-              ) : (
-                <>
-                  Sim directory plus face DB. Remove drops the sim row and clears the template. Access toggles are stored in this browser (
-                  <span className="font-mono text-[11px]">localStorage</span>
-                  ).
-                </>
-              )}
-            </div>
-          </div>
-          <Badge>{accessUserNames.length}</Badge>
+        <div className="text-sm font-semibold text-slate-100">
+          People &amp; Access
         </div>
 
         <div className="mt-4 space-y-2">
           {mode !== "device" && !cleanApi ? (
             <div className="text-sm text-slate-500">Set Face API under Control → Connection to sync the roster with the face DB.</div>
           ) : accessUserNames.length === 0 ? (
-            <div className="text-sm text-slate-500">No people yet — use Face templates above to add &amp; enroll.</div>
+            <div className="text-sm text-slate-500">
+              No people yet. Add and enroll a face above.
+            </div>
           ) : (
             accessUserNames.map((n) => {
               const u = users.find((x) => x.name === n);
               const hasFace = localFaceNames.includes(n);
               const extraMeta =
-                !hasFace ? "No face template yet" : !u ? "Face DB only (no directory row)" : null;
+                !hasFace
+                  ? "Face not enrolled"
+                  : !u
+                    ? "Missing person record"
+                    : null;
               return (
                 <div
                   key={n}
@@ -723,21 +675,11 @@ export default function UsersTab({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-slate-100">{n}</div>
-                    <div className="text-xs text-slate-500">
-                      {u ? (
-                        <>
-                          <span
-                            title={fmt(u.createdAt)}
-                            className="cursor-help underline decoration-slate-500/45 decoration-dotted underline-offset-2"
-                          >
-                            Added {formatRelativeAgo(u.createdAt)}
-                          </span>
-                          {extraMeta ? ` · ${extraMeta}` : ""}
-                        </>
-                      ) : (
-                        extraMeta
-                      )}
-                    </div>
+                    {extraMeta ? (
+                      <div className="text-xs text-slate-500">
+                        {extraMeta}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
                     <div className="flex items-center gap-2">

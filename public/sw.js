@@ -14,6 +14,7 @@ const STATIC_DESTINATIONS = new Set(["font", "image", "manifest", "script", "sty
 function isDeviceApiRequest(url) {
   return (
     url.pathname.startsWith("/api/") ||
+    url.pathname.startsWith("/local/") ||
     url.pathname.startsWith("/sim/") ||
     url.pathname === "/health" ||
     url.pathname === "/ready"
@@ -106,8 +107,7 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Device/face state and commands must always reach the network. Cross-origin
-  // requests (the normal Pi/Face API setup) are intentionally untouched too.
+  // Device state, commands, and pairing QR must always reach the network.
   if (request.method !== "GET" || url.origin !== self.location.origin || isDeviceApiRequest(url)) {
     return;
   }

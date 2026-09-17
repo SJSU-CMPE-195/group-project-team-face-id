@@ -3,10 +3,8 @@ import useApi from "./useApi";
 import { genId } from "../utils/helpers";
 
 export default function useAppState() {
-  const [mode, setMode] = useState(() => localStorage.getItem("mode") || "sim");
-  const [baseUrl, setBaseUrl] = useState(
-    () => localStorage.getItem("baseUrl") || "http://192.168.4.1:5000"
-  );
+  const [mode, setMode] = useState("device");
+  const baseUrl = `${window.location.origin}/local/wireless`;
   const [faceApiUrl, setFaceApiUrl] = useState(
     () => localStorage.getItem("faceApiUrl") || "http://127.0.0.1:8765"
   );
@@ -64,7 +62,7 @@ export default function useAppState() {
   });
 
   const [status, setStatus] = useState({
-    online: true,
+    online: false,
     lockState: "locked",
     ignitionOn: false,
     deviceName: "",
@@ -91,10 +89,9 @@ export default function useAppState() {
 
   useEffect(() => {
     localStorage.setItem("mode", mode);
-    localStorage.setItem("baseUrl", baseUrl);
     localStorage.setItem("faceApiUrl", faceApiUrl);
     localStorage.setItem("sim", JSON.stringify(sim));
-  }, [mode, baseUrl, faceApiUrl, sim]);
+  }, [mode, faceApiUrl, sim]);
 
   useEffect(() => {
     localStorage.setItem("faceAccessAllowed", JSON.stringify(simFaceAccessAllowed));
@@ -114,7 +111,7 @@ export default function useAppState() {
     [],
   );
 
-  const api = useApi(mode, baseUrl, sim, setSim);
+  const api = useApi(baseUrl);
 
   const popToast = (type, title, msg, durationMs = 5600) => {
     if (toastDismissRef.current) {
@@ -132,7 +129,6 @@ export default function useAppState() {
     mode,
     setMode,
     baseUrl,
-    setBaseUrl,
     faceApiUrl,
     setFaceApiUrl,
     tab,
