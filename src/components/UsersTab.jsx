@@ -5,6 +5,9 @@ import Input from "./Input";
 import Btn from "./Btn";
 import { genId, isFaceAccessAllowed } from "../utils/helpers";
 import Switch from "./Switch";
+import useOperationGrant from "../security/useOperationGrant.js";
+import useSecurity from "../security/useSecurity.js";
+import PairingInviteCard from "./PairingInviteCard.jsx";
 
 const SAMPLES_NEEDED = 10;
 const AUTO_CAPTURE_MS = 500;
@@ -40,8 +43,16 @@ export default function UsersTab({
   faceAccessAllowed = {},
   setFaceAccessAllowed,
   api,
+  currentUser,
+  devices,
+  setDevices,
 }) {
-  const users = mode === "device" ? deviceUsers : sim.users;
+  const { requestGrant } = useOperationGrant();
+  const { expireSession } = useSecurity();
+  const allUsers = mode === "device" ? deviceUsers : sim.users;
+  const users = currentUser.is_admin
+    ? allUsers
+    : allUsers.filter((user) => user.id === currentUser.id);
   const cleanApi = (faceApiUrl || "").trim().replace(/\/$/, "");
 
   const [localFaceNames, setLocalFaceNames] = useState([]);
@@ -53,6 +64,12 @@ export default function UsersTab({
     mode === "device" ? "device_camera" : "phone_camera",
   );
   const [piEnrollStatus, setPiEnrollStatus] = useState(null);
+  const [newUserPin, setNewUserPin] = useState("");
+  const [newUserIsAdmin, setNewUserIsAdmin] = useState(false);
+  const [pinDrafts, setPinDrafts] = useState({});
+  const [invite, setInvite] = useState(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const invitePendingRef = useRef(false);
   const enrollVideoRef = useRef(null);
   const enrollCanvasRef = useRef(null);
   const enrollStreamRef = useRef(null);
@@ -73,13 +90,23 @@ export default function UsersTab({
     const createdUser = createdEnrollUserRef.current;
     if (!createdUser?.id) return;
     try {
-      await api.delUser(createdUser.id);
+      const grant = await requestGrant(
+        "user.delete",
+        createdUser.id,
+        "remove incomplete user",
+      );
+      if (!grant) {
+        createdEnrollUserRef.current = null;
+        return;
+      }
+      await api.delUser(createdUser.id, grant);
       createdEnrollUserRef.current = null;
       if (mode === "device") setDeviceUsers(await api.users());
     } catch {
+      createdEnrollUserRef.current = null;
       /* The original enrollment error remains the actionable message. */
     }
-  }, [api, mode, setDeviceUsers]);
+  }, [api, mode, requestGrant, setDeviceUsers]);
 
   const refreshLocalFaces = useCallback(async () => {
     try {
@@ -186,6 +213,10 @@ export default function UsersTab({
     if (!n) return;
     const u = users.find((x) => x.name === n);
     if (u) {
+      if (u.is_owner) {
+        popToast("err", "Owner protected", "Transfer ownership before removing the owner account.");
+        return;
+      }
       await handleRemoveUser(u.id);
       return;
     }
@@ -360,6 +391,34 @@ export default function UsersTab({
     resetEnrollUi();
   };
 
+  const prepareEnrollmentUser = async (displayName) => {
+    const existing = users.find(
+      (user) => user.name.trim().toLowerCase() === displayName.toLowerCase(),
+    );
+    if (existing) {
+      if (existing.is_owner && !currentUser.is_owner) {
+        throw new Error("Only the owner can change the owner's face enrollment.");
+      }
+      return existing;
+    }
+    if (!/^\d{6}$/.test(newUserPin)) {
+      throw new Error("A new user needs a 6-digit ASCII PIN.");
+    }
+    const created = await addUserToDirectory(
+      displayName,
+      newUserPin,
+      currentUser.is_owner && newUserIsAdmin,
+    );
+    setNewUserPin("");
+    setNewUserIsAdmin(false);
+    if (!created?.id) return null;
+    createdEnrollUserRef.current = created;
+    return created;
+  };
+
+  const authorizeEnrollment = (user) =>
+    requestGrant("enrollment.start", user.id, `enroll ${user.name}`);
+
   const runPiCameraEnroll = async (displayName) => {
     if (mode !== "device") {
       popToast("err", "Backend host", "Connect to the backend host before starting enrollment.");
@@ -371,8 +430,20 @@ export default function UsersTab({
     setEnrollCount(0);
     setPiEnrollStatus({ state: "starting", count: 0, samples_needed: SAMPLES_NEEDED, source: "device_camera" });
 
+    let enrollmentUser;
+    let grantToken;
     try {
-      createdEnrollUserRef.current = await addUserToDirectory(displayName);
+      enrollmentUser = await prepareEnrollmentUser(displayName);
+      if (!enrollmentUser) {
+        resetEnrollUi();
+        return;
+      }
+      grantToken = await authorizeEnrollment(enrollmentUser);
+      if (!grantToken) {
+        await cleanupCreatedEnrollUser();
+        resetEnrollUi();
+        return;
+      }
     } catch (e) {
       popToast("err", "Add user failed", e.message);
       resetEnrollUi();
@@ -381,7 +452,10 @@ export default function UsersTab({
 
     let sessionId;
     try {
-      const start = await api.piEnrollStart({ name: displayName, source: "device_camera" });
+      const start = await api.piEnrollStart(
+        { name: displayName, source: "device_camera" },
+        grantToken,
+      );
       sessionId = start.session_id || start.sessionId;
       const next = {
         ...start,
@@ -442,8 +516,20 @@ export default function UsersTab({
     setEnrollingAuto(true);
     setEnrollCount(0);
 
+    let enrollmentUser;
+    let grantToken;
     try {
-      createdEnrollUserRef.current = await addUserToDirectory(n);
+      enrollmentUser = await prepareEnrollmentUser(n);
+      if (!enrollmentUser) {
+        setEnrollingAuto(false);
+        return;
+      }
+      grantToken = await authorizeEnrollment(enrollmentUser);
+      if (!grantToken) {
+        await cleanupCreatedEnrollUser();
+        setEnrollingAuto(false);
+        return;
+      }
     } catch (e) {
       popToast("err", "Add user failed", e.message);
       setEnrollingAuto(false);
@@ -463,7 +549,10 @@ export default function UsersTab({
     try {
       let data;
       if (mode === "device") {
-        data = await api.piEnrollStart({ name: n, source: "client_camera" });
+        data = await api.piEnrollStart(
+          { name: n, source: "client_camera" },
+          grantToken,
+        );
       } else {
         const r = await fetch(`${cleanApi}/api/enroll/start`, {
           method: "POST",
@@ -577,15 +666,129 @@ export default function UsersTab({
     }
   };
 
+  const updateAccess = async (user, allowed) => {
+    if (user.is_owner && !currentUser.is_owner) {
+      popToast("err", "Owner protected", "Only the owner can change owner access.");
+      return;
+    }
+    try {
+      const grant = await requestGrant(
+        "user.access",
+        user.id,
+        `change access for ${user.name}`,
+      );
+      if (!grant) return;
+      await api.setAccess(user.id, allowed, grant);
+      setDeviceUsers((previous) =>
+        previous.map((row) =>
+          row.id === user.id ? { ...row, faceAccess: allowed } : row,
+        ),
+      );
+    } catch (error) {
+      popToast("err", "Access update failed", error.message);
+    }
+  };
+
+  const resetPin = async (user) => {
+    if (user.is_owner && !currentUser.is_owner) {
+      popToast("err", "Owner protected", "Only the owner can change the owner PIN.");
+      return;
+    }
+    const pin = pinDrafts[user.id] || "";
+    if (!/^\d{6}$/.test(pin)) {
+      popToast("err", "PIN required", "Enter a 6-digit ASCII PIN.");
+      return;
+    }
+    try {
+      const grant = await requestGrant(
+        "user.pin",
+        user.id,
+        `reset PIN for ${user.name}`,
+      );
+      if (!grant) return;
+      await api.resetUserPin(user.id, pin, grant);
+      setPinDrafts((previous) => ({ ...previous, [user.id]: "" }));
+      if (user.id === currentUser.id) {
+        expireSession("login");
+        return;
+      }
+      popToast("ok", "PIN updated", `${user.name}'s PIN was reset.`);
+    } catch (error) {
+      popToast("err", "PIN reset failed", error.message);
+    }
+  };
+
+  const createInvite = async (user) => {
+    if (invitePendingRef.current) return;
+    if (user.is_owner && !currentUser.is_owner) {
+      popToast("err", "Owner protected", "Only the owner can pair another owner phone.");
+      return;
+    }
+    invitePendingRef.current = true;
+    setInviteBusy(true);
+    try {
+      const grant = await requestGrant(
+        "pairing.invite",
+        user.id,
+        `create pairing invite for ${user.name}`,
+      );
+      if (!grant) return;
+      setInvite(null);
+      const requestedAt = Date.now();
+      const result = await api.pairingInvite(user.id, grant);
+      if (
+        typeof result.qr_image !== "string" ||
+        !result.qr_image.startsWith("data:image/png;base64,") ||
+        !Number.isFinite(result.expires_in) ||
+        result.expires_in <= 0
+      ) {
+        throw new Error("The host did not return an invitation QR. Try again.");
+      }
+      setInvite({
+        userId: user.id,
+        userName: user.name,
+        qrImage: result.qr_image,
+        expiresAt: requestedAt + result.expires_in * 1000,
+      });
+    } catch (error) {
+      popToast("err", "Invite failed", error.message);
+    } finally {
+      invitePendingRef.current = false;
+      setInviteBusy(false);
+    }
+  };
+
+  const revokeDevice = async (device) => {
+    const belongsToOwner = device.is_owner || device.user_is_owner;
+    if (belongsToOwner && !currentUser.is_owner) {
+      popToast("err", "Owner protected", "Only the owner can revoke an owner phone.");
+      return;
+    }
+    if (!confirm(`Revoke ${device.name || "this device"}?`)) return;
+    try {
+      const grant = await requestGrant(
+        "device.revoke",
+        device.id,
+        `revoke ${device.name || "device"}`,
+      );
+      if (!grant) return;
+      await api.revokeDevice(device.id, grant);
+      setDevices(await api.devices());
+      popToast("ok", "Device revoked", device.name || device.id);
+    } catch (error) {
+      popToast("err", "Revoke failed", error.message);
+    }
+  };
+
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-3">
-      <Card>
+      {currentUser.is_admin ? <Card>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="text-sm font-semibold text-slate-100">Enroll face</div>
           <Badge>{localFaceNames.length} enrolled</Badge>
         </div>
 
-        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
           <button
             type="button"
             aria-pressed={enrollSource === "device_camera"}
@@ -612,15 +815,46 @@ export default function UsersTab({
           </div>
         ) : null}
 
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="min-w-0 flex-1">
             <label htmlFor="display-name" className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-slate-500">Display name</label>
             <Input id="display-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" disabled={enrollingAuto} />
           </div>
+          <div>
+            <label htmlFor="new-user-pin" className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-slate-500">New user PIN</label>
+            <Input
+              id="new-user-pin"
+              type="password"
+              autoComplete="new-password"
+              maxLength={6}
+              inputMode="numeric"
+              pattern="[0-9]{6}"
+              value={newUserPin}
+              onChange={(event) => setNewUserPin(event.target.value)}
+              placeholder="Required for a new name"
+              disabled={enrollingAuto}
+            />
+          </div>
+          {currentUser.is_owner ? (
+            <div className="flex min-h-12 items-center justify-between rounded-xl border border-white/[0.08] bg-dna-bg px-3 sm:col-span-2">
+              <div>
+                <div className="text-sm text-slate-200">Administrator role</div>
+                <div className="text-xs text-slate-500">
+                  Can manage other users; owner controls remain protected.
+                </div>
+              </div>
+              <Switch
+                checked={newUserIsAdmin}
+                onChange={setNewUserIsAdmin}
+                disabled={enrollingAuto}
+                ariaLabel="Create this user as an administrator"
+              />
+            </div>
+          ) : null}
           <Btn
             disabled={busy || enrollingAuto || (enrollSource === "phone_camera" && mode !== "device" && !cleanApi)}
             onClick={runAddAndEnroll}
-            className="shrink-0 sm:min-w-[11rem]"
+            className="shrink-0 sm:col-span-2"
           >
             Add & enroll face
           </Btn>
@@ -644,7 +878,7 @@ export default function UsersTab({
             <canvas ref={enrollCanvasRef} className="hidden" aria-hidden="true" />
           </div>
         ) : null}
-      </Card>
+      </Card> : null}
 
       <Card>
         <div className="text-sm font-semibold text-slate-100">
@@ -661,6 +895,8 @@ export default function UsersTab({
           ) : (
             accessUserNames.map((n) => {
               const u = users.find((x) => x.name === n);
+              const ownerProtected = u?.is_owner && !currentUser.is_owner;
+              const removalBlocked = !!u?.is_owner;
               const hasFace = localFaceNames.includes(n);
               const extraMeta =
                 !hasFace
@@ -675,13 +911,14 @@ export default function UsersTab({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-slate-100">{n}</div>
+                    {u?.is_owner ? <Badge variant="info">Owner</Badge> : null}
                     {extraMeta ? (
                       <div className="text-xs text-slate-500">
                         {extraMeta}
                       </div>
                     ) : null}
                   </div>
-                  <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+                  {currentUser.is_admin ? <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] uppercase tracking-wide text-slate-500">
                         {isFaceAccessAllowed(n, faceAccessAllowed) ? "allowed" : "blocked"}
@@ -689,6 +926,7 @@ export default function UsersTab({
                       <Switch
                         ariaLabel={`${n} face access`}
                         checked={isFaceAccessAllowed(n, faceAccessAllowed)}
+                        disabled={ownerProtected}
                         onChange={async (allowed) => {
                           if (mode === "sim" && typeof setSim === "function") {
                             setFaceAccessAllowed((prev) => ({ ...prev, [n]: allowed }));
@@ -708,32 +946,110 @@ export default function UsersTab({
                           }
                           if (mode === "device") {
                             const row = users.find((x) => x.name === n);
-                            if (row) {
-                              try {
-                                await api.setAccess(row.id, allowed);
-                                if (typeof setDeviceUsers === "function") {
-                                  setDeviceUsers((prev) =>
-                                    prev.map((u) => (u.id === row.id ? { ...u, faceAccess: allowed } : u)),
-                                  );
-                                }
-                              } catch {
-                                /* non-fatal */
-                              }
-                            }
+                            if (row) await updateAccess(row, allowed);
                           }
                         }}
                       />
                     </div>
-                    <Btn variant="danger" disabled={busy || enrollingAuto} onClick={() => removePersonByName(n)}>
+                    <Btn variant="danger" disabled={busy || enrollingAuto || removalBlocked} onClick={() => removePersonByName(n)}>
                       Remove
                     </Btn>
-                  </div>
+                  </div> : null}
                 </div>
               );
             })
           )}
         </div>
       </Card>
+
+      {currentUser.is_admin ? (
+        <Card>
+          <div className="text-sm font-semibold text-slate-100">
+            User PINs and mobile access
+          </div>
+          <div className="mt-4 space-y-3">
+            {users.map((user) => (
+              <div
+                key={user.id}
+                className="rounded-xl border border-white/[0.06] bg-dna-bg p-3"
+              >
+                <div className="text-sm font-medium text-slate-100">
+                  {user.name}
+                  {user.is_owner ? (
+                    <span className="ml-2 text-xs font-normal text-sky-300">Owner</span>
+                  ) : user.is_admin ? (
+                    <span className="ml-2 text-xs font-normal text-violet-300">Administrator</span>
+                  ) : null}
+                </div>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    maxLength={6}
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    value={pinDrafts[user.id] || ""}
+                    onChange={(event) =>
+                      setPinDrafts((previous) => ({
+                        ...previous,
+                        [user.id]: event.target.value,
+                      }))
+                    }
+                    placeholder="New 6-digit PIN"
+                    aria-label={`New PIN for ${user.name}`}
+                    disabled={user.is_owner && !currentUser.is_owner}
+                  />
+                  <Btn variant="secondary" disabled={user.is_owner && !currentUser.is_owner} onClick={() => resetPin(user)}>
+                    Reset PIN
+                  </Btn>
+                  <Btn variant="secondary" disabled={inviteBusy || (user.is_owner && !currentUser.is_owner)} onClick={() => createInvite(user)}>
+                    Pair phone
+                  </Btn>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {invite ? (
+            <PairingInviteCard
+              key={invite.expiresAt}
+              invite={invite}
+              onDismiss={() => setInvite(null)}
+            />
+          ) : null}
+
+          <div className="mt-6 text-sm font-semibold text-slate-100">
+            Paired devices
+          </div>
+          <div className="mt-3 space-y-2">
+            {(devices || []).length === 0 ? (
+              <div className="text-sm text-slate-500">No paired phones.</div>
+            ) : (
+              devices.map((device) => (
+                <div
+                  key={device.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-dna-bg px-4 py-3"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm text-slate-100">
+                      {device.name || "Mobile device"}
+                    </div>
+                  <div className="text-xs text-slate-500">
+                    {device.user_name} · {device.active ? "Active" : "Revoked"}
+                    {device.is_owner || device.user_is_owner ? " · Owner" : ""}
+                  </div>
+                  </div>
+                  {device.active ? (
+                    <Btn variant="danger" disabled={(device.is_owner || device.user_is_owner) && !currentUser.is_owner} onClick={() => revokeDevice(device)}>
+                      Revoke
+                    </Btn>
+                  ) : null}
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+      ) : null}
     </div>
   );
 }

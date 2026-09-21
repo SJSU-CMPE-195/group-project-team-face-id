@@ -46,7 +46,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.bass.app.PinPrompt
 import com.bass.app.PinPurpose
-import com.bass.app.PinStage
 import com.bass.app.R
 
 private const val PIN_LENGTH = 6
@@ -288,19 +287,17 @@ private fun NumberPad(
     }
 }
 
-private fun PinPrompt.titleResource(): Int =
-    when (stage) {
-        PinStage.CREATE -> R.string.pin_create_title
-        PinStage.CONFIRM -> R.string.pin_confirm_title
-        PinStage.VERIFY -> R.string.pin_verify_title
-    }
+private fun PinPrompt.titleResource(): Int = R.string.pin_verify_title
 
 private fun PinPrompt.descriptionResource(): Int =
-    when {
-        stage == PinStage.CREATE -> R.string.pin_create_description
-        stage == PinStage.CONFIRM -> R.string.pin_confirm_description
-        purpose == PinPurpose.PAIR -> R.string.pin_pair_description
-        purpose == PinPurpose.ENROLL -> R.string.pin_enroll_description
-        purpose == PinPurpose.UNLOCK -> R.string.pin_unlock_description
-        else -> R.string.pin_setup_description
+    when (purpose) {
+        PinPurpose.LOGIN -> R.string.pin_login_description
+        PinPurpose.ENROLL -> R.string.pin_enroll_description
+        PinPurpose.UNLOCK -> R.string.pin_unlock_description
+        PinPurpose.IGNITION -> R.string.pin_ignition_description
+        PinPurpose.USER_ADMIN -> R.string.pin_user_admin_description
+        PinPurpose.SETTINGS -> R.string.pin_settings_description
+        PinPurpose.LOCK -> R.string.pin_lock_description
+        PinPurpose.STOP_IGNITION -> R.string.pin_stop_ignition_description
+        PinPurpose.RESET -> R.string.pin_reset_description
     }

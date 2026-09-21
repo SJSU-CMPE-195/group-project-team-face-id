@@ -24,6 +24,7 @@ import com.bass.app.AppViewModel
 import com.bass.app.BassState
 import com.bass.app.CaptureFlow
 import com.bass.app.R
+import com.bass.app.canControlActuators
 import com.bass.app.ui.components.BassCard
 import com.bass.app.ui.components.ChipTone
 import com.bass.app.ui.components.SectionTitle
@@ -35,6 +36,7 @@ fun ConsoleScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
 ) {
+    val actuatorControlAvailable = state.canControlActuators
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -43,6 +45,7 @@ fun ConsoleScreen(
         item {
             FaceVerificationCard(
                 state = state,
+                actuatorControlAvailable = actuatorControlAvailable,
                 onStart = viewModel::unlock,
                 onCancel = viewModel::cancelActiveSession,
             )
@@ -61,6 +64,7 @@ fun ConsoleScreen(
                     countdown = state.promptCountdown,
                     busy = state.busy,
                     deviceCameraAvailable = state.capabilities.deviceCamera,
+                    actuatorControlAvailable = actuatorControlAvailable,
                     onVerify = viewModel::verifyIgnition,
                     onLock = viewModel::lock,
                 )
@@ -68,7 +72,11 @@ fun ConsoleScreen(
         }
 
         item {
-            CurrentStateCard(state = state, viewModel = viewModel)
+            CurrentStateCard(
+                state = state,
+                actuatorControlAvailable = actuatorControlAvailable,
+                viewModel = viewModel,
+            )
         }
 
         item {
@@ -84,6 +92,7 @@ fun ConsoleScreen(
 @Composable
 private fun FaceVerificationCard(
     state: BassState,
+    actuatorControlAvailable: Boolean,
     onStart: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -143,7 +152,10 @@ private fun FaceVerificationCard(
         } else if (state.status?.locked != false) {
             Button(
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !state.busy && state.capabilities.deviceCamera,
+                enabled =
+                    !state.busy &&
+                        state.capabilities.deviceCamera &&
+                        actuatorControlAvailable,
                 onClick = onStart,
             ) {
                 Text(stringResource(R.string.action_scan_face))
@@ -187,6 +199,7 @@ private fun IgnitionPrompt(
     countdown: Int?,
     busy: Boolean,
     deviceCameraAvailable: Boolean,
+    actuatorControlAvailable: Boolean,
     onVerify: () -> Unit,
     onLock: () -> Unit,
 ) {
@@ -216,14 +229,14 @@ private fun IgnitionPrompt(
         )
         Button(
             modifier = Modifier.fillMaxWidth(),
-            enabled = !busy && deviceCameraAvailable,
+            enabled = !busy && deviceCameraAvailable && actuatorControlAvailable,
             onClick = onVerify,
         ) {
             Text(stringResource(R.string.action_verify_ignition))
         }
         OutlinedButton(
             modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
+            enabled = !busy && actuatorControlAvailable,
             onClick = onLock,
         ) {
             Text(stringResource(R.string.action_lock_now))
@@ -234,6 +247,7 @@ private fun IgnitionPrompt(
 @Composable
 private fun CurrentStateCard(
     state: BassState,
+    actuatorControlAvailable: Boolean,
     viewModel: AppViewModel,
 ) {
     val status = state.status
@@ -284,10 +298,24 @@ private fun CurrentStateCard(
             style = MaterialTheme.typography.bodyMedium,
         )
 
+        if (!actuatorControlAvailable && !state.capabilities.simulatedActuator) {
+            Text(
+                text = stringResource(R.string.console_real_outputs_unavailable),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        } else if (status?.physicalStateConfirmed != true) {
+            Text(
+                text = stringResource(R.string.console_physical_state_unconfirmed),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
         if (status?.locked == false) {
             OutlinedButton(
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !state.busy,
+                enabled = !state.busy && actuatorControlAvailable,
                 onClick = viewModel::lock,
             ) {
                 Text(stringResource(R.string.action_lock))
@@ -297,21 +325,23 @@ private fun CurrentStateCard(
         if (status?.ignitionOn == true) {
             OutlinedButton(
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !state.busy,
+                enabled = !state.busy && actuatorControlAvailable,
                 onClick = viewModel::stopIgnition,
             ) {
                 Text(stringResource(R.string.action_stop_ignition))
             }
         }
-        OutlinedButton(
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !state.busy,
-            onClick = viewModel::fullReset,
-        ) {
-            Text(
-                text = stringResource(R.string.action_full_reset),
-                color = MaterialTheme.colorScheme.error,
-            )
+        if (state.identity?.user?.isOwner == true) {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !state.busy && actuatorControlAvailable,
+                onClick = viewModel::fullReset,
+            ) {
+                Text(
+                    text = stringResource(R.string.action_full_reset),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
     }
 }
@@ -357,6 +387,7 @@ private fun ConnectionCard(
     onForget: () -> Unit,
 ) {
     val device = state.device
+    val status = state.status
     BassCard {
         SectionTitle(
             title = stringResource(R.string.console_connection_title),
@@ -364,13 +395,21 @@ private fun ConnectionCard(
             action = {
                 StatusChip(
                     text =
-                        if (state.capabilities.simulatedActuator) {
+                        if (status?.simulatedActuator == true) {
                             stringResource(R.string.status_simulated)
+                        } else if (status?.actuatorControlAvailable == false) {
+                            stringResource(R.string.status_outputs_unavailable)
+                        } else if (status?.physicalStateConfirmed != true) {
+                            stringResource(R.string.status_physical_unconfirmed)
                         } else {
                             stringResource(R.string.status_live_hardware)
                         },
                     tone =
-                        if (state.capabilities.simulatedActuator) {
+                        if (
+                            status?.simulatedActuator == true ||
+                                status?.actuatorControlAvailable == false ||
+                                status?.physicalStateConfirmed != true
+                        ) {
                             ChipTone.WARNING
                         } else {
                             ChipTone.SUCCESS

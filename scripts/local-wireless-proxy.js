@@ -1,6 +1,16 @@
+import process from "node:process";
+
 const PREFIX = "/local/wireless";
 const PAIRING_PATH = "/local/pairing-qr";
-const TARGET = "http://127.0.0.1:5056";
+const DASHBOARD_PORT = process.env.BASS_DASHBOARD_PORT || "5057";
+if (
+  !/^\d+$/.test(DASHBOARD_PORT) ||
+  Number(DASHBOARD_PORT) < 1 ||
+  Number(DASHBOARD_PORT) > 65535
+) {
+  throw new Error("BASS_DASHBOARD_PORT must be between 1 and 65535.");
+}
+const TARGET = `http://127.0.0.1:${Number(DASHBOARD_PORT)}`;
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const LOCAL_PEERS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
@@ -41,7 +51,7 @@ export default function localWirelessProxy() {
     config: () => ({
       server: {
         proxy: {
-          [`^(?:${PREFIX}/api/|${PAIRING_PATH}(?:\\?|$))`]: {
+          [`^(?:${PREFIX}/api/|/local/security/|${PAIRING_PATH}(?:\\?|$))`]: {
             target: TARGET,
             changeOrigin: true,
             proxyTimeout: 15000,
@@ -64,7 +74,7 @@ export default function localWirelessProxy() {
                   reply(
                     response,
                     502,
-                    "Start the local BASS wireless host on port 5056.",
+                    `Start the local BASS dashboard at ${TARGET}.`,
                   );
                 }
               });
@@ -77,7 +87,8 @@ export default function localWirelessProxy() {
       server.middlewares.use((request, response, next) => {
         const localApi = request.url.startsWith(`${PREFIX}/api/`);
         const pairingQr = request.url.split("?", 1)[0] === PAIRING_PATH;
-        if (!localApi && !pairingQr) return next();
+        const security = request.url.startsWith("/local/security/");
+        if (!localApi && !pairingQr && !security) return next();
         if (!isLocalRequest(request)) {
           return reply(
             response,
@@ -85,7 +96,7 @@ export default function localWirelessProxy() {
             "Open this dashboard through localhost on the host computer.",
           );
         }
-        // The backend bridge uses its loaded identity after both local guards.
+        // Forward only after checking the actual local peer and browser origin.
         request.headers.origin = TARGET;
         if (request.headers.referer) request.headers.referer = `${TARGET}/`;
         delete request.headers.authorization;

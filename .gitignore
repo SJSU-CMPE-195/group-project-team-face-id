@@ -39,6 +39,8 @@ coverage
 .cache
 .vite
 .venv-wireless/
+*.tls.pem
+*.auth.key
 
 # System files
 Thumbs.db

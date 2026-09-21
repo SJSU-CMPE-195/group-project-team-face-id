@@ -22,6 +22,12 @@ from .camera_capture import (
     CapturedFrame,
     SessionCameraCapture,
 )
+from .runtime_authorization import AuthorizationRejected, RuntimeAuthorization
+from .runtime_actuation import RuntimeActuation
+from .runtime_safety import (
+    RuntimeSafetySettings,
+    validate_runtime_safety_settings,
+)
 
 
 WINDOW_SIZE = 10
@@ -54,12 +60,19 @@ class PiRuntime:
 
     camera_source = "pi_camera"
     camera_label = "Pi camera"
+    actuator_feedback = "unavailable"
+    actuator_control_available = False
+    simulated_actuators = False
+    actuator_block_reason = (
+        "Physical actuator output is disabled until command feedback is "
+        "implemented and validated."
+    )
+    liveness_available = False
 
     def __init__(self, db_api: Any, *, face_engine: Any | None = None):
         self._db = db_api
         self._face_engine = face_engine
         self._lock = threading.RLock()
-        self._actuator_lock = threading.RLock()
         self._camera_io_lock = threading.Lock()
         self._inference_lock = threading.Lock()
         self._serial_lock = threading.Lock()
@@ -78,16 +91,38 @@ class PiRuntime:
         self._model_error: str | None = None
         self._camera_error: str | None = None
         self._serial_error: str | None = None
-        self._ignition_on = False
-        self._unlock_owner: str | None = None
-        self._authorization_generation = 0
+        self._settings_error: str | None = None
+        self._authorization = RuntimeAuthorization()
+        self._actuation = RuntimeActuation(
+            db_api,
+            self._send_command,
+            self._log,
+        )
         self._closed = False
-        self._auto_relock_timer: threading.Timer | None = None
-        self._ignition_stop_timer: threading.Timer | None = None
+        self._paused = False
+        self._maintenance_drained = False
+        self._maintenance_reason: str | None = None
+        self._cleanup_timers: set[threading.Timer] = set()
 
     # ── Public status and session API ────────────────────────────────────────
 
+    def configure_authorization(self, store: Any) -> None:
+        """Require authenticated principals for all sessions created afterward."""
+
+        with self._lock:
+            if self._active_session_id:
+                raise RuntimeRequestError(
+                    "authorization cannot be configured while a session is active",
+                    409,
+                )
+            self._authorization.configure(store)
+
     def status(self) -> dict[str, Any]:
+        with self._lock:
+            paused = self._paused
+            maintenance_reason = self._maintenance_reason
+        settings_ready = False if paused else self._refresh_safety_settings()
+        actuation = self._actuation.snapshot()
         with self._lock:
             active = self._sessions.get(self._active_session_id or "")
             active_view = None
@@ -99,34 +134,81 @@ class PiRuntime:
                 }
             modules_loaded = self._modules is not None
             camera_ready = self._modules is not None and self._model is not None and self._camera_error is None
-            actuator_ready = self._serial is not None
+            actuator_ready = bool(
+                self.actuator_control_available and self._serial is not None
+            )
+            runtime_error = (
+                self._settings_error
+                or (
+                    None
+                    if self.actuator_control_available
+                    else self.actuator_block_reason
+                )
+                or self._hardware_error
+                or self._model_error
+                or self._camera_error
+                or self._serial_error
+            )
             return {
-                "ready": bool(not self._closed and camera_ready and actuator_ready),
-                "hardware": "closed" if self._closed else ("ready" if camera_ready and actuator_ready else (
+                "ready": bool(
+                    not self._closed
+                    and not paused
+                    and camera_ready
+                    and actuator_ready
+                    and settings_ready
+                ),
+                "hardware": "closed" if self._closed else ("maintenance" if paused else ("ready" if camera_ready and actuator_ready else (
                     "degraded" if camera_ready else (
                         "unavailable"
-                        if self._hardware_error or self._model_error or self._camera_error or self._serial_error
+                        if (
+                            not self.actuator_control_available
+                            or self._hardware_error
+                            or self._model_error
+                            or self._camera_error
+                            or self._serial_error
+                        )
                         else "not_initialized"
                     )
-                )),
+                ))),
                 "dependencies_loaded": modules_loaded,
                 "model_loaded": self._model is not None,
                 "camera_open": self._camera is not None,
                 "camera_source": self.camera_source,
-                "esp32_connected": self._serial is not None,
-                "serial_port": self._serial_port,
-                "ignitionOn": self._ignition_on,
-                "ignition_authorized": self._unlock_owner is not None,
-                "unlock_owner": self._unlock_owner,
+                "esp32_connected": bool(
+                    self.actuator_control_available and self._serial is not None
+                ),
+                "serial_port": (
+                    self._serial_port
+                    if self.actuator_control_available
+                    else None
+                ),
+                "settings_ready": settings_ready,
+                "liveness_available": self.liveness_available,
+                "actuator_feedback": self.actuator_feedback,
+                "actuator_control_available": self.actuator_control_available,
+                "simulated_actuators": self.simulated_actuators,
+                "physical_state_confirmed": False,
+                "ignitionOn": actuation.ignition_on,
+                "ignition_authorized": actuation.unlock_owner is not None,
+                "unlock_owner": actuation.unlock_owner,
                 "active_session": active_view,
-                "error": self._hardware_error or self._model_error or self._camera_error or self._serial_error,
+                "maintenance": paused,
+                "maintenance_reason": maintenance_reason,
+                "error": runtime_error,
             }
 
-    def start_scan(self, purpose: str = "unlock", expected_user: str | None = None) -> dict[str, Any]:
+    def start_scan(
+        self,
+        purpose: str = "unlock",
+        expected_user: str | None = None,
+        *,
+        authorization: Any | None = None,
+    ) -> dict[str, Any]:
         session = self._start_scan_session(
             purpose,
             expected_user,
             source=self.camera_source,
+            authorization=authorization,
         )
         self._spawn(session["id"], self._run_scan)
         return self._scan_view(session)
@@ -174,9 +256,15 @@ class PiRuntime:
             "frame_available": frame_available,
         }
 
-    def camera_frame(self, session_id: str) -> bytes | None:
+    def camera_frame(
+        self,
+        session_id: str,
+        *,
+        authorization: Any | None = None,
+    ) -> bytes | None:
         """Return the fresh cached JPEG for the active host-camera session."""
 
+        self.require_session_owner(session_id, authorization)
         capture = self._active_camera_capture(session_id)
         if not capture:
             return None
@@ -189,9 +277,15 @@ class PiRuntime:
             return None
         return frame.jpeg
 
-    def camera_stream(self, session_id: str) -> Iterator[bytes] | None:
+    def camera_stream(
+        self,
+        session_id: str,
+        *,
+        authorization: Any | None = None,
+    ) -> Iterator[bytes] | None:
         """Stream fresh JPEGs without owning or controlling camera capture."""
 
+        self.require_session_owner(session_id, authorization)
         capture = self._active_camera_capture(session_id)
         if not capture:
             return None
@@ -200,6 +294,8 @@ class PiRuntime:
             frame_id = -1
             last_jpeg_at = time.monotonic()
             while self._camera_capture_is_active(session_id, capture):
+                if not self._session_authorization_is_current(session_id):
+                    return
                 frame = capture.wait_for_newer(frame_id, 1.0)
                 if frame is None:
                     if capture.failure():
@@ -218,6 +314,8 @@ class PiRuntime:
                 last_jpeg_at = time.monotonic()
                 if not self._camera_capture_is_active(session_id, capture):
                     return
+                if not self._session_authorization_is_current(session_id):
+                    return
                 yield self._multipart_frame(frame)
 
         return stream_frames()
@@ -234,20 +332,47 @@ class PiRuntime:
         expected_user: str | None,
         *,
         source: str,
+        authorization: Any | None = None,
     ) -> dict[str, Any]:
         purpose = (purpose or "unlock").strip().lower()
         if purpose not in ("unlock", "ignition"):
             raise RuntimeRequestError("purpose must be unlock or ignition", 400)
+        if not self.actuator_control_available:
+            raise RuntimeRequestError(self.actuator_block_reason, 503)
         expected_user = (expected_user or "").strip() or None
+        expected_user_id = None
+        if self._authorization.required:
+            principal_user_id = getattr(authorization, "user_id", None)
+            if not isinstance(principal_user_id, str) or not principal_user_id:
+                raise RuntimeRequestError("authenticated authorization is required", 403)
+            principal_user = self._user_by_id(principal_user_id)
+            if not principal_user or not self._face_access_allowed(principal_user):
+                raise RuntimeRequestError("authorized user cannot use face access", 403)
+            canonical_name = (principal_user.get("name") or "").strip()
+            if not canonical_name:
+                raise RuntimeRequestError("authorized user has no canonical name", 403)
+            if expected_user and expected_user.casefold() != canonical_name.casefold():
+                raise RuntimeRequestError(
+                    "expected_user does not match the authorized user",
+                    403,
+                )
+            expected_user = canonical_name
+            expected_user_id = principal_user.get("id")
+        actuation = self._actuation.snapshot()
         if purpose == "ignition":
-            with self._lock:
-                unlock_owner = self._unlock_owner
-                authorization_generation = self._authorization_generation
+            unlock_owner = actuation.unlock_owner
+            unlock_owner_id = actuation.unlock_owner_id
             if not unlock_owner:
                 raise RuntimeRequestError("a face-verified unlock is required before ignition", 409)
             if expected_user and expected_user.casefold() != unlock_owner.casefold():
                 raise RuntimeRequestError("expected_user does not match the active unlock", 409)
+            if self._authorization.required and expected_user_id != unlock_owner_id:
+                raise RuntimeRequestError(
+                    "authorized user does not own the active unlock",
+                    403,
+                )
             expected_user = unlock_owner
+            expected_user_id = unlock_owner_id
             try:
                 if self._db.get_status().get("lockState") == "locked":
                     raise RuntimeRequestError("device is locked", 409)
@@ -256,13 +381,29 @@ class PiRuntime:
             except Exception as exc:
                 raise RuntimeRequestError(f"could not read device state: {exc}", 503) from exc
 
+        try:
+            authorization_values = self._authorization.bind(
+                authorization,
+                expected_user_id=expected_user_id,
+            )
+        except AuthorizationRejected as exc:
+            raise RuntimeRequestError(str(exc), exc.status_code) from exc
+
+        try:
+            safety_settings = self._require_safety_settings()
+            if safety_settings.fail_lockout:
+                self._authorization.check_face_attempt(authorization_values)
+        except AuthorizationRejected as exc:
+            raise RuntimeRequestError(str(exc), exc.status_code) from exc
+
         session = self._new_session(
             "scan",
             {
+                **authorization_values,
                 "purpose": purpose,
                 "source": source,
                 "expected_user": expected_user,
-                "authorization_generation": authorization_generation if purpose == "ignition" else None,
+                "authorization_generation": actuation.generation,
                 "state": "starting" if source == self.camera_source else "scanning",
                 "user": None,
                 "score": None,
@@ -270,6 +411,8 @@ class PiRuntime:
                 "matches": 0,
                 "history": None,
                 "database": None,
+                "face_mismatch_observed": False,
+                "face_result_recorded": False,
                 "message": (
                     f"{self.camera_label} scan starting."
                     if source == self.camera_source
@@ -295,12 +438,23 @@ class PiRuntime:
             self._release_session(session_id)
         return result
 
-    def start_enrollment(self, name: str) -> dict[str, Any]:
-        name = self._resolve_enrollment_name(name)
+    def start_enrollment(
+        self,
+        name: str,
+        *,
+        authorization: Any | None = None,
+    ) -> dict[str, Any]:
+        user = self._resolve_enrollment_user(name)
+        authorization_values = self._bind_enrollment_authorization(
+            authorization,
+            user["id"],
+        )
+        self._require_safety_settings()
         session = self._new_session(
             "enroll",
             {
-                "name": name,
+                **authorization_values,
+                "name": user["name"],
                 "source": self.camera_source,
                 "state": "capturing",
                 "count": 0,
@@ -310,15 +464,26 @@ class PiRuntime:
         self._spawn(session["id"], self._run_enrollment)
         return self._enroll_view(session)
 
-    def start_client_enrollment(self, name: str) -> dict[str, Any]:
+    def start_client_enrollment(
+        self,
+        name: str,
+        *,
+        authorization: Any | None = None,
+    ) -> dict[str, Any]:
         """Start an enrollment whose JPEG samples are uploaded by a client."""
 
-        name = self._resolve_enrollment_name(name)
+        user = self._resolve_enrollment_user(name)
+        authorization_values = self._bind_enrollment_authorization(
+            authorization,
+            user["id"],
+        )
+        self._require_safety_settings()
         timeout = self._bounded_seconds("PI_ENROLL_TIMEOUT_SECONDS", DEFAULT_ENROLL_TIMEOUT)
         session = self._new_session(
             "enroll",
             {
-                "name": name,
+                **authorization_values,
+                "name": user["name"],
                 "source": "client_camera",
                 "state": "capturing",
                 "count": 0,
@@ -395,7 +560,7 @@ class PiRuntime:
         """Persist an uploaded enrollment into the Pi's canonical SQLite DB."""
 
         # Serialize persistence with cancel, timeout, reset, and duplicate finish.
-        with self._actuator_lock, self._lock:
+        with self._authorization.synchronized(), self._actuation.synchronized(), self._lock:
             session = self._sessions.get(session_id)
             if not session or session.get("kind") != "enroll":
                 raise RuntimeRequestError("unknown enroll session", 404)
@@ -420,6 +585,15 @@ class PiRuntime:
             name = session["name"]
 
             try:
+                self._safety_settings()
+                if not self._authorization.session_is_current(
+                    session,
+                    require_admin=True,
+                    require_target=True,
+                ):
+                    raise RuntimeError(
+                        "Enrollment authorization expired before saving."
+                    )
                 face_engine = self._get_face_engine()
                 save_result = face_engine.save_user_embedding(name, embeddings)
                 if isinstance(save_result, dict) and not save_result.get("ok"):
@@ -451,7 +625,24 @@ class PiRuntime:
             self._finish(session_id, "timeout", message="Enrollment timed out.")
             self._release_session(session_id)
 
-    def _resolve_enrollment_name(self, name: str) -> str:
+    def _user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        try:
+            getter = getattr(self._db, "get_user_by_id", None)
+            if callable(getter):
+                return getter(user_id)
+            return next(
+                (row for row in self._db.get_all_users() if row.get("id") == user_id),
+                None,
+            )
+        except Exception as exc:
+            raise RuntimeRequestError(f"could not read users: {exc}", 503) from exc
+
+    @staticmethod
+    def _face_access_allowed(user: dict[str, Any]) -> bool:
+        value = user.get("face_access", user.get("faceAccess", 1))
+        return bool(value)
+
+    def _resolve_enrollment_user(self, name: str) -> dict[str, Any]:
         name = (name or "").strip()
         if not name:
             raise RuntimeRequestError("name is required", 400)
@@ -463,7 +654,110 @@ class PiRuntime:
             raise RuntimeRequestError("user must be created before enrollment", 404)
         if len(users) != 1:
             raise RuntimeRequestError("active user name is ambiguous", 409)
-        return users[0]["name"]
+        return users[0]
+
+    def _bind_enrollment_authorization(
+        self,
+        authorization: Any | None,
+        expected_user_id: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._authorization.bind(
+                authorization,
+                expected_user_id=expected_user_id,
+                require_admin=True,
+            )
+        except AuthorizationRejected as exc:
+            raise RuntimeRequestError(str(exc), 403) from exc
+
+    def require_session_owner(
+        self,
+        session_id: str,
+        authorization: Any | None,
+    ) -> None:
+        """Reject cross-device, stale, or revoked access to a runtime session."""
+
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                raise RuntimeRequestError("unknown session", 404)
+        try:
+            self._authorization.require_owner(session, authorization)
+        except AuthorizationRejected as exc:
+            raise RuntimeRequestError(str(exc), 403) from exc
+
+    def _session_authorization_is_current(self, session_id: str) -> bool:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return False
+            kind = session.get("kind")
+        return self._authorization.session_is_current(
+            session,
+            require_admin=kind == "enroll",
+            require_target=self._authorization.required,
+            require_face_access=kind == "scan",
+        )
+
+    def _check_face_attempt(self, session_id: str) -> None:
+        session = self._session(session_id)
+        if not session:
+            raise RuntimeError("scan session is no longer active")
+        try:
+            self._authorization.check_face_attempt(session)
+        except AuthorizationRejected as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def _record_face_result(
+        self,
+        session_id: str,
+        *,
+        matched: bool,
+        limit: int,
+    ) -> None:
+        session = self._session(session_id)
+        if not session:
+            raise RuntimeError("scan session is no longer active")
+        if session.get("face_result_recorded"):
+            return
+        try:
+            self._authorization.record_face_result(
+                session,
+                matched=matched,
+                limit=limit,
+            )
+        except AuthorizationRejected as exc:
+            raise RuntimeError(str(exc)) from exc
+        with self._lock:
+            current = self._sessions.get(session_id)
+            if current is not session:
+                raise RuntimeError("scan session is no longer active")
+            current["face_result_recorded"] = True
+
+    def cancel_device_sessions(self, device_id: str) -> int:
+        """Cancel camera work for a revoked device without changing ignition."""
+
+        cancelled = 0
+        client_session_ids = []
+        with self._actuation.synchronized(), self._lock:
+            for session in self._sessions.values():
+                if (
+                    session.get("actor_device_id") == device_id
+                    and session["state"] not in self._final_states(session["kind"])
+                ):
+                    session["cancel_event"].set()
+                    session.update(
+                        state="cancelled",
+                        message="Session authorization was revoked.",
+                        updated_at=self._now_ms(),
+                    )
+                    self._stop_camera_capture_now_locked(session["id"])
+                    if session.get("source") == "client_camera":
+                        client_session_ids.append(session["id"])
+                    cancelled += 1
+        for session_id in client_session_ids:
+            self._release_session(session_id)
+        return cancelled
 
     def enrollment_status(self, session_id: str) -> dict[str, Any]:
         return self._get_view(session_id, "enroll")
@@ -482,66 +776,192 @@ class PiRuntime:
             409,
         )
 
-    def set_ignition(self, running: bool, reason: str = "manual_ui") -> dict[str, Any]:
-        running = bool(running)
-        with self._actuator_lock:
-            with self._lock:
-                if self._closed:
-                    return {"ok": False, "error": "Pi runtime is shutting down"}
-                already = self._ignition_on == running
-            if running:
-                with self._lock:
-                    unlock_owner = self._unlock_owner
-                if not unlock_owner:
-                    return {
-                        "ok": False,
-                        "error": "a face-verified unlock is required before ignition",
-                    }
-                try:
-                    if self._db.get_status().get("lockState") == "locked":
-                        return {"ok": False, "error": "device is locked"}
-                except Exception as exc:
-                    return {"ok": False, "error": f"could not read device state: {exc}"}
-                if already:
-                    return {"ok": True, "ignitionOn": True}
-            if not self._send_command("START" if running else "STOP"):
-                return {"ok": False, "error": self._serial_error or "ESP32 is unavailable"}
-            with self._lock:
-                self._ignition_on = running
-            self._cancel_ignition_stop_timer()
-            if running:
-                self._schedule_ignition_stop()
-            self._log("ignition", "ok", f"{'start' if running else 'stop'}:{reason}")
-            return {"ok": True, "ignitionOn": running}
+    def set_ignition(
+        self,
+        running: bool,
+        reason: str = "manual_ui",
+        *,
+        ignition_stop_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            closed = self._closed
+            paused = self._paused
+        if paused:
+            return {
+                "ok": False,
+                "error": "Pi runtime is in maintenance",
+                "command_sent": False,
+                "physical_state_confirmed": False,
+            }
+        if running and ignition_stop_seconds is None:
+            try:
+                ignition_stop_seconds = (
+                    self._safety_settings().ignition_stop_seconds
+                )
+            except RuntimeError as exc:
+                return {
+                    "ok": False,
+                    "error": str(exc),
+                    "command_sent": False,
+                    "physical_state_confirmed": False,
+                }
+        return self._actuation.set_ignition(
+            running,
+            reason,
+            ignition_stop_seconds=ignition_stop_seconds or 0,
+            closed=closed,
+        )
 
     def force_lock(self, reason: str = "manual_ui") -> dict[str, Any]:
-        """Cancel work and send both safe actuator commands before locking DB state."""
+        """Cancel work and report lock only after both commands are sent."""
+        with self._lock:
+            if self._paused:
+                return {
+                    "ok": False,
+                    "error": "Pi runtime is in maintenance",
+                    "command_sent": False,
+                    "physical_state_confirmed": False,
+                }
         self._cancel_all_sessions()
-        self._cancel_auto_relock_timer()
-        self._cancel_ignition_stop_timer()
-        with self._actuator_lock:
-            stop_ok = self._send_command("STOP")
-            lock_ok = self._send_command("LOCK")
-            with self._lock:
-                self._ignition_on = False
-                self._unlock_owner = None
-                self._authorization_generation += 1
-            try:
-                self._db.set_lock(reason=reason)
-            except Exception as exc:
-                self._close_camera()
-                return {"ok": False, "error": f"lock state could not be saved: {exc}"}
-        # A stuck camera teardown must not delay the physical STOP/LOCK above.
+        result = self._actuation.force_lock(reason)
+        # A stuck camera teardown must not delay STOP/LOCK command dispatch.
         camera_closed = self._close_camera()
-        if not (stop_ok and lock_ok):
-            return {"ok": False, "error": self._serial_error or "ESP32 is unavailable", "locked": True}
+        if not result.get("ok"):
+            return result
         if not camera_closed:
             return {
+                **result,
                 "ok": False,
                 "error": self._camera_error or "camera teardown did not complete",
                 "locked": True,
             }
-        return {"ok": True, "locked": True}
+        return result
+
+    def quiesce(
+        self,
+        reason: str = "developer_reset",
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """Reversibly stop runtime work before simulated power or reset."""
+
+        reason = (reason or "maintenance").strip() or "maintenance"
+        timeout = max(0.0, float(timeout))
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Pi runtime is shut down")
+            if self._paused and self._maintenance_drained:
+                return {
+                    "ok": True,
+                    "maintenance": True,
+                    "reason": self._maintenance_reason,
+                }
+            self._paused = True
+            self._maintenance_drained = False
+            self._maintenance_reason = reason
+            session_timers = [
+                session.get("timeout_timer")
+                for session in self._sessions.values()
+                if session.get("timeout_timer") is not None
+            ]
+            worker_threads = [
+                session.get("thread")
+                for session in self._sessions.values()
+                if session.get("thread") is not None
+            ]
+        self._cancel_all_sessions()
+        for timer in session_timers:
+            timer.cancel()
+
+        errors: list[str] = []
+        lock_result: dict[str, Any] = {}
+        try:
+            lock_result = self._actuation.quiesce(
+                reason,
+                max(0.0, deadline - time.monotonic()),
+            )
+        except Exception as exc:
+            errors.append(str(exc) or exc.__class__.__name__)
+        if not self._close_camera():
+            errors.append(
+                self._camera_error or "camera teardown did not complete"
+            )
+        self._close_serial()
+        try:
+            self._join_maintenance_threads(worker_threads, deadline)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+        with self._lock:
+            cleanup_thread = self._camera_cleanup_thread
+        try:
+            self._join_maintenance_threads([cleanup_thread], deadline)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+        with self._lock:
+            cleanup_timers = list(self._cleanup_timers)
+            for session in self._sessions.values():
+                timer = session.get("timeout_timer")
+                if timer is not None:
+                    cleanup_timers.append(timer)
+        for timer in cleanup_timers:
+            timer.cancel()
+        try:
+            self._join_maintenance_threads(cleanup_timers, deadline)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+        with self._lock:
+            live_workers = [
+                session.get("thread")
+                for session in self._sessions.values()
+                if session.get("thread") is not None
+                and session["thread"].is_alive()
+            ]
+            cleanup_alive = bool(
+                self._camera_cleanup_thread
+                and self._camera_cleanup_thread.is_alive()
+            )
+            if live_workers or cleanup_alive or self._camera is not None:
+                errors.append("runtime work did not stop before timeout")
+            self._active_session_id = None
+            self._maintenance_drained = not errors
+        if time.monotonic() > deadline:
+            errors.append("runtime maintenance did not finish before timeout")
+            with self._lock:
+                self._maintenance_drained = False
+        if errors:
+            raise RuntimeError("; ".join(dict.fromkeys(errors)))
+        return {
+            **lock_result,
+            "maintenance": True,
+            "reason": reason,
+        }
+
+    def resume_after_maintenance(self) -> None:
+        """Reload database-backed state and accept new runtime work."""
+
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Pi runtime is shut down")
+            if not self._paused:
+                return
+            if not self._maintenance_drained:
+                raise RuntimeError("runtime maintenance has not drained")
+
+        self._safety_settings()
+        self._load_authorized_database(self._get_face_engine())
+        self._actuation.resume_after_maintenance()
+        with self._lock:
+            self._sessions.clear()
+            self._cleanup_timers.clear()
+            self._active_session_id = None
+            self._camera_cleanup_thread = None
+            self._camera_error = None
+            self._maintenance_reason = None
+            self._maintenance_drained = False
+            self._paused = False
 
     def close(self) -> None:
         """Best-effort process shutdown: stop, lock, then release hardware."""
@@ -551,26 +971,13 @@ class PiRuntime:
             self._closed = True
             had_hardware = self._serial is not None or self._modules is not None
         self._cancel_all_sessions()
-        self._cancel_auto_relock_timer()
-        self._cancel_ignition_stop_timer()
-        with self._actuator_lock:
-            if had_hardware:
-                self._send_command("STOP")
-                self._send_command("LOCK")
-            with self._lock:
-                self._ignition_on = False
-                self._unlock_owner = None
-                self._authorization_generation += 1
-            try:
-                self._db.set_lock(reason="shutdown")
-            except Exception:
-                pass
+        self._actuation.shutdown(had_hardware)
         self._close_camera()
         self._close_serial()
 
     def delete_user(self, user_id: str) -> dict[str, Any]:
         """Serialize authorization mutations with the final grant decision."""
-        with self._actuator_lock:
+        with self._actuation.synchronized():
             user = self._db.get_user_by_id(user_id)
             result = self._db.delete_user(user_id)
             if result.get("ok") and user:
@@ -579,7 +986,7 @@ class PiRuntime:
 
     def set_user_access(self, user_id: str, allowed: bool) -> dict[str, Any]:
         """Apply access changes atomically with respect to scan actuation."""
-        with self._actuator_lock:
+        with self._actuation.synchronized():
             user = self._db.get_user_by_id(user_id)
             result = self._db.set_user_access(user_id, allowed)
             if result.get("ok") and not allowed and user:
@@ -703,20 +1110,8 @@ class PiRuntime:
             return connection
 
     def _send_command(self, command: str, connect: bool = True) -> bool:
-        try:
-            connection = self._ensure_serial() if connect else self._serial
-            if connection is None:
-                raise RuntimeError("ESP32 serial device is not connected")
-            with self._serial_lock:
-                connection.write((command + "\n").encode("ascii"))
-                flush = getattr(connection, "flush", None)
-                if flush:
-                    flush()
-            return True
-        except Exception as exc:
-            self._record_error(f"ESP32 command {command} failed: {exc}", "serial")
-            self._close_serial()
-            return False
+        self._record_error(self.actuator_block_reason, "serial")
+        return False
 
     def _close_serial(self) -> None:
         with self._serial_lock:
@@ -739,6 +1134,16 @@ class PiRuntime:
         history: deque[tuple[bool, str | None]] = deque(maxlen=WINDOW_SIZE)
         timeout = self._bounded_seconds("PI_SCAN_TIMEOUT_SECONDS", DEFAULT_SCAN_TIMEOUT)
         try:
+            safety_settings = self._safety_settings()
+            if not self._session_authorization_is_current(session_id):
+                self._finish(
+                    session_id,
+                    "denied",
+                    message="Authorization expired before scanning.",
+                )
+                return
+            if safety_settings.fail_lockout:
+                self._check_face_attempt(session_id)
             self._update(
                 session_id,
                 state="scanning",
@@ -761,6 +1166,13 @@ class PiRuntime:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if cancel_event.is_set():
+                    return
+                if not self._session_authorization_is_current(session_id):
+                    self._finish(
+                        session_id,
+                        "denied",
+                        message="Authorization was revoked during scanning.",
+                    )
                     return
                 captured = self._wait_for_camera_frame(
                     capture,
@@ -785,12 +1197,28 @@ class PiRuntime:
                 history.append((matched, user))
                 candidate, count = self._window_candidate(history)
                 face_count = int(result.get("face_count") or 0)
+                expected_user = session.get("expected_user")
+                mismatch_observed = bool(
+                    face_count == 1
+                    and (
+                        not matched
+                        or (
+                            expected_user
+                            and isinstance(user, str)
+                            and user.casefold() != expected_user.casefold()
+                        )
+                    )
+                )
                 self._update(
                     session_id,
                     user=result.get("user"),
                     score=result.get("score"),
                     face_count=face_count,
                     matches=count,
+                    face_mismatch_observed=(
+                        session.get("face_mismatch_observed", False)
+                        or mismatch_observed
+                    ),
                     window={"matches": count, "needed": MIN_MATCHES, "size": WINDOW_SIZE},
                     message=self._scan_message(face_count, result, candidate, count),
                 )
@@ -813,7 +1241,22 @@ class PiRuntime:
                     )
                     return
             if not cancel_event.is_set():
-                self._finish(session_id, "timeout", message=f"Scan timed out after {timeout} seconds.")
+                session = self._session(session_id)
+                if (
+                    safety_settings.fail_lockout
+                    and session
+                    and session.get("face_mismatch_observed")
+                ):
+                    self._record_face_result(
+                        session_id,
+                        matched=False,
+                        limit=safety_settings.lockout_after,
+                    )
+                self._finish(
+                    session_id,
+                    "timeout",
+                    message=f"Scan timed out after {timeout} seconds.",
+                )
         except Exception as exc:
             if not cancel_event.is_set():
                 self._finish(session_id, "error", message=str(exc))
@@ -831,6 +1274,14 @@ class PiRuntime:
         embeddings: list[Any] = []
         timeout = self._bounded_seconds("PI_ENROLL_TIMEOUT_SECONDS", DEFAULT_ENROLL_TIMEOUT)
         try:
+            self._safety_settings()
+            if not self._session_authorization_is_current(session_id):
+                self._finish(
+                    session_id,
+                    "error",
+                    message="Enrollment authorization expired before capture.",
+                )
+                return
             self._update(
                 session_id,
                 state="capturing",
@@ -850,6 +1301,13 @@ class PiRuntime:
             deadline = time.monotonic() + timeout
             while len(embeddings) < SAMPLES_NEEDED and time.monotonic() < deadline:
                 if cancel_event.is_set():
+                    return
+                if not self._session_authorization_is_current(session_id):
+                    self._finish(
+                        session_id,
+                        "error",
+                        message="Enrollment authorization was revoked during capture.",
+                    )
                     return
                 captured = self._wait_for_camera_frame(
                     capture,
@@ -901,7 +1359,7 @@ class PiRuntime:
                         message=f"Enrollment timed out after {timeout} seconds.",
                     )
                 return
-            with self._actuator_lock:
+            with self._authorization.synchronized(), self._actuation.synchronized():
                 if cancel_event.is_set():
                     return
                 if not self._camera_capture_can_continue(
@@ -919,6 +1377,18 @@ class PiRuntime:
                         )
                     return
                 name = session["name"]
+                self._safety_settings()
+                if not self._authorization.session_is_current(
+                    session,
+                    require_admin=True,
+                    require_target=True,
+                ):
+                    self._finish(
+                        session_id,
+                        "error",
+                        message="Enrollment authorization expired before saving.",
+                    )
+                    return
                 save_result = face_engine.save_user_embedding(name, embeddings)
                 if isinstance(save_result, dict) and not save_result.get("ok"):
                     raise RuntimeError(save_result.get("error") or "could not save face enrollment")
@@ -959,9 +1429,18 @@ class PiRuntime:
             )
             return
         if not candidate:
-            self._finish(session_id, "denied", score=score, message="No authorized user matched the rolling window.")
+            self._finish(
+                session_id,
+                "denied",
+                score=score,
+                message="No authorized user matched the rolling window.",
+            )
             return
-        with self._actuator_lock:
+
+        with (
+            self._authorization.synchronized(),
+            self._actuation.synchronized(),
+        ):
             session = self._session(session_id)
             with self._lock:
                 shutting_down = self._closed
@@ -969,97 +1448,323 @@ class PiRuntime:
                 return
             try:
                 authorized_rows = [
-                    row for row in self._db.get_all_users()
-                    if row.get("name") == candidate and row.get("face_access", 1)
+                    row
+                    for row in self._db.get_all_users()
+                    if row.get("name") == candidate
+                    and self._face_access_allowed(row)
                 ]
                 if len(authorized_rows) != 1:
-                    self._finish(session_id, "denied", user=candidate, score=score, message="Access was revoked before the scan completed.")
-                    return
-            except Exception as exc:
-                self._finish(session_id, "error", message=f"could not confirm face access: {exc}")
-                return
-            purpose = session["purpose"]
-            if purpose == "ignition":
-                expected_user = session.get("expected_user")
-                with self._lock:
-                    current_owner = self._unlock_owner
-                    current_generation = self._authorization_generation
-                authorization_is_current = (
-                    current_owner is not None
-                    and expected_user is not None
-                    and candidate.casefold() == expected_user.casefold() == current_owner.casefold()
-                    and session.get("authorization_generation") == current_generation
-                )
-                if not authorization_is_current:
-                    self._finish(session_id, "denied", user=candidate, score=score, message="Ignition denied: face did not match the unlocked driver.")
-                    return
-                try:
-                    if self._db.get_status().get("lockState") == "locked":
-                        self._finish(session_id, "denied", user=candidate, score=score, message="Ignition denied because the device is locked.")
-                        return
-                except Exception as exc:
-                    self._finish(session_id, "error", message=f"could not read device state: {exc}")
-                    return
-                if cancel_event.is_set():
-                    return
-                if not self._camera_capture_can_continue(
-                    capture,
-                    deadline,
-                    cancel_event,
-                ):
                     self._finish(
                         session_id,
-                        "timeout",
+                        "denied",
                         user=candidate,
                         score=score,
-                        message="Ignition scan expired before actuation.",
+                        message=(
+                            "Access was revoked before the scan completed."
+                        ),
                     )
                     return
-                result = self.set_ignition(True, reason=f"scan:{session_id}")
-                if not result.get("ok"):
-                    self._finish(session_id, "error", user=candidate, score=score, message=result.get("error", "Could not start ignition."))
-                    return
-                self._finish(session_id, "granted", user=candidate, score=score, matches=MIN_MATCHES, message="Ignition granted for the same driver.")
-                return
-            if cancel_event.is_set():
-                return
-            if not self._camera_capture_can_continue(
-                capture,
-                deadline,
-                cancel_event,
-            ):
+            except Exception as exc:
                 self._finish(
                     session_id,
-                    "timeout",
-                    user=candidate,
-                    score=score,
-                    message="Unlock scan expired before actuation.",
+                    "error",
+                    message=f"could not confirm face access: {exc}",
                 )
                 return
-            if not self._send_command("UNLOCK"):
-                self._finish(session_id, "error", user=candidate, score=score, message=self._serial_error or "ESP32 is unavailable; unlock was not applied.")
-                return
+
+            matched_user_id = authorized_rows[0].get("id")
             try:
-                self._db.set_unlock(reason=f"scan:{session_id}")
-                with self._lock:
-                    self._unlock_owner = candidate
-                    self._authorization_generation += 1
-                self._log("face_scan", "ok", f"Granted: {candidate}", authorized_rows[0].get("id"))
-            except Exception as exc:
-                self._send_command("LOCK", connect=False)
-                with self._lock:
-                    self._unlock_owner = None
-                self._finish(session_id, "error", user=candidate, score=score, message=f"unlock state could not be saved: {exc}")
+                safety_settings = self._safety_settings()
+                if safety_settings.fail_lockout:
+                    self._check_face_attempt(session_id)
+            except RuntimeError as exc:
+                self._finish(session_id, "error", message=str(exc))
                 return
-            self._schedule_auto_relock()
+
+            if self._authorization.required and (
+                not matched_user_id
+                or matched_user_id != session.get("user_id")
+                or matched_user_id != session.get("expected_user_id")
+            ):
+                if safety_settings.fail_lockout:
+                    try:
+                        self._record_face_result(
+                            session_id,
+                            matched=False,
+                            limit=safety_settings.lockout_after,
+                        )
+                    except RuntimeError as exc:
+                        self._finish(session_id, "error", message=str(exc))
+                        return
+                self._finish(
+                    session_id,
+                    "denied",
+                    user=candidate,
+                    score=score,
+                    message="Face did not match the authorized user.",
+                )
+                return
+
+            if session["purpose"] == "ignition":
+                self._grant_ignition(
+                    session,
+                    candidate,
+                    matched_user_id,
+                    score,
+                    cancel_event,
+                    capture,
+                    deadline,
+                    safety_settings,
+                )
+                return
+            self._grant_unlock(
+                session,
+                candidate,
+                matched_user_id,
+                score,
+                cancel_event,
+                capture,
+                deadline,
+                safety_settings,
+            )
+
+    def _grant_ignition(
+        self,
+        session: dict[str, Any],
+        candidate: str,
+        matched_user_id: str | None,
+        score: Any,
+        cancel_event: threading.Event,
+        capture: SessionCameraCapture,
+        deadline: float,
+        safety_settings: RuntimeSafetySettings,
+    ) -> None:
+        session_id = session["id"]
+        expected_user = session.get("expected_user")
+        actuation = self._actuation.snapshot()
+        authorization_is_current = (
+            actuation.unlock_owner is not None
+            and expected_user is not None
+            and candidate.casefold()
+            == expected_user.casefold()
+            == actuation.unlock_owner.casefold()
+            and (
+                not self._authorization.required
+                or matched_user_id
+                == session.get("expected_user_id")
+                == actuation.unlock_owner_id
+            )
+            and session.get("authorization_generation")
+            == actuation.generation
+        )
+        if not authorization_is_current:
             self._finish(
                 session_id,
-                "granted",
+                "denied",
                 user=candidate,
                 score=score,
-                matches=MIN_MATCHES,
-                message=f"{self.camera_label} unlock granted.",
+                message=(
+                    "Ignition denied: face did not match the unlocked driver."
+                ),
             )
+            return
+        try:
+            if self._db.get_status().get("lockState") == "locked":
+                self._finish(
+                    session_id,
+                    "denied",
+                    user=candidate,
+                    score=score,
+                    message="Ignition denied because the device is locked.",
+                )
+                return
+        except Exception as exc:
+            self._finish(
+                session_id,
+                "error",
+                message=f"could not read device state: {exc}",
+            )
+            return
+        if cancel_event.is_set():
+            return
+        if not self._camera_capture_can_continue(
+            capture,
+            deadline,
+            cancel_event,
+        ):
+            self._finish(
+                session_id,
+                "timeout",
+                user=candidate,
+                score=score,
+                message="Ignition scan expired before actuation.",
+            )
+            return
+        if not self._authorization.session_is_current(
+            session,
+            require_target=True,
+            require_face_access=True,
+        ):
+            self._finish(
+                session_id,
+                "denied",
+                user=candidate,
+                score=score,
+                message="Authorization was revoked before ignition.",
+            )
+            return
+        if not self._record_successful_face_result(
+            session_id,
+            safety_settings,
+        ):
+            return
+
+        result = self._actuation.set_ignition(
+            True,
+            f"scan:{session_id}",
+            ignition_stop_seconds=safety_settings.ignition_stop_seconds,
+            closed=False,
+            expected_generation=actuation.generation,
+        )
+        if not result.get("ok"):
+            self._finish(
+                session_id,
+                "error",
+                user=candidate,
+                score=score,
+                command_sent=bool(result.get("command_sent")),
+                physical_state_confirmed=False,
+                message=result.get("error", "Could not start ignition."),
+            )
+            return
+        self._finish(
+            session_id,
+            "granted",
+            user=candidate,
+            score=score,
+            matches=MIN_MATCHES,
+            command_sent=True,
+            physical_state_confirmed=False,
+            message=(
+                "Ignition command sent for the authorized driver; "
+                "physical state is unverified."
+            ),
+        )
+
+    def _grant_unlock(
+        self,
+        session: dict[str, Any],
+        candidate: str,
+        matched_user_id: str | None,
+        score: Any,
+        cancel_event: threading.Event,
+        capture: SessionCameraCapture,
+        deadline: float,
+        safety_settings: RuntimeSafetySettings,
+    ) -> None:
+        session_id = session["id"]
+        if cancel_event.is_set():
+            return
+        if not self._camera_capture_can_continue(
+            capture,
+            deadline,
+            cancel_event,
+        ):
+            self._finish(
+                session_id,
+                "timeout",
+                user=candidate,
+                score=score,
+                message="Unlock scan expired before actuation.",
+            )
+            return
+        if not self._authorization.session_is_current(
+            session,
+            require_target=True,
+            require_face_access=True,
+        ):
+            self._finish(
+                session_id,
+                "denied",
+                user=candidate,
+                score=score,
+                message="Authorization was revoked before unlock.",
+            )
+            return
+        generation = session.get("authorization_generation")
+        if generation != self._actuation.snapshot().generation:
+            self._finish(
+                session_id,
+                "denied",
+                user=candidate,
+                score=score,
+                message="Lock state changed before unlock.",
+            )
+            return
+        if not self._record_successful_face_result(
+            session_id,
+            safety_settings,
+        ):
+            return
+
+        result = self._actuation.unlock(
+            candidate,
+            matched_user_id,
+            f"scan:{session_id}",
+            auto_relock_seconds=safety_settings.auto_relock_seconds,
+            expected_generation=generation,
+        )
+        if not result.get("ok"):
+            self._finish(
+                session_id,
+                "error",
+                user=candidate,
+                score=score,
+                command_sent=bool(result.get("command_sent")),
+                unlock_command_sent=bool(
+                    result.get("unlock_command_sent")
+                ),
+                compensating_lock_command_sent=bool(
+                    result.get("compensating_lock_command_sent")
+                ),
+                auto_relock_armed=bool(
+                    result.get("auto_relock_armed")
+                ),
+                physical_state_confirmed=False,
+                message=result.get("error", "Could not unlock."),
+            )
+            return
+        self._finish(
+            session_id,
+            "granted",
+            user=candidate,
+            score=score,
+            matches=MIN_MATCHES,
+            command_sent=True,
+            physical_state_confirmed=False,
+            message=(
+                f"{self.camera_label} authorization passed and the unlock "
+                "command was sent; physical lock position is unverified."
+            ),
+        )
+
+    def _record_successful_face_result(
+        self,
+        session_id: str,
+        safety_settings: RuntimeSafetySettings,
+    ) -> bool:
+        if not safety_settings.fail_lockout:
+            return True
+        try:
+            self._record_face_result(
+                session_id,
+                matched=True,
+                limit=safety_settings.lockout_after,
+            )
+            return True
+        except RuntimeError as exc:
+            self._finish(session_id, "error", message=str(exc))
+            return False
 
     def _expire_client_scan(self, session_id: str, timeout: float) -> None:
         with self._lock:
@@ -1080,6 +1785,8 @@ class PiRuntime:
         with self._lock:
             if self._closed:
                 raise RuntimeRequestError("Pi runtime is shutting down", 503)
+            if self._paused:
+                raise RuntimeRequestError("Pi runtime is in maintenance", 503)
             self._prune_sessions()
             if self._active_session_id and self._active_session_id in self._sessions:
                 raise RuntimeBusyError("Pi runtime is busy with another session")
@@ -1121,7 +1828,7 @@ class PiRuntime:
             return self._scan_view(session) if kind == "scan" else self._enroll_view(session)
 
     def _cancel(self, session_id: str, kind: str) -> dict[str, Any]:
-        with self._actuator_lock:
+        with self._actuation.synchronized():
             with self._lock:
                 session = self._sessions.get(session_id)
                 if not session or session.get("kind") != kind:
@@ -1200,9 +1907,43 @@ class PiRuntime:
         self._schedule_session_cleanup(session_id)
 
     def _schedule_session_cleanup(self, session_id: str) -> None:
-        timer = threading.Timer(SESSION_TTL_SECONDS, self._remove_session, args=(session_id,))
+        timer = None
+
+        def cleanup() -> None:
+            try:
+                self._remove_session(session_id)
+            finally:
+                with self._lock:
+                    if timer is not None:
+                        self._cleanup_timers.discard(timer)
+
+        timer = threading.Timer(SESSION_TTL_SECONDS, cleanup)
         timer.daemon = True
+        with self._lock:
+            if self._paused:
+                self._remove_session(session_id)
+                return
+            self._cleanup_timers.add(timer)
         timer.start()
+
+    @staticmethod
+    def _join_maintenance_threads(
+        threads: list[Any],
+        deadline: float,
+    ) -> None:
+        current = threading.current_thread()
+        for thread in threads:
+            if thread is None or thread is current:
+                continue
+            try:
+                thread.join(max(0.0, deadline - time.monotonic()))
+            except RuntimeError:
+                if not thread.is_alive():
+                    continue
+            if thread.is_alive():
+                raise RuntimeError(
+                    f"{thread.name or 'runtime worker'} did not stop before timeout"
+                )
 
     def _remove_session(self, session_id: str) -> None:
         with self._lock:
@@ -1223,24 +1964,26 @@ class PiRuntime:
             self._release_session(session_id)
 
     def _invalidate_authorization(self, user_name: str | None = None) -> None:
+        if not self._actuation.invalidate_authorization(user_name):
+            return
         release_session_id = None
         with self._lock:
-            if user_name and self._unlock_owner and user_name.casefold() != self._unlock_owner.casefold():
-                return
-            self._unlock_owner = None
-            self._authorization_generation += 1
             self._stop_camera_capture_now_locked()
             session = self._sessions.get(self._active_session_id or "")
-            if session and session.get("kind") == "scan" and session.get("purpose") == "ignition":
-                if session["state"] not in self._final_states("scan"):
-                    session["cancel_event"].set()
-                    session.update(
-                        state="cancelled",
-                        message="Ignition authorization was revoked.",
-                        updated_at=self._now_ms(),
-                    )
-                    if session.get("source") == "client_camera":
-                        release_session_id = session["id"]
+            if (
+                session
+                and session.get("kind") == "scan"
+                and session.get("purpose") == "ignition"
+                and session["state"] not in self._final_states("scan")
+            ):
+                session["cancel_event"].set()
+                session.update(
+                    state="cancelled",
+                    message="Ignition authorization was revoked.",
+                    updated_at=self._now_ms(),
+                )
+                if session.get("source") == "client_camera":
+                    release_session_id = session["id"]
         if release_session_id:
             self._release_session(release_session_id)
 
@@ -1275,6 +2018,19 @@ class PiRuntime:
             "message": session.get("message", ""),
             "matches": session.get("matches", 0),
             "window": session.get("window", {"matches": 0, "needed": MIN_MATCHES, "size": WINDOW_SIZE}),
+            "command_sent": bool(session.get("command_sent", False)),
+            "unlock_command_sent": bool(
+                session.get("unlock_command_sent", False)
+            ),
+            "compensating_lock_command_sent": bool(
+                session.get("compensating_lock_command_sent", False)
+            ),
+            "auto_relock_armed": bool(
+                session.get("auto_relock_armed", False)
+            ),
+            "physical_state_confirmed": bool(
+                session.get("physical_state_confirmed", False)
+            ),
             "updated_at": session.get("updated_at", self._now_ms()),
         }
 
@@ -1472,64 +2228,35 @@ class PiRuntime:
             return f"Matched {candidate or result.get('user')} ({count}/{WINDOW_SIZE})."
         return f"Face not recognized ({count}/{WINDOW_SIZE})."
 
-    def _schedule_auto_relock(self) -> None:
+    def _safety_settings(self) -> RuntimeSafetySettings:
         try:
-            seconds = int(self._db.get_settings_for_ui().get("autoRelockSeconds", 0) or 0)
-        except Exception:
-            seconds = 0
-        self._cancel_auto_relock_timer()
-        if seconds <= 0:
-            return
-        timer = None
+            validated = validate_runtime_safety_settings(
+                self._db.get_settings_for_ui(),
+                require_complete=self._authorization.required,
+                liveness_available=self.liveness_available,
+            )
+        except Exception as exc:
+            message = f"Safety settings unavailable: {exc}"
+            with self._lock:
+                self._settings_error = message
+            raise RuntimeError(message) from exc
 
-        def relock_if_current():
-            with self._actuator_lock:
-                with self._lock:
-                    if self._closed or self._auto_relock_timer is not timer:
-                        return
-                    self._auto_relock_timer = None
-                self.force_lock(reason=f"auto_relock_{seconds}s")
-
-        timer = threading.Timer(seconds, relock_if_current)
-        timer.daemon = True
         with self._lock:
-            self._auto_relock_timer = timer
-        timer.start()
+            self._settings_error = None
+        return validated
 
-    def _schedule_ignition_stop(self) -> None:
+    def _refresh_safety_settings(self) -> bool:
         try:
-            seconds = int(self._db.get_settings_for_ui().get("ignitionAutoStopSeconds", 0) or 0)
-        except Exception:
-            seconds = 0
-        if seconds <= 0:
-            return
-        timer = None
+            self._safety_settings()
+            return True
+        except RuntimeError:
+            return False
 
-        def stop_if_current():
-            with self._actuator_lock:
-                with self._lock:
-                    if self._closed or self._ignition_stop_timer is not timer:
-                        return
-                    self._ignition_stop_timer = None
-                self.set_ignition(False, reason=f"ignition_timeout_{seconds}s")
-
-        timer = threading.Timer(seconds, stop_if_current)
-        timer.daemon = True
-        with self._lock:
-            self._ignition_stop_timer = timer
-        timer.start()
-
-    def _cancel_auto_relock_timer(self) -> None:
-        with self._lock:
-            timer, self._auto_relock_timer = self._auto_relock_timer, None
-        if timer:
-            timer.cancel()
-
-    def _cancel_ignition_stop_timer(self) -> None:
-        with self._lock:
-            timer, self._ignition_stop_timer = self._ignition_stop_timer, None
-        if timer:
-            timer.cancel()
+    def _require_safety_settings(self) -> RuntimeSafetySettings:
+        try:
+            return self._safety_settings()
+        except RuntimeError as exc:
+            raise RuntimeRequestError(str(exc), 503) from exc
 
     def _close_camera(self, owner_id: str | None = None) -> bool:
         with self._lock:

@@ -1,17 +1,24 @@
 import { useMemo } from "react";
+import useSecurity from "../security/useSecurity.js";
 
-async function fetchJson(url, opts = {}) {
+async function fetchJson(url, options = {}, onUnauthorized) {
   const response = await fetch(url, {
     cache: "no-store",
-    ...opts,
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    credentials: "same-origin",
+    redirect: "error",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
   });
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json")
     ? await response.json().catch(() => null)
     : null;
+  if (response.status === 401) onUnauthorized?.();
   if (!response.ok) {
-    const detail = data?.error || data?.detail;
+    const detail = data?.message || data?.error || data?.detail;
     throw new Error(
       typeof detail === "string"
         ? detail
@@ -24,18 +31,22 @@ async function fetchJson(url, opts = {}) {
   return data;
 }
 
-async function fetchFormJson(url, form) {
+async function fetchFormJson(url, form, headers, onUnauthorized) {
   const response = await fetch(url, {
     method: "POST",
     body: form,
     cache: "no-store",
+    credentials: "same-origin",
+    redirect: "error",
+    headers,
   });
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json")
     ? await response.json().catch(() => null)
     : null;
+  if (response.status === 401) onUnauthorized?.();
   if (!response.ok) {
-    const detail = data?.error || data?.detail;
+    const detail = data?.message || data?.error || data?.detail;
     throw new Error(
       typeof detail === "string"
         ? detail
@@ -49,6 +60,8 @@ async function fetchFormJson(url, form) {
 }
 
 export default function useApi(baseUrl) {
+  const { csrfToken, expireSession } = useSecurity();
+
   return useMemo(() => {
     const clean = (baseUrl || "").trim().replace(/\/$/, "");
     const endpoint = (path) => {
@@ -61,84 +74,114 @@ export default function useApi(baseUrl) {
       }
       return `${clean}${path}`;
     };
+    const get = (path, options) =>
+      fetchJson(endpoint(path), options, expireSession);
+    const mutate = (path, options = {}, grantToken = "") =>
+      get(path, {
+        ...options,
+        headers: {
+          "X-BASS-CSRF": csrfToken,
+          ...(grantToken
+            ? { "X-BASS-Operation-Grant": grantToken }
+            : {}),
+          ...(options.headers || {}),
+        },
+      });
 
     return {
-      status: () => fetchJson(endpoint("/api/status")),
-      cameraStatus: (signal) =>
-        fetchJson(endpoint("/api/camera/status"), { signal }),
+      status: () => get("/api/status"),
+      deviceInfo: () => get("/api/device-info"),
+      cameraStatus: (signal) => get("/api/camera/status", { signal }),
       cameraStreamUrl: (sessionId) =>
         endpoint(
           `/api/camera/stream?session_id=${encodeURIComponent(sessionId)}`,
         ),
-      lock: () =>
-        fetchJson(endpoint("/api/lock"), {
-          method: "POST",
-          body: JSON.stringify({ reason: "manual_ui" }),
-        }),
-      ignitionStop: () =>
-        fetchJson(endpoint("/api/ignition/stop"), { method: "POST" }),
-      fullReset: () =>
-        fetchJson(endpoint("/api/full-reset"), { method: "POST" }),
-      users: () => fetchJson(endpoint("/api/users")),
-      faceStatus: () => fetchJson(endpoint("/api/face-status")),
-      addUser: (name) =>
-        fetchJson(endpoint("/api/users"), {
-          method: "POST",
-          body: JSON.stringify({ name }),
-        }),
-      delUser: (id) =>
-        fetchJson(endpoint(`/api/users/${encodeURIComponent(id)}`), {
-          method: "DELETE",
-        }),
-      setAccess: (id, allowed) =>
-        fetchJson(
-          endpoint(`/api/users/${encodeURIComponent(id)}/access`),
+      lock: (grantToken) =>
+        mutate(
+          "/api/lock",
           {
-            method: "PATCH",
-            body: JSON.stringify({ allowed }),
+            method: "POST",
+            body: JSON.stringify({ reason: "manual_ui" }),
           },
+          grantToken,
         ),
-      logs: () => fetchJson(endpoint("/api/logs")),
-      verifyLog: (result, detail, userId) =>
-        fetchJson(endpoint("/api/verify-log"), {
-          method: "POST",
-          body: JSON.stringify({ result, detail, user_id: userId }),
-        }),
-      getSettings: () => fetchJson(endpoint("/api/settings")),
-      saveSettings: (settings) =>
-        fetchJson(endpoint("/api/settings"), {
-          method: "POST",
-          body: JSON.stringify(settings),
-        }),
-      scanStart: (payload = {}) =>
-        fetchJson(endpoint("/api/scan/start"), {
-          method: "POST",
-          body: JSON.stringify(payload),
-        }),
+      ignitionStop: (grantToken) =>
+        mutate("/api/ignition/stop", { method: "POST" }, grantToken),
+      fullReset: (grantToken) =>
+        mutate("/api/full-reset", { method: "POST" }, grantToken),
+      users: () => get("/api/users"),
+      faceStatus: () => get("/api/face-status"),
+      addUser: (name, pin, isAdmin, grantToken) =>
+        mutate(
+          "/api/users",
+          {
+            method: "POST",
+            body: JSON.stringify({ name, pin, is_admin: !!isAdmin }),
+          },
+          grantToken,
+        ),
+      delUser: (id, grantToken) =>
+        mutate(
+          `/api/users/${encodeURIComponent(id)}`,
+          { method: "DELETE" },
+          grantToken,
+        ),
+      setAccess: (id, allowed, grantToken) =>
+        mutate(
+          `/api/users/${encodeURIComponent(id)}/access`,
+          { method: "PATCH", body: JSON.stringify({ allowed }) },
+          grantToken,
+        ),
+      resetUserPin: (id, pin, grantToken) =>
+        mutate(
+          `/api/users/${encodeURIComponent(id)}/pin`,
+          { method: "POST", body: JSON.stringify({ pin }) },
+          grantToken,
+        ),
+      pairingInvite: (userId, grantToken) =>
+        mutate(
+          "/api/pairing-invites",
+          { method: "POST", body: JSON.stringify({ user_id: userId }) },
+          grantToken,
+        ),
+      devices: () => get("/api/devices"),
+      revokeDevice: (deviceId, grantToken) =>
+        mutate(
+          `/api/devices/${encodeURIComponent(deviceId)}/revoke`,
+          { method: "POST" },
+          grantToken,
+        ),
+      logs: () => get("/api/logs"),
+      getSettings: () => get("/api/settings"),
+      saveSettings: (settings, grantToken) =>
+        mutate(
+          "/api/settings",
+          { method: "POST", body: JSON.stringify(settings) },
+          grantToken,
+        ),
+      scanStart: (payload = {}, grantToken) =>
+        mutate(
+          "/api/scan/start",
+          { method: "POST", body: JSON.stringify(payload) },
+          grantToken,
+        ),
       scanStatus: (sessionId) =>
-        fetchJson(
-          endpoint(
-            `/api/scan/status?session_id=${encodeURIComponent(sessionId)}`,
-          ),
-        ),
+        get(`/api/scan/status?session_id=${encodeURIComponent(sessionId)}`),
       scanCancel: (sessionId) =>
-        fetchJson(endpoint("/api/scan/cancel"), {
+        mutate("/api/scan/cancel", {
           method: "POST",
           body: JSON.stringify({ session_id: sessionId }),
         }),
-      piEnrollStart: (payload = {}) =>
-        fetchJson(endpoint("/api/enroll/start"), {
-          method: "POST",
-          body: JSON.stringify(payload),
-        }),
-      piEnrollStatus: (sessionId) =>
-        fetchJson(
-          endpoint(
-            `/api/enroll/status?session_id=${encodeURIComponent(sessionId)}`,
-          ),
+      piEnrollStart: (payload = {}, grantToken) =>
+        mutate(
+          "/api/enroll/start",
+          { method: "POST", body: JSON.stringify(payload) },
+          grantToken,
         ),
+      piEnrollStatus: (sessionId) =>
+        get(`/api/enroll/status?session_id=${encodeURIComponent(sessionId)}`),
       piEnrollCancel: (sessionId) =>
-        fetchJson(endpoint("/api/enroll/cancel"), {
+        mutate("/api/enroll/cancel", {
           method: "POST",
           body: JSON.stringify({ session_id: sessionId }),
         }),
@@ -146,13 +189,18 @@ export default function useApi(baseUrl) {
         const form = new FormData();
         form.append("session_id", sessionId);
         form.append("image", blob, "sample.jpg");
-        return fetchFormJson(endpoint("/api/enroll/sample"), form);
+        return fetchFormJson(
+          endpoint("/api/enroll/sample"),
+          form,
+          { "X-BASS-CSRF": csrfToken },
+          expireSession,
+        );
       },
       piEnrollFinish: (sessionId) =>
-        fetchJson(endpoint("/api/enroll/finish"), {
+        mutate("/api/enroll/finish", {
           method: "POST",
           body: JSON.stringify({ session_id: sessionId }),
         }),
     };
-  }, [baseUrl]);
+  }, [baseUrl, csrfToken, expireSession]);
 }

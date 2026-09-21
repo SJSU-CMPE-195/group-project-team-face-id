@@ -18,6 +18,9 @@ class PcRuntime(PiRuntime):
 
     camera_source = "pc_webcam"
     camera_label = "PC webcam"
+    actuator_feedback = "simulated"
+    actuator_control_available = True
+    simulated_actuators = True
 
     def initialize(self) -> dict[str, Any]:
         """Load CPU recognition before advertising a usable device."""
@@ -31,10 +34,14 @@ class PcRuntime(PiRuntime):
                 self._model is not None
                 and self._camera_error is None
                 and not self._closed
+                and not self._paused
+                and status["settings_ready"]
             )
             hardware = "ready" if ready else "not_initialized"
             if self._hardware_error or self._model_error or self._camera_error:
                 hardware = "unavailable"
+            if self._paused:
+                hardware = "maintenance"
             if self._closed:
                 hardware = "closed"
             status.update(
@@ -42,6 +49,8 @@ class PcRuntime(PiRuntime):
                 hardware=hardware,
                 runtime_mode="pc",
                 actuator_mode="simulated",
+                actuator_feedback=self.actuator_feedback,
+                physical_state_confirmed=False,
                 camera_open=self._camera is not None,
                 esp32_connected=False,
                 serial_port=None,

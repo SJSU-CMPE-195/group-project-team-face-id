@@ -83,6 +83,10 @@ class SimulatedPiApiTests(unittest.TestCase):
             conn.execute("DELETE FROM auth_logs")
             conn.execute("DELETE FROM users")
             conn.execute("UPDATE device_state SET lock_state='locked'")
+            conn.execute(
+                "UPDATE settings SET value='false' "
+                "WHERE key IN ('liveness_detection', 'fail_lockout')"
+            )
         db_module.init_db()
         self.app = self.mock_module.create_mock_app(db_module=db_api)
         self.client = self.app.test_client()
@@ -314,7 +318,7 @@ class SimulatedPiApiTests(unittest.TestCase):
         self.assertEqual(self.runtime.get_command_log()[-1]["command"], "STOP")
         self.assertFalse(self.runtime.get_command_log()[-1]["ok"])
 
-    def test_lock_fault_reports_failure_but_db_is_locked(self):
+    def test_lock_fault_preserves_prior_db_state_without_false_lock_audit(self):
         self._add_ada()
         self._configure(frames=[_frame("Ada")])
         unlock = self._start_scan()
@@ -322,11 +326,27 @@ class SimulatedPiApiTests(unittest.TestCase):
             self._poll(f"/api/scan/status?session_id={unlock['session_id']}", FINAL_SCAN_STATES)["state"],
             "granted",
         )
+        self.assertEqual(db_api.get_status()["lockState"], "unlocked")
+        lock_audits_before = [
+            row
+            for row in db_api.get_logs()
+            if row["stage"] == "lock" and row["result"] == "ok"
+        ]
         self._configure(frames=[_frame("Ada")], fail_commands=["LOCK"])
         response = self.client.post("/api/full-reset", json={})
         self.assertEqual(response.status_code, 503, response.get_json())
-        self.assertFalse(self._json(response)["ok"])
-        self.assertEqual(db_api.get_status()["lockState"], "locked")
+        payload = self._json(response)
+        self.assertFalse(payload["ok"])
+        self.assertFalse(payload["locked"])
+        self.assertFalse(payload["command_sent"])
+        self.assertFalse(payload["physical_state_confirmed"])
+        self.assertEqual(db_api.get_status()["lockState"], "unlocked")
+        lock_audits_after = [
+            row
+            for row in db_api.get_logs()
+            if row["stage"] == "lock" and row["result"] == "ok"
+        ]
+        self.assertEqual(lock_audits_after, lock_audits_before)
         self.assertEqual(self.runtime.get_command_log()[-1]["command"], "LOCK")
         self.assertFalse(self.runtime.get_command_log()[-1]["ok"])
 

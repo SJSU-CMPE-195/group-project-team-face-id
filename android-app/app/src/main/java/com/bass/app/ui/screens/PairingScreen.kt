@@ -42,6 +42,7 @@ import com.bass.app.BassState
 import com.bass.app.CaptureFlow
 import com.bass.app.ConnectionPhase
 import com.bass.app.R
+import com.bass.app.readSecurityMaterial
 import com.bass.app.camera.CameraPanel
 import com.bass.app.ui.components.BassCard
 import com.bass.app.ui.components.ChipTone
@@ -62,6 +63,19 @@ fun PairingScreen(
         cameraDenied = !granted
         if (granted) viewModel.beginPairing()
     }
+    val documentLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use {
+                        it.readSecurityMaterial()
+                    } ?: error("Could not open selected document")
+                }.onSuccess {
+                    viewModel.beginPairing()
+                    viewModel.acceptPairingQr(it)
+                }.onFailure { cameraError = context.getString(R.string.pair_import_failed) }
+            }
+        }
     val hasCameraPermission =
         ContextCompat.checkSelfPermission(context, cameraPermission) ==
             PackageManager.PERMISSION_GRANTED
@@ -103,13 +117,27 @@ fun PairingScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    text = stringResource(R.string.pair_title),
+                    text =
+                        stringResource(
+                            if (state.phase == ConnectionPhase.SIGN_IN_REQUIRED) {
+                                R.string.sign_in_title
+                            } else {
+                                R.string.pair_title
+                            }
+                        ),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                 )
                 Text(
-                    text = stringResource(R.string.pair_description),
+                    text =
+                        stringResource(
+                            if (state.phase == ConnectionPhase.SIGN_IN_REQUIRED) {
+                                R.string.sign_in_description
+                            } else {
+                                R.string.pair_description
+                            }
+                        ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
@@ -203,6 +231,7 @@ fun PairingScreen(
                 onCancel = viewModel::cancelActiveSession,
                 onRetry = viewModel::retryConnection,
                 onForget = viewModel::requestForgetDevice,
+                onImport = { documentLauncher.launch(arrayOf("application/json", "text/plain")) },
             )
         }
     }
@@ -215,6 +244,7 @@ private fun PairingActions(
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onForget: () -> Unit,
+    onImport: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -237,8 +267,15 @@ private fun PairingActions(
                 ) {
                     Text(stringResource(R.string.action_pair))
                 }
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onImport,
+                ) {
+                    Text(stringResource(R.string.pair_import_action))
+                }
             }
             state.phase == ConnectionPhase.UNAUTHORIZED ||
+                state.phase == ConnectionPhase.SIGN_IN_REQUIRED ||
                 state.phase == ConnectionPhase.OFFLINE ||
                 state.phase == ConnectionPhase.ERROR -> {
                 Button(
@@ -263,6 +300,7 @@ private fun phaseLabel(phase: ConnectionPhase): String = when (phase) {
     ConnectionPhase.UNPAIRED -> stringResource(R.string.status_disconnected)
     ConnectionPhase.DISCOVERING -> stringResource(R.string.status_discovering)
     ConnectionPhase.CONNECTING -> stringResource(R.string.status_connecting)
+    ConnectionPhase.SIGN_IN_REQUIRED -> stringResource(R.string.status_sign_in_required)
     ConnectionPhase.CONNECTED -> stringResource(R.string.status_connected)
     ConnectionPhase.UNAUTHORIZED -> stringResource(R.string.status_unauthorized)
     ConnectionPhase.OFFLINE -> stringResource(R.string.status_offline)
@@ -275,6 +313,7 @@ private fun phaseTone(phase: ConnectionPhase): ChipTone = when (phase) {
     ConnectionPhase.CONNECTING,
     -> ChipTone.INFO
     ConnectionPhase.UNPAIRED,
+    ConnectionPhase.SIGN_IN_REQUIRED,
     ConnectionPhase.OFFLINE,
     -> ChipTone.WARNING
     ConnectionPhase.UNAUTHORIZED,
@@ -287,6 +326,7 @@ private fun phaseDescription(phase: ConnectionPhase): String = when (phase) {
     ConnectionPhase.UNPAIRED -> stringResource(R.string.pair_camera_permission)
     ConnectionPhase.DISCOVERING -> stringResource(R.string.pair_searching)
     ConnectionPhase.CONNECTING -> stringResource(R.string.pair_connecting)
+    ConnectionPhase.SIGN_IN_REQUIRED -> stringResource(R.string.sign_in_description)
     ConnectionPhase.CONNECTED -> ""
     ConnectionPhase.UNAUTHORIZED -> stringResource(R.string.pair_unauthorized)
     ConnectionPhase.OFFLINE -> stringResource(R.string.pair_offline)

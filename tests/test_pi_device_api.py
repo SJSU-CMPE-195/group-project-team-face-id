@@ -14,10 +14,18 @@ import tempfile
 import time
 from unittest.mock import patch
 
+from PIL import Image
+
 from pi_device_api import create_app
 from car_face_auth.src.pi_runtime import PiRuntime, RuntimeBusyError, RuntimeRequestError
 import db as db_module
 import db_api as real_db_api
+
+
+def tiny_jpeg() -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), "black").save(output, format="JPEG")
+    return output.getvalue()
 
 
 class FakeDb:
@@ -75,6 +83,7 @@ class FakeDb:
         for user in self.users:
             if user["id"] == user_id:
                 user["faceAccess"] = allowed
+                user["face_access"] = int(allowed)
                 return {"ok": True}
         return {"ok": False, "error": "user not found"}
 
@@ -132,6 +141,8 @@ class FakeFaceEngine:
 
 
 class HardwareFreePiRuntime(PiRuntime):
+    actuator_control_available = True
+
     """PiRuntime with camera/model/serial seams replaced by deterministic fakes."""
 
     def __init__(self, db):
@@ -139,6 +150,7 @@ class HardwareFreePiRuntime(PiRuntime):
         self.commands = []
         self.fail_commands = set()
         self.capture_started = Event()
+        self.authorization_loaded = Event()
         self.capture_gate = None
 
     def _ensure_model(self):
@@ -156,7 +168,13 @@ class HardwareFreePiRuntime(PiRuntime):
         return object()
 
     def _load_authorized_database(self, _face_engine):
-        return {user["name"]: [] for user in self._db.get_all_users() if user.get("face_access", 1)}
+        database = {
+            user["name"]: []
+            for user in self._db.get_all_users()
+            if user.get("face_access", 1)
+        }
+        self.authorization_loaded.set()
+        return database
 
     def _send_command(self, command, connect=True):
         self.commands.append(command)
@@ -190,7 +208,6 @@ class FakeRuntime:
         self.sessions = {}
         self.next_id = 1
         self.busy = False
-        self.unlock_result = {"ok": True}
         self.force_lock_result = {"ok": True, "locked": True}
         self.ignition_error = None
         self.hardware_calls = []
@@ -209,12 +226,6 @@ class FakeRuntime:
             "active_session": None,
             "error": None,
         }
-
-    def unlock(self, reason="manual_ui"):
-        self.calls.append(("unlock", reason))
-        if self.unlock_result.get("ok"):
-            self.db.lock_state = "unlocked"
-        return dict(self.unlock_result)
 
     def force_lock(self, reason="manual_ui"):
         self.calls.append(("force_lock", reason))
@@ -265,42 +276,6 @@ class FakeRuntime:
             window={"matches": 0, "needed": 6, "size": 10},
             message="Pi camera scan starting.",
         )
-
-    def start_client_scan(self, purpose="unlock", expected_user=None):
-        purpose = (purpose or "unlock").strip().lower()
-        if purpose not in ("unlock", "ignition"):
-            raise RuntimeRequestError("purpose must be unlock or ignition", 400)
-        if purpose == "ignition" and not (expected_user or "").strip():
-            raise RuntimeRequestError("expected_user is required for ignition scans", 400)
-        return self._new_session(
-            "scan",
-            state="scanning",
-            purpose=purpose,
-            source="client_camera",
-            expected_user=expected_user,
-            user=None,
-            score=None,
-            face_count=0,
-            matches=0,
-            window={"matches": 0, "needed": 6, "size": 10},
-            message="Client camera scan is ready for frames.",
-        )
-
-    def add_client_scan_sample(self, session_id, image_bytes):
-        if not image_bytes:
-            raise RuntimeRequestError("image is required", 400)
-        session = self._session_status(session_id, "scan")
-        if session.get("source") != "client_camera":
-            raise RuntimeRequestError("session does not accept client camera frames", 409)
-        session["face_count"] = 1
-        session["matches"] = min(6, session.get("matches", 0) + 1)
-        session["user"] = "Ada"
-        session["window"] = {"matches": session["matches"], "needed": 6, "size": 10}
-        if session["matches"] >= 6:
-            session["state"] = "granted"
-            self.busy = False
-        self.sessions[session_id] = session
-        return dict(session)
 
     def scan_status(self, session_id):
         return self._session_status(session_id, "scan")
@@ -410,49 +385,34 @@ class PiDeviceApiTests(unittest.TestCase):
         self.assertEqual(cancelled.status_code, 200)
         self.assertEqual(self.json(cancelled)["state"], "cancelled")
 
-    def test_client_camera_scan_upload_contract(self):
+    def test_client_camera_verification_start_is_rejected(self):
         started = self.client.post(
             "/api/scan/start",
             json={"purpose": "unlock", "source": "client_camera"},
         )
-        self.assertEqual(started.status_code, 200)
-        session = self.json(started)
-        self.assertEqual(session["source"], "client_camera")
-        self.assertEqual(session["state"], "scanning")
+        self.assertEqual(started.status_code, 409)
+        self.assertIn("backend host camera", self.json(started)["error"])
+        self.assertFalse(self.runtime.busy)
 
-        for expected_matches in range(1, 7):
-            sample = self.client.post(
-                "/api/scan/sample",
-                data={
-                    "session_id": session["session_id"],
-                    "image": (io.BytesIO(b"jpeg"), "frame.jpg", "image/jpeg"),
-                },
-                content_type="multipart/form-data",
-            )
-            self.assertEqual(sample.status_code, 200)
-            payload = self.json(sample)
-            self.assertEqual(payload["matches"], expected_matches)
-
-        self.assertEqual(payload["state"], "granted")
-        self.assertEqual(payload["user"], "Ada")
-
-    def test_client_camera_scan_upload_validation(self):
-        started = self.json(
-            self.client.post("/api/scan/start", json={"purpose": "unlock", "source": "client_camera"})
+        bad_source = self.client.post(
+            "/api/scan/start",
+            json={"purpose": "unlock", "source": "door_camera"},
         )
-        session_id = started["session_id"]
+        self.assertEqual(bad_source.status_code, 409)
+        self.assertFalse(self.runtime.busy)
 
-        missing = self.client.post("/api/scan/sample", data={"session_id": session_id})
-        self.assertEqual(missing.status_code, 400)
-        wrong_type = self.client.post(
+    def test_client_camera_verification_upload_is_rejected(self):
+        sample = self.client.post(
             "/api/scan/sample",
-            data={"session_id": session_id, "image": (io.BytesIO(b"text"), "frame.txt", "text/plain")},
+            data={
+                "session_id": "scan_untrusted",
+                "image": (io.BytesIO(tiny_jpeg()), "frame.jpg", "image/jpeg"),
+            },
             content_type="multipart/form-data",
         )
-        self.assertEqual(wrong_type.status_code, 415)
-
-        bad_source = self.client.post("/api/scan/start", json={"purpose": "unlock", "source": "door_camera"})
-        self.assertEqual(bad_source.status_code, 400)
+        self.assertEqual(sample.status_code, 409)
+        self.assertIn("backend host camera", self.json(sample)["error"])
+        self.assertFalse(self.runtime.busy)
 
     def test_scan_validation_busy_conflict_and_unknown_errors(self):
         bad_purpose = self.client.post("/api/scan/start", json={"purpose": "door"})
@@ -506,7 +466,10 @@ class PiDeviceApiTests(unittest.TestCase):
         for expected_count in range(1, 11):
             sample = self.client.post(
                 "/api/enroll/sample",
-                data={"session_id": session_id, "image": (io.BytesIO(b"jpeg"), "sample.jpg", "image/jpeg")},
+                data={
+                    "session_id": session_id,
+                    "image": (io.BytesIO(tiny_jpeg()), "sample.jpg", "image/jpeg"),
+                },
                 content_type="multipart/form-data",
             )
             self.assertEqual(sample.status_code, 200)
@@ -520,7 +483,11 @@ class PiDeviceApiTests(unittest.TestCase):
         started = self.json(self.client.post("/api/enroll/start", json={"name": "Ada", "source": "client_camera"}))
         session_id = started["session_id"]
 
-        missing = self.client.post("/api/enroll/sample", data={"session_id": session_id})
+        missing = self.client.post(
+            "/api/enroll/sample",
+            data={"session_id": session_id},
+            content_type="multipart/form-data",
+        )
         self.assertEqual(missing.status_code, 400)
         wrong_type = self.client.post(
             "/api/enroll/sample",
@@ -528,6 +495,16 @@ class PiDeviceApiTests(unittest.TestCase):
             content_type="multipart/form-data",
         )
         self.assertEqual(wrong_type.status_code, 415)
+
+        malformed_jpeg = self.client.post(
+            "/api/enroll/sample",
+            data={
+                "session_id": session_id,
+                "image": (io.BytesIO(b"not-a-jpeg"), "sample.jpg", "image/jpeg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(malformed_jpeg.status_code, 400)
 
         incomplete = self.client.post("/api/enroll/finish", json={"session_id": session_id})
         self.assertEqual(incomplete.status_code, 400)
@@ -546,11 +523,13 @@ class PiDeviceApiTests(unittest.TestCase):
         self.assertEqual(missing_driver.status_code, 400)
         self.assertEqual(self.runtime.calls, [])
 
-    def test_unlock_and_ignition_errors_are_reported_without_false_success(self):
-        self.runtime.unlock_result = {"ok": False, "error": "ESP32 is unavailable"}
-        unlock = self.client.post("/api/unlock")
-        self.assertEqual(unlock.status_code, 503)
-        self.assertFalse(self.json(unlock)["ok"])
+    def test_unlock_starts_backend_camera_scan(self):
+        unlock = self.client.post("/api/unlock", json={"expectedUser": "Ada"})
+        self.assertEqual(unlock.status_code, 202)
+        payload = self.json(unlock)
+        self.assertEqual(payload["purpose"], "unlock")
+        self.assertEqual(payload["source"], "pi_camera")
+        self.assertEqual(payload["state"], "starting")
 
         malformed = self.client.post("/api/scan/start", json=["unlock"])
         self.assertEqual(malformed.status_code, 400)
@@ -621,6 +600,34 @@ class PiDeviceApiTests(unittest.TestCase):
         self.assertFalse(self.json(reset)["ok"])
 
 
+class MockApiBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        from mock_pi_device_api import create_mock_app
+
+        self.db = FakeDb()
+        self.app = create_mock_app(
+            db_module=self.db,
+            runtime=FakeRuntime(self.db),
+        )
+        self.app.testing = True
+        self.client = self.app.test_client()
+
+    def test_mock_api_accepts_only_loopback_peers(self):
+        for address in ("127.0.0.1", "::1"):
+            response = self.client.get(
+                "/api/status",
+                environ_base={"REMOTE_ADDR": address},
+            )
+            self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(
+            "/api/status",
+            environ_base={"REMOTE_ADDR": "192.0.2.10"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("loopback", response.get_json()["error"])
+
+
 class PiRuntimeBehaviorTests(unittest.TestCase):
     def setUp(self):
         self.db = FakeDb()
@@ -651,32 +658,16 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
         self.assertEqual(self.runtime.commands[:1], ["UNLOCK"])
         self.assertEqual(self.db.unlock_reasons, [f"scan:{session['session_id']}"])
 
-    def test_client_camera_unlock_and_same_driver_ignition_run_on_pi(self):
-        unlock_engine = FakeFaceEngine(["Ada"] * 6)
-        self.runtime._face_engine = unlock_engine
-        unlock = self.runtime.start_client_scan("unlock")
-        self.assertEqual(unlock["source"], "client_camera")
+    def test_client_camera_verification_methods_are_disabled(self):
+        with self.assertRaisesRegex(RuntimeRequestError, "backend host camera"):
+            self.runtime.start_client_scan("unlock")
+        with self.assertRaisesRegex(RuntimeRequestError, "backend host camera"):
+            self.runtime.start_client_scan("ignition", expected_user="Ada")
+        with self.assertRaisesRegex(RuntimeRequestError, "backend host camera"):
+            self.runtime.add_client_scan_sample("scan_untrusted", tiny_jpeg())
 
-        for _ in range(6):
-            unlock_result = self.runtime.add_client_scan_sample(unlock["session_id"], b"jpeg")
-
-        self.assertEqual(unlock_result["state"], "granted")
-        self.assertEqual(unlock_result["user"], "Ada")
-        self.assertEqual(self.runtime.commands, ["UNLOCK"])
-        self.assertIsNone(self.runtime._camera)
+        self.assertEqual(self.runtime.commands, [])
         self.assertIsNone(self.runtime.status()["active_session"])
-
-        ignition_engine = FakeFaceEngine(["Ada"] * 6)
-        self.runtime._face_engine = ignition_engine
-        ignition = self.runtime.start_client_scan("ignition", expected_user="Ada")
-        for _ in range(6):
-            ignition_result = self.runtime.add_client_scan_sample(ignition["session_id"], b"jpeg")
-
-        self.assertEqual(ignition_result["state"], "granted")
-        self.assertEqual(ignition_result["user"], "Ada")
-        self.assertEqual(self.runtime.commands[-1], "START")
-        self.assertTrue(self.runtime.status()["ignitionOn"])
-        self.assertIsNone(self.runtime._camera)
 
     def test_ignition_grants_only_for_expected_user(self):
         _unlock_session, unlock_result = self.run_scan(FakeFaceEngine(["Ada"] * 6))
@@ -782,8 +773,11 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
         with patch("car_face_auth.src.pi_runtime.importlib.import_module", side_effect=importer):
             scan = self.runtime.start_scan()
             self.assertTrue(self.runtime.capture_started.wait(timeout=1))
-            result = self.runtime.force_lock("race_test")
-            self.assertTrue(result["ok"])
+            with patch.object(self.runtime, "_camera_close_timeout", return_value=0.01):
+                result = self.runtime.force_lock("race_test")
+            self.assertFalse(result["ok"])
+            self.assertTrue(result["locked"])
+            self.assertIn("camera", result["error"])
             self.runtime.capture_gate.set()
             final = wait_for_state(
                 self.runtime,
@@ -793,18 +787,6 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
             )
         self.assertEqual(final["state"], "cancelled")
         self.assertEqual(self.runtime.commands[-2:], ["STOP", "LOCK"])
-
-    def test_force_lock_releases_client_camera_scan_immediately(self):
-        scan = self.runtime.start_client_scan()
-        result = self.runtime.force_lock("client_scan_reset")
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(self.runtime.scan_status(scan["session_id"])["state"], "cancelled")
-        self.assertIsNone(self.runtime.status()["active_session"])
-
-        next_scan = self.runtime.start_client_scan()
-        self.assertEqual(next_scan["state"], "scanning")
-        self.runtime.cancel_scan(next_scan["session_id"])
 
     def test_force_lock_reports_camera_teardown_timeout(self):
         self.runtime._camera = object()
@@ -830,12 +812,13 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
         self.runtime.close()
         commands_after_close = list(self.runtime.commands)
 
-        self.assertFalse(self.runtime.unlock("after_close")["ok"])
+        with self.assertRaisesRegex(RuntimeRequestError, "shutting down"):
+            self.runtime.start_scan()
         self.assertFalse(self.runtime.set_ignition(True, "after_close")["ok"])
         self.assertEqual(self.runtime.commands, commands_after_close)
         self.assertFalse(self.runtime.status()["ready"])
 
-    def test_ignition_scan_is_denied_when_unlock_authorization_changes(self):
+    def test_ignition_scan_is_cancelled_when_access_is_revoked(self):
         _unlock_session, unlock_result = self.run_scan(FakeFaceEngine(["Ada"] * 6))
         self.assertEqual(unlock_result["state"], "granted")
         deadline = time.monotonic() + 2
@@ -843,6 +826,7 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
             time.sleep(0.01)
 
         self.runtime.capture_started = Event()
+        self.runtime.authorization_loaded = Event()
         self.runtime.capture_gate = Event()
         self.runtime.commands.clear()
         face_engine = FakeFaceEngine(["Ada"] * 6)
@@ -850,7 +834,8 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
         with patch("car_face_auth.src.pi_runtime.importlib.import_module", side_effect=importer):
             session = self.runtime.start_scan(purpose="ignition", expected_user="Ada")
             self.assertTrue(self.runtime.capture_started.wait(timeout=1))
-            self.assertTrue(self.runtime.unlock("authorization_changed")["ok"])
+            self.assertTrue(self.runtime.authorization_loaded.wait(timeout=1))
+            self.assertTrue(self.runtime.set_user_access("u1", False)["ok"])
             self.runtime.capture_gate.set()
             result = wait_for_state(
                 self.runtime,
@@ -859,7 +844,7 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
                 {"granted", "denied", "error", "cancelled"},
             )
 
-        self.assertEqual(result["state"], "denied")
+        self.assertEqual(result["state"], "cancelled")
         self.assertNotIn("START", self.runtime.commands)
 
 

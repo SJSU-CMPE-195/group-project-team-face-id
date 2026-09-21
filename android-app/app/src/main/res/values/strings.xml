@@ -16,7 +16,7 @@
     <string name="action_save">Save</string>
     <string name="action_reset">Reset</string>
     <string name="action_pair">Scan device QR code</string>
-    <string name="action_forget_device">Forget device</string>
+    <string name="action_forget_device">Sign out</string>
     <string name="action_scan_face">Unlock with face scan</string>
     <string name="action_cancel_scan">Cancel scan</string>
     <string name="action_lock">Lock</string>
@@ -24,32 +24,55 @@
     <string name="action_full_reset">Full reset</string>
     <string name="action_verify_ignition">Yes, verify ignition</string>
     <string name="action_lock_now">No, lock now</string>
-    <string name="action_add_enroll">Add &amp; enroll face</string>
     <string name="action_enroll_face">Enroll face</string>
+    <string name="action_add_user">Add user</string>
 
-    <string name="forget_device_title">Forget this device?</string>
-    <string name="forget_device_description">Remove the pairing from this phone. Scan the device QR code to connect again.</string>
-    <string name="forget_reset_pin">Also reset BASS PIN</string>
-    <string name="forget_reset_pin_description">Set and confirm a new 6-digit BASS PIN the next time you pair.</string>
-    <string name="forget_device_clear_failed">Could not remove the saved device connection. The BASS PIN was not changed. Try again.</string>
-    <string name="forget_pin_clear_failed">The device connection was removed, but the BASS PIN could not be reset. Leave this dialog open and try again.</string>
+    <string name="forget_device_title">Sign out on this phone?</string>
+    <string name="forget_device_description">Remove the remembered account and pairing from this phone only. This does not revoke the phone on the BASS device. To sign in again, scan a new invitation QR and enter the account PIN.</string>
+    <string name="forget_device_clear_failed">Could not remove this phone’s saved pairing. Try again.</string>
 
     <string name="pair_title">Pair your BASS device</string>
-    <string name="pair_description">Connect this phone and the device to the same Wi-Fi. Enter your BASS PIN before scanning the fixed device QR code; first use asks you to create one.</string>
+    <string name="pair_description">Connect this phone and the device to the same Wi-Fi, then scan its device, invitation, activation, recovery, or transfer QR code.</string>
     <string name="pair_camera_permission">Camera access is needed to scan the device QR code.</string>
     <string name="pair_permission_denied">Camera permission denied. Allow it in Android Settings to scan a QR code.</string>
     <string name="pair_searching">Looking for your device on this Wi-Fi…</string>
     <string name="pair_connecting">Connecting securely to this device…</string>
-    <string name="pair_unauthorized">The pairing key was rejected. Ask an administrator for the current QR code.</string>
+    <string name="pair_unauthorized">The account PIN was rejected or the invitation is no longer valid. Check the PIN; if it is correct, scan a new invitation.</string>
     <string name="pair_offline">Device not found. Check that both devices use the same Wi-Fi and that client isolation is off.</string>
     <string name="pair_error">Could not connect to this device.</string>
     <string name="pair_scanner_hint">Place the entire QR code inside the frame.</string>
     <string name="pair_camera_preview">Rear camera QR code preview</string>
+    <string name="pair_credentials_title">Authorize this phone</string>
+    <string name="pair_credentials_description">Scan the one-use invitation QR from a BASS administrator, then enter the invited account’s 6-digit PIN.</string>
+    <string name="pair_invite_scan_action">Scan invitation QR</string>
+    <string name="pair_invite_ready">Invitation ready</string>
+    <string name="pair_invite_invalid_qr">This is not a valid BASS invitation QR code.</string>
+    <string name="pair_invite_wrong_device">This invitation belongs to a different BASS device.</string>
+    <string name="pair_invite_camera_preview">Rear camera invitation QR preview</string>
+    <string name="pair_account_pin">Account PIN</string>
+    <string name="pair_authorize_phone">Authorize phone</string>
+    <string name="pair_credentials_invalid">Scan an invitation QR and enter a 6-digit account PIN.</string>
+    <string name="pair_import_action">Open saved invitation, recovery, or transfer file</string>
+    <string name="pair_import_failed">Could not read a valid BASS security file.</string>
+    <string name="sign_in_title">Sign in to BASS</string>
+    <string name="sign_in_description">This phone remembers the paired account. Retry and enter that account’s PIN to continue.</string>
+    <string name="sign_in_invalid_pin">Incorrect PIN.</string>
+    <string name="commissioning_claim_title">Claim this BASS</string>
+    <string name="commissioning_claim_description">The activation credential and device pairing window will be verified before this account becomes the only owner.</string>
+    <string name="commissioning_recover_title">Recover owner access</string>
+    <string name="commissioning_recover_description">The recovery credential and recovery window will be verified. Previous phone credentials will be revoked.</string>
+    <string name="commissioning_transfer_accept_title">Accept ownership</string>
+    <string name="commissioning_transfer_accept_description">The current owner’s transfer credential will be verified before ownership moves to this account.</string>
+    <string name="commissioning_new_pin">New 6-digit owner PIN</string>
+    <string name="commissioning_claim_action">Claim device</string>
+    <string name="commissioning_recover_action">Recover access</string>
+    <string name="commissioning_transfer_accept_action">Accept ownership</string>
 
     <string name="status_connected">Connected</string>
     <string name="status_disconnected">Disconnected</string>
     <string name="status_discovering">Discovering</string>
     <string name="status_connecting">Connecting</string>
+    <string name="status_sign_in_required">Sign in required</string>
     <string name="status_unauthorized">Unauthorized</string>
     <string name="status_offline">Offline</string>
     <string name="status_error">Error</string>
@@ -65,6 +88,8 @@
     <string name="status_not_enrolled">No face template</string>
     <string name="status_simulated">Simulated actuator</string>
     <string name="status_live_hardware">Live hardware</string>
+    <string name="status_physical_unconfirmed">Physical position unconfirmed</string>
+    <string name="status_outputs_unavailable">Real outputs unavailable</string>
 
     <string name="console_face_title">Face verification</string>
     <string name="console_phone_camera">This phone camera</string>
@@ -72,7 +97,7 @@
     <string name="console_device_camera_description">The paired device uses its attached camera for every unlock and ignition scan.</string>
     <string name="console_device_camera_unavailable">The paired device camera is unavailable.</string>
     <string name="console_current_state">Current state</string>
-    <string name="console_locked_hint">Enter your BASS PIN above, then face the paired device camera to unlock.</string>
+    <string name="console_locked_hint">Use your account PIN, then face the paired device camera to unlock.</string>
     <string name="console_unlocked_hint">Lock the device when you are finished.</string>
     <string name="console_start_ignition_prompt">Start ignition now? The second scan must match %1$s.</string>
     <plurals name="console_auto_lock_countdown">
@@ -89,11 +114,17 @@
     <string name="console_camera_preview">Front camera face preview</string>
     <string name="console_connection_title">Paired device</string>
     <string name="console_connection_description">The app automatically rediscovers this device when its Wi-Fi address changes.</string>
+    <string name="console_real_outputs_unavailable">This host has no available real actuator output. Unlock, ignition, lock, stop, and reset controls are disabled.</string>
+    <string name="console_physical_state_unconfirmed">The displayed lock and ignition state is reported software state; no physical position feedback is connected.</string>
 
     <string name="users_enroll_title">Face templates</string>
-    <string name="users_enroll_description">Add a person, then collect face samples. Phone-camera enrollment requires your BASS PIN; the paired device camera does not.</string>
+    <string name="users_enroll_description">Create a standard user with a separate PIN. Choose a camera here, then start or replace enrollment from that user’s card. Every enrollment requires your administrator PIN.</string>
     <string name="users_display_name">Display name</string>
     <string name="users_display_name_hint">Enter a name</string>
+    <string name="users_new_pin">New user’s 6-digit PIN</string>
+    <string name="users_admin">Administrator</string>
+    <string name="users_owner">Owner</string>
+    <string name="users_make_admin">Administrator access</string>
     <string name="users_people_title">People &amp; access</string>
     <string name="users_people_description">Face access controls who may unlock this device.</string>
     <string name="users_empty">No people yet. Add and enroll a face above.</string>
@@ -105,6 +136,11 @@
     <string name="session_failed_retry">The operation failed. Try again.</string>
     <string name="users_remove_title">Remove %1$s?</string>
     <string name="users_remove_description">This removes the directory entry, face template, and access permission.</string>
+    <string name="users_phone_invite">Invite this user\'s phone</string>
+    <string name="invite_ready_title">Phone invite ready</string>
+    <string name="invite_ready_description">Save this short-lived invite and send it directly to the user. They must also enter their own PIN.</string>
+    <string name="invite_save_action">Save invite file</string>
+    <string name="invite_failed">Could not create a phone invite.</string>
 
     <string name="logs_title">Event log</string>
     <string name="logs_description">Recent authentication and device activity.</string>
@@ -114,6 +150,7 @@
 
     <string name="settings_core_title">Core settings</string>
     <string name="settings_description">Changes are stored on the paired device.</string>
+    <string name="settings_read_only">Your account can view these settings. An administrator is required to change them.</string>
     <string name="settings_auto_relock">Auto re-lock (seconds)</string>
     <string name="settings_auto_relock_help">0 disables it. Typical value: 5–15 seconds.</string>
     <string name="settings_ignition_stop">Ignition auto-stop (seconds)</string>
@@ -126,27 +163,44 @@
     <string name="settings_fail_lockout_help">Stored for compatibility. The current device server does not enforce this yet.</string>
     <string name="settings_lockout_after">Lockout after (failures)</string>
     <string name="settings_not_enforced">Not enforced by this server</string>
+    <string name="settings_liveness_unavailable_enabled">Liveness detection is unavailable on this device. Verification remains blocked while this setting is enabled.</string>
+    <string name="settings_liveness_unavailable">Liveness detection is unavailable. An administrator may keep it disabled for prototype use.</string>
+    <string name="settings_actuator_unconfirmed">No lock-position feedback is connected. Reported lock and ignition state cannot confirm physical hardware position.</string>
+    <string name="settings_actuator_simulated">This workstation uses simulated actuators. Controls remain available for software testing; no physical position is confirmed.</string>
+    <string name="settings_actuator_unavailable">Real actuator output is unavailable. Physical lock and ignition controls are disabled.</string>
+    <string name="ownership_title">Ownership and recovery</string>
+    <string name="ownership_description">Only the owner can prepare a transfer. Save recovery and transfer material outside this phone.</string>
+    <string name="ownership_pin">Current owner PIN</string>
+    <string name="ownership_transfer_action">Prepare ownership transfer</string>
+    <string name="ownership_transfer_retry">Retry saved ownership transfer</string>
+    <string name="export_material_title">Save security material</string>
+    <string name="export_material_description">Save this recovery or transfer file in a secure place outside this phone. It contains a secret that grants access to a protected flow.</string>
+    <string name="export_material_action">Save security file</string>
+    <string name="export_material_later">Later</string>
+    <string name="export_material_pending">Save the current recovery or transfer file before preparing another transfer.</string>
+    <string name="export_write_failed">Could not write the selected document. Choose another location and try again.</string>
 
-    <string name="pin_create_title">Create your BASS PIN</string>
-    <string name="pin_confirm_title">Confirm your BASS PIN</string>
     <string name="pin_verify_title">Enter your BASS PIN</string>
-    <string name="pin_create_description">Choose a 6-digit PIN to protect sensitive actions in this app.</string>
-    <string name="pin_confirm_description">Enter the same 6 digits again.</string>
-    <string name="pin_pair_description">Enter your PIN before pairing a BASS device.</string>
-    <string name="pin_enroll_description">Enter your PIN before enrolling a face with this phone.</string>
+    <string name="pin_login_description">Enter the remembered account’s PIN to continue.</string>
+    <string name="pin_enroll_description">Enter your administrator PIN to start or replace this face enrollment.</string>
     <string name="pin_unlock_description">Enter your PIN to start a face scan with the paired device camera.</string>
-    <string name="pin_setup_description">Enter your PIN to continue using BASS.</string>
+    <string name="pin_ignition_description">Enter your account PIN to verify your face and start ignition.</string>
+    <string name="pin_user_admin_description">Enter your administrator PIN to change this user.</string>
+    <string name="pin_settings_description">Enter your administrator PIN to save these settings.</string>
+    <string name="pin_lock_description">Enter your account PIN to lock the device.</string>
+    <string name="pin_stop_ignition_description">Enter your account PIN to stop ignition.</string>
+    <string name="pin_reset_description">Enter your administrator PIN to reset the device.</string>
     <string name="pin_digits_entered">Digits entered: %1$d / %2$d</string>
     <string name="pin_delete">Delete last digit</string>
     <string name="pin_submit">Confirm</string>
     <string name="pin_invalid">Enter all 6 digits.</string>
-    <string name="pin_mismatch">The PINs do not match. Create your PIN again.</string>
-    <string name="pin_wrong">Incorrect PIN. Attempts remaining: %1$d.</string>
-    <string name="pin_storage_error">The BASS PIN could not be securely stored or checked.</string>
     <plurals name="pin_locked_seconds">
         <item quantity="one">Try again in %1$d second.</item>
         <item quantity="other">Try again in %1$d seconds.</item>
     </plurals>
 
     <string name="error_title">Something went wrong</string>
+    <string name="commissioning_invalid">Enter the required name, credential, and 6-digit PIN.</string>
+    <string name="transfer_failed">Could not prepare the ownership transfer. The saved request can be retried.</string>
+    <string name="export_failed">Could not clear the saved recovery material.</string>
 </resources>

@@ -4,101 +4,29 @@ import Badge from "./Badge";
 import Btn from "./Btn";
 import Card from "./Card";
 import useBackendCameraPreview from "../hooks/useBackendCameraPreview";
-
-const FINAL_STATES = new Set([
-  "granted",
-  "denied",
-  "error",
-  "cancelled",
-  "timeout",
-  "completed",
-]);
-
-function normalizeScan(raw = {}, fallbackPurpose = "unlock") {
-  const state =
-    raw.state ||
-    raw.result ||
-    (raw.granted === true
-      ? "granted"
-      : raw.granted === false
-        ? "denied"
-        : "scanning");
-
-  return {
-    ok: raw.ok !== false,
-    sessionId: raw.session_id || raw.sessionId || null,
-    state,
-    purpose: raw.purpose || fallbackPurpose,
-    source: raw.camera_source || raw.source || null,
-    user: raw.user || raw.candidate_user || raw.candidateUser || null,
-    score: raw.score ?? raw.best_score ?? null,
-    faceCount: raw.face_count ?? raw.faceCount ?? null,
-    message: raw.message || raw.detail || raw.error || "",
-    kind: raw.kind || "scan",
-    count: raw.count ?? null,
-    samplesNeeded: raw.samples_needed ?? raw.samplesNeeded ?? null,
-    updatedAt: raw.updated_at ?? raw.updatedAt ?? Date.now(),
-    window: raw.window || {
-      matches: raw.matches ?? raw.candidate_count ?? 0,
-      needed: raw.needed ?? raw.min_matches ?? 6,
-      size: raw.size ?? raw.window_size ?? 10,
-    },
-  };
-}
-
-function cameraLabel(source, fallbackSource) {
-  const resolvedSource =
-    source === "pc_webcam" || source === "pi_camera" ? source : fallbackSource;
-  if (resolvedSource === "pc_webcam") return "PC webcam";
-  if (resolvedSource === "pi_camera") return "Pi camera";
-  return "Backend camera";
-}
-
-function sessionTimestamp(value) {
-  const numericValue = Number(value);
-  if (Number.isFinite(numericValue) && numericValue > 0) return numericValue;
-  const parsedValue = Date.parse(value || "");
-  return Number.isFinite(parsedValue) ? parsedValue : null;
-}
-
-function scanBadge(state) {
-  if (state === "granted" || state === "completed") return "ok";
-  if (state === "denied" || state === "error" || state === "timeout") {
-    return "err";
-  }
-  if (state === "cancelled") return "warn";
-  return "info";
-}
-
-function scanLabel(state) {
-  if (state === "granted") return "Granted";
-  if (state === "denied") return "Denied";
-  if (state === "error") return "Error";
-  if (state === "timeout") return "Timeout";
-  if (state === "cancelled") return "Cancelled";
-  if (state === "completed") return "Completed";
-  if (state === "cancelling") return "Cancelling";
-  if (state === "starting") return "Starting";
-  return "Scanning";
-}
-
-function confirmedCancellation(raw, purpose) {
-  const cancelledScan = normalizeScan(raw, purpose);
-  if (!cancelledScan.ok || cancelledScan.state !== "cancelled") {
-    throw new Error(
-      cancelledScan.message || "Backend did not confirm cancellation.",
-    );
-  }
-  return cancelledScan;
-}
+import useOperationGrant from "../security/useOperationGrant.js";
+import { actuatorLabels } from "../utils/actuatorStatus.js";
+import {
+  cameraLabel,
+  confirmedCancellation,
+  FINAL_SCAN_STATES,
+  normalizeScan,
+  scanBadge,
+  scanLabel,
+  sessionTimestamp,
+} from "../utils/scanState.js";
 
 export default function ControlTab({
   api,
+  currentUser,
   cameraSource,
   cameraAvailable = true,
   online,
   locked,
   ignitionOn,
+  simulatedActuators,
+  actuatorControlAvailable,
+  physicalStateConfirmed,
   promptAutoLockSeconds = 0,
   doLock,
   doIgnitionStop,
@@ -107,6 +35,7 @@ export default function ControlTab({
   busy,
   onRefresh,
 }) {
+  const { requestGrant } = useOperationGrant();
   const cameraPreview = useBackendCameraPreview(api, onRefresh);
   const pollTimerRef = useRef(null);
   const activeScanRef = useRef(null);
@@ -127,7 +56,7 @@ export default function ControlTab({
         cameraPreview.session.purpose || "unlock",
       )
     : null;
-  const isScanning = Boolean(scan && !FINAL_STATES.has(scan.state));
+  const isScanning = Boolean(scan && !FINAL_SCAN_STATES.has(scan.state));
   const observedMatchesOwn = Boolean(
     observedSession?.sessionId &&
       scan?.sessionId &&
@@ -154,7 +83,19 @@ export default function ControlTab({
     effectiveCameraSource,
   );
   const isEnrollment = displayedSession?.kind === "enroll";
-  const canStartScan = online && cameraAvailable && !cameraPreview.active;
+  const canStartScan =
+    online &&
+    cameraAvailable &&
+    actuatorControlAvailable &&
+    !cameraPreview.active;
+  const labels = actuatorLabels({
+    online,
+    locked,
+    ignitionOn,
+    simulatedActuators,
+    actuatorControlAvailable,
+    physicalStateConfirmed,
+  });
   const statusLine =
     displayedSession?.message ||
     (isEnrollment
@@ -183,7 +124,9 @@ export default function ControlTab({
                     ? "Connect to the backend host to scan."
                     : !cameraAvailable
                       ? "The selected backend has no available camera."
-                      : "");
+                      : !actuatorControlAvailable
+                        ? "Real Pi outputs are blocked until actuator feedback is available."
+                        : "");
 
   const clearPoll = useCallback(() => {
     if (pollTimerRef.current) {
@@ -270,7 +213,9 @@ export default function ControlTab({
       if (generation !== scanGenerationRef.current) return null;
       const next = normalizeScan(raw, fallbackPurpose);
       setScan(next);
-      if (FINAL_STATES.has(next.state)) handleFinalScan(next, generation);
+      if (FINAL_SCAN_STATES.has(next.state)) {
+        handleFinalScan(next, generation);
+      }
       return next;
     },
     [handleFinalScan],
@@ -296,7 +241,7 @@ export default function ControlTab({
             return;
           }
           const next = applyScanUpdate(raw, purpose, activeScan.generation);
-          if (next && !FINAL_STATES.has(next.state)) {
+          if (next && !FINAL_SCAN_STATES.has(next.state)) {
             pollTimerRef.current = setTimeout(poll, 800);
           }
         } catch (error) {
@@ -364,6 +309,14 @@ export default function ControlTab({
 
   const startScan = useCallback(
     async (purpose) => {
+      if (!online || !actuatorControlAvailable) {
+        popToast(
+          "info",
+          "Physical outputs blocked",
+          "Real Pi lock and ignition controls require command acknowledgement and position feedback.",
+        );
+        return;
+      }
       const requestApi = api;
       pendingStartCancellationRef.current = null;
       const { activeScan: previousScan, generation } = invalidateScan();
@@ -395,8 +348,18 @@ export default function ControlTab({
         }
       }
       if (generation !== scanGenerationRef.current) return;
-      const expectedUser =
-        purpose === "ignition" ? unlockOwnerRef.current : null;
+      let grantToken;
+      try {
+        grantToken = await requestGrant(
+          `scan.${purpose}`,
+          currentUser.id,
+          purpose === "ignition" ? "ignition scan" : "unlock scan",
+        );
+      } catch (error) {
+        popToast("err", "PIN request failed", error.message);
+        return;
+      }
+      if (!grantToken || generation !== scanGenerationRef.current) return;
       setScan(
         normalizeScan(
           {
@@ -415,8 +378,8 @@ export default function ControlTab({
       try {
         const raw = await requestApi.scanStart({
           purpose,
-          expected_user: expectedUser,
-        });
+          expected_user_id: currentUser.id,
+        }, grantToken);
         if (generation !== scanGenerationRef.current) {
           const staleSessionId = raw?.session_id || raw?.sessionId;
           let cancellationResult = null;
@@ -479,7 +442,7 @@ export default function ControlTab({
 
         const next = applyScanUpdate(raw, purpose, generation);
         if (!next) return;
-        if (!FINAL_STATES.has(next.state)) {
+        if (!FINAL_SCAN_STATES.has(next.state)) {
           if (!next.sessionId) {
             const missingSession = normalizeScan(
               {
@@ -536,10 +499,14 @@ export default function ControlTab({
       applyScanUpdate,
       cameraSource,
       cancelRemoteScan,
+      currentUser.id,
       handleFinalScan,
       invalidateScan,
       pollScan,
       popToast,
+      requestGrant,
+      actuatorControlAvailable,
+      online,
     ],
   );
 
@@ -609,6 +576,7 @@ export default function ControlTab({
   }, [cancelRemoteScan, invalidateScan, popToast, scan?.purpose]);
 
   const handleIgnitionPromptNo = useCallback(async () => {
+    if (!online || !actuatorControlAvailable) return;
     const ok = await doLock();
     if (ok) {
       unlockOwnerRef.current = null;
@@ -617,15 +585,17 @@ export default function ControlTab({
       setFlowStage("unlock_verify");
       setScan(null);
     }
-  }, [doLock]);
+  }, [actuatorControlAvailable, doLock, online]);
 
   const handleIgnitionPromptYes = useCallback(async () => {
+    if (!online || !actuatorControlAvailable) return;
     setFlowStage("ignition_verify");
     setPromptCountdown(null);
     await startScan("ignition");
-  }, [startScan]);
+  }, [actuatorControlAvailable, online, startScan]);
 
   const handleFullReset = useCallback(async () => {
+    if (!online || !actuatorControlAvailable) return;
     pendingStartCancellationRef.current = null;
     const { activeScan, generation } = invalidateScan();
     if (activeScan) {
@@ -653,7 +623,14 @@ export default function ControlTab({
       setFlowStage("unlock_verify");
       setScan(null);
     }
-  }, [cancelRemoteScan, doFullReset, invalidateScan, scan?.purpose]);
+  }, [
+    actuatorControlAvailable,
+    cancelRemoteScan,
+    doFullReset,
+    invalidateScan,
+    online,
+    scan?.purpose,
+  ]);
 
   useEffect(() => {
     if (!locked) return undefined;
@@ -686,7 +663,14 @@ export default function ControlTab({
   }, [api, cancelRemoteScan, invalidateScan]);
 
   useEffect(() => {
-    if (flowStage !== "prompt" || promptCountdown == null) return undefined;
+    if (
+      !online ||
+      !actuatorControlAvailable ||
+      flowStage !== "prompt" ||
+      promptCountdown == null
+    ) {
+      return undefined;
+    }
     const timer = setTimeout(() => {
       setPromptCountdown((current) => {
         if (current == null) return current;
@@ -698,7 +682,13 @@ export default function ControlTab({
       });
     }, 1000);
     return () => clearTimeout(timer);
-  }, [flowStage, handleIgnitionPromptNo, promptCountdown]);
+  }, [
+    actuatorControlAvailable,
+    flowStage,
+    handleIgnitionPromptNo,
+    online,
+    promptCountdown,
+  ]);
 
   return (
     <div className="w-full pt-1">
@@ -751,15 +741,44 @@ export default function ControlTab({
             <Badge variant={scanBadge(displayedSession?.state || "idle")}>
               {displayedSession
                 ? scanLabel(displayedSession.state)
-                : "Ready"}
+                : !online
+                  ? "Offline"
+                  : actuatorControlAvailable
+                    ? "Ready"
+                    : "Controls blocked"}
             </Badge>
-            <Badge variant={locked ? "warn" : "ok"}>
-              {locked ? "Locked" : "Unlocked"}
+            <Badge
+              variant={
+                simulatedActuators
+                  ? "info"
+                  : physicalStateConfirmed
+                    ? locked
+                      ? "warn"
+                      : "ok"
+                    : "warn"
+              }
+            >
+              {labels.lockLong}
             </Badge>
-            <Badge variant={ignitionOn ? "ok" : "default"}>
-              {ignitionOn ? "Ignition on" : "Ignition off"}
+            <Badge
+              variant={
+                simulatedActuators
+                  ? "info"
+                  : physicalStateConfirmed && ignitionOn
+                    ? "ok"
+                    : "default"
+              }
+            >
+              {labels.ignitionLong}
             </Badge>
           </div>
+
+          {online && !actuatorControlAvailable ? (
+            <div className="mt-4 text-sm leading-relaxed text-amber-200/90">
+              Real Pi lock and ignition outputs are blocked. Enrollment and
+              administrator data tasks remain available.
+            </div>
+          ) : null}
 
           {statusLine ? (
             <div className="mt-4 text-sm font-medium text-slate-100">
@@ -831,25 +850,29 @@ export default function ControlTab({
             >
               {cameraPreview.active
                 ? "Backend camera busy"
-                : "Start face unlock"}
+                : simulatedActuators
+                  ? "Start face unlock (simulated output)"
+                  : "Start face unlock"}
             </Btn>
           )}
           <Btn
             variant="danger"
-            disabled={busy}
+            disabled={busy || !online || !actuatorControlAvailable}
             onClick={handleFullReset}
             className="w-full sm:w-auto"
           >
-            FULL RESET
+            {simulatedActuators ? "FULL RESET (SIMULATED)" : "FULL RESET"}
           </Btn>
-          {ignitionOn ? (
+          {online && actuatorControlAvailable && ignitionOn ? (
             <Btn
               variant="secondary"
-              disabled={busy}
+              disabled={busy || !online || !actuatorControlAvailable}
               onClick={doIgnitionStop}
               className="w-full sm:w-auto"
             >
-              Stop ignition
+              {simulatedActuators
+                ? "Stop ignition (simulated)"
+                : "Stop ignition"}
             </Btn>
           ) : null}
         </div>
@@ -867,14 +890,21 @@ export default function ControlTab({
               </div>
             ) : null}
             <Btn
-              disabled={busy || isScanning || !canStartScan}
+              disabled={
+                busy ||
+                isScanning ||
+                !canStartScan ||
+                !actuatorControlAvailable
+              }
               onClick={handleIgnitionPromptYes}
             >
               Yes, verify ignition
             </Btn>
             <Btn
               variant="secondary"
-              disabled={busy || isScanning}
+              disabled={
+                busy || isScanning || !online || !actuatorControlAvailable
+              }
               onClick={handleIgnitionPromptNo}
             >
               No, lock now

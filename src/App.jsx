@@ -10,15 +10,37 @@ import LogsTab from "./components/LogsTab";
 import SettingsTab from "./components/SettingsTab";
 import useAppState from "./hooks/useAppState";
 import useAppActions from "./hooks/useAppActions";
+import useSecurity from "./security/useSecurity.js";
+import HardwareSimulatorPanel from "./hardware/HardwareSimulatorPanel.jsx";
+import useHardwareSimulator from "./hardware/useHardwareSimulator.js";
+import { resolveRuntimeCapabilities } from "./utils/actuatorStatus.js";
 
-export default function App() {
+export default function App({ onHardwareReset }) {
+  const { user, logout } = useSecurity();
+  const hardware = useHardwareSimulator();
   const state = useAppState();
   const actions = useAppActions(state);
   const mainRef = React.useRef(null);
 
-  const locked = state.mode === "sim" ? state.sim.locked : state.status.lockState === "locked";
-  const ignitionOn = state.mode === "sim" ? !!state.sim.ignitionOn : !!state.status.ignitionOn;
+  const runtime = state.status.runtime || {};
+  const capabilities = state.status.capabilities || {};
+  const locked =
+    state.mode === "sim"
+      ? state.sim.locked
+      : state.status.lockState === "locked";
+  const ignitionOn =
+    state.mode === "sim" ? !!state.sim.ignitionOn : !!state.status.ignitionOn;
   const online = state.status.online;
+  const {
+    simulatedActuators,
+    actuatorControlAvailable,
+    physicalStateConfirmed,
+    livenessAvailable,
+  } = resolveRuntimeCapabilities({
+    mode: state.mode,
+    runtime,
+    capabilities,
+  });
 
   React.useEffect(() => {
     if (mainRef.current) mainRef.current.scrollTop = 0;
@@ -27,7 +49,12 @@ export default function App() {
   return (
     <div className="app-shell flex overflow-hidden text-slate-100">
       <Toast toast={state.toast} />
-      <SidebarNav tab={state.tab} setTab={state.setTab} />
+      <SidebarNav
+        tab={state.tab}
+        setTab={state.setTab}
+        isAdmin={user.is_admin}
+        hardwareEnabled={hardware.enabled}
+      />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
@@ -35,8 +62,17 @@ export default function App() {
           locked={locked}
           ignitionOn={ignitionOn}
           online={online}
+          simulatedActuators={simulatedActuators}
+          actuatorControlAvailable={actuatorControlAvailable}
+          physicalStateConfirmed={physicalStateConfirmed}
           busy={state.busy}
-          onRefresh={actions.refresh}
+          onRefresh={
+            state.tab === "hardware"
+              ? () => void hardware.refresh().catch(() => {})
+              : actions.refresh
+          }
+          user={user}
+          onLogout={logout}
         />
 
         <main ref={mainRef} className="app-content flex-1 overflow-y-auto overscroll-y-contain px-4 pt-4 sm:px-5 sm:pt-6 md:px-8 md:py-6">
@@ -44,6 +80,7 @@ export default function App() {
             <div className="mx-auto w-full max-w-6xl space-y-6">
               <ControlTab
                 api={state.api}
+                currentUser={user}
                 cameraSource={
                   state.status.runtime?.camera_source ||
                   state.status.camera_source ||
@@ -55,6 +92,9 @@ export default function App() {
                 online={state.status.online}
                 locked={locked}
                 ignitionOn={ignitionOn}
+                simulatedActuators={simulatedActuators}
+                actuatorControlAvailable={actuatorControlAvailable}
+                physicalStateConfirmed={physicalStateConfirmed}
                 promptAutoLockSeconds={
                   typeof state.settings?.promptAutoLockSeconds === "number"
                     ? state.settings.promptAutoLockSeconds
@@ -74,6 +114,9 @@ export default function App() {
                   busy={state.busy}
                   doLock={actions.doLock}
                   status={state.status}
+                  simulatedActuators={simulatedActuators}
+                  actuatorControlAvailable={actuatorControlAvailable}
+                  physicalStateConfirmed={physicalStateConfirmed}
                 />
               </div>
             </div>
@@ -96,10 +139,13 @@ export default function App() {
               setFaceAccessAllowed={state.setFaceAccessAllowed}
               setDeviceUsers={state.setDeviceUsers}
               api={state.api}
+              currentUser={user}
+              devices={state.devices}
+              setDevices={state.setDevices}
             />
           )}
 
-          {state.tab === "logs" && (
+          {state.tab === "logs" && user.is_admin && (
             <LogsTab
               deviceLogs={state.deviceLogs}
             />
@@ -111,6 +157,15 @@ export default function App() {
               setSettings={state.setSettings}
               busy={state.busy}
               saveSettings={actions.saveSettings}
+              isAdmin={user.is_admin}
+              livenessAvailable={livenessAvailable}
+            />
+          )}
+
+          {state.tab === "hardware" && hardware.enabled && (
+            <HardwareSimulatorPanel
+              embedded
+              onReset={onHardwareReset}
             />
           )}
 

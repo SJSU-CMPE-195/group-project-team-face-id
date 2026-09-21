@@ -1,6 +1,6 @@
 export const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 export const genId = (p = "id") => `${p}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-export const fmt = (ts) => new Date(ts).toLocaleString();
+export const fmt = (ts) => new Date(ts).toLocaleString("en-US");
 
 /** e.g. "2 minutes ago" — use `fmt(ts)` in a `title` for full local datetime. */
 export function formatRelativeAgo(ts) {

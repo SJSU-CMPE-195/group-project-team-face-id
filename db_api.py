@@ -2,6 +2,7 @@ import uuid
 import time
 import sqlite3
 from db import get_conn
+from safety_policy import BOOLEAN_SETTINGS, INTEGER_SETTING_RANGES
 
 # ── Device status (face-ui /api/status) ─────────────────────────────────────────
 
@@ -101,7 +102,7 @@ def add_user(name: str, face_encoding: bytes = None):
             )
         except sqlite3.IntegrityError:
             return {"ok": False, "error": "active user with that name already exists"}
-    log_event("enroll", "ok", detail=f"Added {name}", user_id=user_id)
+        _insert_log(conn, "enroll", "ok", detail=f"Added {name}", user_id=user_id)
     return {"id": user_id, "name": name, "createdAt": ts * 1000}
 
 def delete_user(user_id: str):
@@ -116,7 +117,13 @@ def delete_user(user_id: str):
             "UPDATE users SET active=0, face_access=0, face_encoding=NULL WHERE id=?",
             (user_id,),
         )
-    log_event("delete_user", "ok", detail=f"Removed {display_name}", user_id=user_id)
+        _insert_log(
+            conn,
+            "delete_user",
+            "ok",
+            detail=f"Removed {display_name}",
+            user_id=user_id,
+        )
     return {"ok": True}
 
 def get_user_by_id(user_id: str):
@@ -134,7 +141,13 @@ def set_user_access(user_id: str, allowed: bool):
         )
         if cur.rowcount != 1:
             return {"ok": False, "error": "user not found"}
-    log_event("access_change", "ok", detail=f"{'granted' if allowed else 'revoked'} for {user_id}", user_id=user_id)
+        _insert_log(
+            conn,
+            "access_change",
+            "ok",
+            detail=f"{'granted' if allowed else 'revoked'} for {user_id}",
+            user_id=user_id,
+        )
     return {"ok": True}
 
 def set_user_embedding(user_id: str, blob: bytes):
@@ -147,7 +160,13 @@ def set_user_embedding(user_id: str, blob: bytes):
         )
         if cur.rowcount != 1:
             return {"ok": False, "error": "user not found"}
-    log_event("enroll_embedding", "ok", detail=f"Embedding stored for {user_id}", user_id=user_id)
+        _insert_log(
+            conn,
+            "enroll_embedding",
+            "ok",
+            detail=f"Embedding stored for {user_id}",
+            user_id=user_id,
+        )
     return {"ok": True}
 
 def get_all_face_encodings():
@@ -221,35 +240,35 @@ def get_settings_for_ui():
     raw = get_settings()
     ui = {}
     for db_key, ui_key in _DB_TO_UI_KEYS.items():
-        if db_key not in raw:
-            continue
-        val = raw[db_key]
-        if ui_key in ("liveness", "failLockout"):
-            ui[ui_key] = val.lower() in ("true", "1", "yes")
-        elif ui_key in ("autoRelockSeconds", "ignitionAutoStopSeconds", "promptAutoLockSeconds", "lockoutAfter"):
-            try:
-                ui[ui_key] = int(val)
-            except ValueError:
-                if ui_key == "autoRelockSeconds":
-                    ui[ui_key] = 10
-                elif ui_key == "ignitionAutoStopSeconds":
-                    ui[ui_key] = 20
-                elif ui_key == "promptAutoLockSeconds":
-                    ui[ui_key] = 0
-                else:
-                    ui[ui_key] = 5
+        val = raw.get(db_key)
+        if not isinstance(val, str):
+            raise ValueError(f"{ui_key} setting is missing or invalid")
+        if ui_key in BOOLEAN_SETTINGS:
+            if val not in ("true", "false"):
+                raise ValueError(f"{ui_key} setting is invalid")
+            ui[ui_key] = val == "true"
         else:
-            ui[ui_key] = val
+            if len(val) > 4 or not val.isascii() or not val.isdecimal():
+                raise ValueError(f"{ui_key} setting is invalid")
+            number = int(val)
+            minimum, maximum = INTEGER_SETTING_RANGES[ui_key]
+            if not minimum <= number <= maximum:
+                raise ValueError(f"{ui_key} setting is outside the supported range")
+            ui[ui_key] = number
     return ui
 
 def save_settings(updates: dict):
     with get_conn() as conn:
-        for key, value in updates.items():
-            conn.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
-                (key, str(value))
-            )
+        _save_settings(conn, updates)
     return {"ok": True}
+
+
+def _save_settings(conn, updates: dict):
+    for key, value in updates.items():
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)",
+            (key, str(value)),
+        )
 
 
 def save_settings_from_ui(payload: dict):
@@ -262,6 +281,7 @@ def save_settings_from_ui(payload: dict):
             mapped[db_key] = "true" if v else "false"
         else:
             mapped[db_key] = str(v)
-    save_settings(mapped)
-    log_event("settings", "ok", detail="Updated settings from UI")
+    with get_conn() as conn:
+        _save_settings(conn, mapped)
+        _insert_log(conn, "settings", "ok", detail="Updated settings from UI")
     return {"ok": True}

@@ -20,7 +20,12 @@ different camera for unlocking.
 ---
 
 ## Project Description:
-The Biometric Automobile Security System (B.A.S.S.) is a vehicle access control solution that replaces traditional keys with facial recognition for authentication. Using a Raspberry Pi and camera module, the system performs real-time identity verification against a local database and, upon successful recognition, enables door unlocking and ignition through connected hardware. This approach provides a secure, contactless, and user-centric alternative to conventional key-based vehicle security.
+The Biometric Automobile Security System (B.A.S.S.) is a vehicle access control
+prototype that uses facial recognition for authentication. A Raspberry Pi or PC
+camera performs identity verification against a local database. PC lock and
+ignition behavior is simulated. Real Pi motor and ignition output is currently
+blocked until command acknowledgement and physical-position feedback are
+implemented.
 
 This repository contains two main pieces: a **React dashboard** for controlling and monitoring the system (`src/`), and a **Python facial-recognition PoC** that runs on a Raspberry Pi (or a dev PC) inside `car_face_auth/`.
 
@@ -36,19 +41,21 @@ group-project-team-face-id/
 │   └── main.jsx
 ├── car_face_auth/
 │   ├── src/
-│   │   ├── api_server.py         # FastAPI — browser frames → InsightFace
+│   │   ├── api_server.py         # Retired standalone API; import fails closed
 │   │   ├── face_engine.py        # Shared embeddings + inference (SQLite-backed)
-│   │   ├── enroll.py             # CLI enrollment (Pi camera)
-│   │   ├── verify_live.py        # CLI live verification (Pi camera + ESP32)
-│   │   └── test_insightface.py   # Debug enrollment script
+│   │   ├── enroll.py             # Retired standalone CLI stub
+│   │   ├── verify_live.py        # Retired standalone CLI stub
+│   │   └── test_insightface.py   # Historical experiment; not for deployment
 │   └── requirements.txt
 ├── db.py                         # SQLite schema + init
 ├── db_api.py                     # Database access layer
-├── pi_device_api.py              # Flask REST API (runs on Pi)
+├── pi_device_api.py              # Injectable Flask route factory; no listener
+├── bass_wireless.py              # Canonical authenticated HTTPS host
 ├── requirements-pi-device-api.txt
 ├── systemd/                      # Auto-start service files for Pi
-│   └── faceid-api.service         # API + camera + ESP32 owner
-├── install.sh                    # One-shot Pi setup script
+│   └── faceid-wireless.service    # HTTPS API + camera + ESP32 owner
+├── scripts/install-wireless-pi.sh # Supported Pi installer
+├── install.sh                    # Retirement stub for the old service
 └── ESP32_Program/                # ESP32 firmware
 ```
 
@@ -74,7 +81,41 @@ actuator output remains simulated. See [host setup](docs/android-wireless.md).
 Keep the host dashboard's Control tab open to see its camera view when Android
 starts a scan. See [watch a phone-triggered scan](docs/android-wireless.md#watch-a-phone-triggered-scan-on-the-host).
 
-### Developer-only hardware simulator
+### Hardware Simulator tab on the current PC host
+
+Build with `npm run build`, then start the existing launcher with
+`scripts/start-wireless.cmd -HardwareSimulator`. Open the normal dashboard at
+`http://localhost:5057` and select **Hardware** in its sidebar. Buttons appear
+in the same dashboard before and after product login; other product tabs still
+require sign-in.
+
+Explicit PC development mode trusts direct localhost dashboard clients. A local
+cookie and CSRF token are created and renewed in the background. The operator
+uses no separate login, activation link, or browser window for these controls.
+
+The panel uses the current PC database and phone connection. Hold its button
+for three seconds to open pairing, or ten seconds to open recovery, then release.
+The backend determines the elapsed time and active window. Simulated power off
+closes windows and cancels work while preserving ownership.
+
+Existing installations retain their accounts in `legacy` ownership state. To
+exercise first use, choose **Developer reset**, review its scope, and type
+`RESET`. The host drains work and creates a private coherent database/identity/key
+backup before clearing product data. Repeating the same reset request returns
+its original receipt. A failed reset keeps the product in maintenance.
+
+After reset, scan the activation card with the updated Android app, open the
+pairing window, and set the owner's name and PIN. Export recovery material to a
+safe location outside the phone. A public device QR grants no access.
+
+Ordinary startup and Pi mode have no developer control routes. The panel works
+through the actual loopback dashboard with its own background session,
+same-origin checks, and CSRF token. Do not enable development mode on a host
+where local clients are untrusted. It does not implement a Wi-Fi access point
+or GPIO.
+See [operation and recovery](docs/android-wireless.md#hardware-simulator-and-developer-reset).
+
+### Standalone scripted hardware fixture
 
 Normal PC operation uses its real webcam. The separate HTTP simulator below is
 for scripted hardware/recognition development, not for verifying a real face.
@@ -96,8 +137,9 @@ Use this developer fixture through its standalone API:
 http://localhost:5055
 ```
 
-The server creates a local `Demo Driver` and stores its disposable SQLite data under
-`.cache/`. Configure a successful camera stream from another terminal:
+The server binds only to loopback, rejects remote peers, creates a local
+`Demo Driver`, and stores its disposable SQLite data under `.cache/`. Configure
+a successful camera stream from another terminal on the same computer:
 
 ```bash
 curl -X PUT http://localhost:5055/sim/scenario \
@@ -129,8 +171,8 @@ curl -X PUT http://localhost:5055/sim/scenario \
 ```
 
 The HTTP simulator exercises the Python API and runtime using its scripted
-frames. The normal dashboard uses an HTTP backend and does not offer the old
-in-browser fake as an operating mode.
+frames. It is an unauthenticated, loopback-only development fixture. The normal
+dashboard and Android app do not route to it.
 
 This simulator cannot certify Picamera2 compatibility or frame rate, InsightFace
 performance on the Pi, USB serial permissions, real ESP32 acknowledgements, motor
@@ -139,47 +181,39 @@ direction/limits/electrical safety, or systemd startup with attached hardware.
 ### Android installation and the host dashboard
 
 Use the native APK for phone operation: see [Android wireless operation](docs/android-wireless.md).
-Scan the host's fixed QR once; Android discovers and authenticates that host on
-the local network. No USB forwarding, browser backend address, or separate
-Connect action is needed for normal use.
+Scan the host's fixed QR once; Android discovers that host, verifies its pinned
+TLS certificate, and authenticates over HTTPS on port 5056. No USB forwarding,
+browser backend address, or separate Connect action is needed for normal use.
 
-The built web dashboard runs on the host at `http://localhost:5056`. Its PWA
+The selected Android release candidate is the unsigned BASS 0.4.0 (versionCode
+5) APK. Current artifact hashes and verification results are recorded in the
+[delivery snapshot](docs/android-delivery-status.md). It must be signed before
+installation or distribution; signing and build details are in the Android
+wireless guide.
+
+The built web dashboard runs only on the host at `http://localhost:5057`. Its PWA
 manifest, icons, and offline shell remain available, but live controls and the
 pairing QR always require the host connection. A standalone Vite preview or a
-remote static website does not provide the trusted local API bridge.
+remote static website does not provide the trusted local API bridge. During
+frontend development, Vite on port 5173 proxies that loopback service.
 
-### Standalone Face API (enrollment development)
+First-owner activation uses the phone, its activation card, and a device pairing
+window. The dashboard signs in with an existing host account; it cannot create
+the initial owner. After the first successful sign-in with a name and PIN,
+the browser remembers that account and needs only its PIN when the session
+expires. Explicit sign-out clears the account selection. The browser keeps its
+15-minute session in an HTTP-only cookie and asks for the signed-in user's PIN before each
+sensitive operation; it does not store the PIN. Administrators manage users,
+access, PIN resets, phone invites, paired devices, logs, and settings. Ordinary
+users can operate only as themselves and cannot open administrator controls.
 
-The optional standalone Face API receives uploaded enrollment frames. It is not
-the unlock service. Normal PC and Pi operation use the Device API and the
-backend's own camera; they need no separate Face API process.
+### Retired standalone Face API
 
-1. **Terminal A — Face API** (from repo root):
-
-   ```bash
-   cd car_face_auth
-   python -m venv venv
-   ```
-
-   Activate the venv (Windows: `venv\Scripts\activate`; macOS/Linux: `source venv/bin/activate`), then:
-
-   ```bash
-   pip install -r requirements.txt
-   python -m uvicorn src.api_server:app --host 127.0.0.1 --port 8765
-   ```
-
-   First run may download InsightFace **buffalo_s** weights into `~/.insightface/models/`.
-
-2. **Terminal B — UI**:
-
-   ```bash
-   npm run dev
-   ```
-
-Configure `FACEID_DB_PATH` consistently when using this development service.
-Its `/api/verify-frame` response is diagnostic recognition data and does not
-authorize an unlock. The dashboard's Unlock action always asks the selected
-backend to capture and verify its own camera.
+The old FastAPI/Uvicorn enrollment service is retired. Importing
+`car_face_auth.src.api_server` raises an error instead of creating a listener.
+Do not start port 8765. Normal PC and Pi operation uses `bass_wireless.py`; the
+selected backend captures enrollment and verification images through the
+authenticated Device API.
 
 ### Components reference
 
@@ -245,38 +279,34 @@ backend to capture and verify its own camera.
 ## Setup — Raspberry Pi (one time)
 
 ```bash
-# Clone the repo and switch to the working branch
 git clone https://github.com/SJSU-CMPE-195/group-project-team-face-id.git
 cd group-project-team-face-id
-git checkout wired-main
-
-# Run the install script — handles everything automatically
-bash install.sh
 ```
 
-The install script will:
-- Create the SQLite database under the service user's home (`~/faceid/faceid.db`)
-- Install Raspberry Pi OS's `python3-picamera2` package and all pip dependencies into `.venv`
-- Add your user to the `dialout`, `video`, and `gpio` groups
-- Install and enable the single `faceid-api.service` so the API owns the camera and ESP32
-- Disable and remove the legacy separate verification service if it is present
+On a development computer at the same source revision, run `npm ci` and
+`npm run build`. Copy the complete generated `dist/` directory into this Pi
+checkout alongside `bass_wireless.py`. Git does not include these build files,
+and the Pi installer requires them before it can proceed.
 
-By default the service account is the user that invoked `sudo`; override it
-with `FACEID_SERVICE_USER=<user>` and the database directory with
-`FACEID_DB_DIR=<path>`.
+Then run on the Pi:
 
-Runtime overrides such as `ESP32_SERIAL_PORT`, scan timeouts, and the enrollment
-sample interval can be placed in `/etc/default/faceid` as `KEY=value` lines,
-then applied with `sudo systemctl restart faceid-api`.
-Use an unquoted numeric value for `PORT` (for example `PORT=5001`). Configure
-the service database with `FACEID_DB_DIR` when running `install.sh`; overriding
-`FACEID_DB_PATH` in `/etc/default/faceid` is not supported by the installer.
-
-To verify services are running after install:
 ```bash
-sudo systemctl status faceid-api
-curl --fail http://127.0.0.1:5000/health
+bash scripts/install-wireless-pi.sh
 ```
+
+The supported installer creates the database and persistent host identity,
+installs the existing dependencies, and enables `faceid-wireless.service` as
+the single camera/ESP32 owner. It also exports the pairing QR. See the
+[Pi handoff](docs/android-wireless.md#pi-handoff) for build, identity-transfer,
+OpenSSL, and verification details.
+
+The root `install.sh` is a retirement stub, and the repository's
+`faceid-api.service` unit is removed. The stub exits with an error and points to
+the wireless installer without changing the system. During an upgrade, the
+supported installer still detects enabled or active `faceid-api.service` and
+`faceid-verify.service` units, reports them, and exits without changing them.
+Review the installed legacy service before explicitly disabling it; the check
+prevents two processes from competing for the camera or ESP32.
 
 ---
 
@@ -289,7 +319,6 @@ The React UI only needs Node.js. Run this from your laptop on the same WiFi netw
 ```bash
 git clone https://github.com/SJSU-CMPE-195/group-project-team-face-id.git
 cd group-project-team-face-id
-git checkout wired-main
 npm ci
 npm run dev
 ```
@@ -299,7 +328,6 @@ npm run dev
 ```cmd
 git clone https://github.com/SJSU-CMPE-195/group-project-team-face-id.git
 cd group-project-team-face-id
-git checkout wired-main
 npm ci
 npm run dev
 ```
@@ -314,24 +342,30 @@ Use the [wireless host setup](docs/android-wireless.md) on the PC or Pi:
 
 1. Build the dashboard and start the wireless backend. Pi deployment must
    include the built `dist/` directory; it is not included by Git.
-2. Open [http://localhost:5056](http://localhost:5056) on the backend machine.
-   The dashboard automatically uses that service and its camera.
-3. In **Settings → Device pairing**, select **Show QR** and scan it with BASS
-   Android on the same network. The phone and dashboard share one backend.
-4. Select **Refresh** to load new phone enrollments in **Users**.
+2. Open [http://localhost:5057](http://localhost:5057) on the backend machine.
+   Sign in with an existing account, or complete phone-first activation using
+   the Hardware Simulator on the development PC. The dashboard automatically
+   uses that service and its camera.
+3. As an administrator, choose **Users → Pair phone** for the intended user.
+   The dashboard displays a five-minute invitation QR.
+4. Scan that invitation in BASS Android and enter the user's six-digit host PIN.
+   The phone receives its own revocable credential for this backend.
+5. Select **Refresh** to load new phone enrollments in **Users**.
 
 No backend address or Connect action is needed. For local frontend development,
-`http://localhost:5173` uses the same host through Vite. A custom backend port
-works with the built dashboard URL printed by the backend at startup.
+`http://localhost:5173` uses the same host through Vite's proxy to port 5057.
+The Android app reaches the authenticated LAN API over HTTPS on port 5056.
 
 ---
 
 ## Enrolling a user
 
-1. Go to the **Users** tab
-2. Select the backend/device camera as the enrollment source
-3. Enter a display name and click **Add & enroll face**
-4. Wait for the backend to capture the required samples
+1. Sign in as an administrator and go to the **Users** tab.
+2. Select the backend/device camera as the enrollment source.
+3. For a new user, enter a display name and a new six-digit PIN. For an existing
+   user, enter their exact display name.
+4. Select **Add & enroll face**, then enter the administrator PIN when asked.
+5. Wait for the backend to capture the required samples.
 
 The face embedding is stored in the selected backend's SQLite database and is available to
 the Device API's scan flow.
@@ -341,11 +375,24 @@ the Device API's scan flow.
 ## Face verification (dashboard)
 
 1. Go to the **Control** tab
-2. Start the Unlock face scan
+2. Start the Unlock face scan and enter the signed-in user's PIN.
 3. Look at the backend's camera: PC webcam or Pi camera. Access requires the
    configured rolling-window match threshold (6 of 10 observations by default).
-4. Pi sends `UNLOCK` to the ESP32; PC records simulated actuation. A PIN alone
-   or uploaded browser/phone verification frames cannot unlock the device.
+4. PC records simulated actuation. On Pi, all lock and ignition outputs remain
+   blocked until the serial protocol has command acknowledgement and physical
+   position feedback. A PIN alone or uploaded browser/phone verification frames
+   cannot grant access.
+
+The current runtime reports that presentation-attack detection is unavailable.
+With the persisted liveness setting enabled by default, verification fails
+closed before camera capture or actuation. An administrator may explicitly
+disable that setting for prototype testing, which reduces security and does not
+establish production, vehicle, or presentation-attack safety.
+
+On Pi, startup, shutdown, manual controls, timers, and scan results cannot send
+motor or ignition commands. The API reports control unavailable and physical
+state unconfirmed. There is no environment-variable bypass. Enrollment and
+administrator data tasks may still operate, subject to the liveness policy.
 
 ---
 
@@ -357,42 +404,82 @@ API (`/api/status`, `/api/users`, ...).
 
 ### On the Pi
 
-The supported setup is `bash install.sh` from the repository root. It creates
-`.venv`, installs Picamera2 from Raspberry Pi OS, installs the pip requirements,
-and enables `faceid-api.service`. For a manual start, use the same interpreter:
+Use `bash scripts/install-wireless-pi.sh` from the repository root. It installs
+and enables `faceid-wireless.service`, which runs `bass_wireless.py` as the
+single owner of the Pi camera and ESP32 serial connection. Do not run
+`pi_device_api.py` directly: it only exports `create_app(...)` for an injected
+database/runtime and has no module-level application or public listener.
 
-   ```bash
-   FACEID_DB_PATH=/home/pi/faceid/faceid.db .venv/bin/python db.py
-   FACEID_DB_PATH=/home/pi/faceid/faceid.db PORT=5000 .venv/bin/python pi_device_api.py
-   ```
+Runtime overrides such as `ESP32_SERIAL_PORT`, scan timeouts, enrollment sample
+interval, `BASS_PORT`, and `BASS_DASHBOARD_PORT` can be placed in
+`/etc/default/faceid-wireless`. The old `enroll.py` and `verify_live.py` entrypoints
+exit with an error; they cannot run beside or replace the authenticated host.
 
-   Optional environment variables:
+Authorization adds tables to the existing SQLite database and uses the
+device-adjacent `device.auth.key` as its PIN pepper. The Pi installer applies
+that additive migration offline. For a manual migration, stop the service and
+set the database path explicitly:
 
-   - `FACEID_DB_PATH` — SQLite file path (default: `/home/pi/faceid/faceid.db`)
-   - `PORT` — HTTP port (default: `5000`)
-   - `ESP32_SERIAL_PORT` — explicit ESP32 port when USB metadata is not recognizable
-   - `PI_SCAN_TIMEOUT_SECONDS` / `PI_ENROLL_TIMEOUT_SECONDS` — camera session timeouts
-   - `PI_ENROLL_SAMPLE_INTERVAL_SECONDS` — delay between accepted enrollment samples (default `0.5`)
-   - `PI_CAMERA_CLOSE_TIMEOUT_SECONDS` — maximum shutdown wait for a blocked capture (default `2`)
+```bash
+sudo systemctl stop faceid-wireless.service
+FACEID_DB_PATH=/home/pi/faceid/faceid.db \
+BASS_DEVICE_CONFIG=/home/pi/faceid/device.json \
+  .venv-wireless/bin/python bass_wireless.py --mode pi --migrate-security-only
+```
 
-   When running through systemd, put these overrides in `/etc/default/faceid`
-   as `KEY=value` lines and restart `faceid-api`. Keep the database path under
-   installer control with `FACEID_DB_DIR`; use an unquoted integer for `PORT`.
+Do not run that command against the real Pi database from this worktree: no real
+database migration or deployment has been performed here. Back up and restore
+`device.json`, `device.tls.pem`, `device.auth.key`, and the SQLite database as
+one coherent set. Startup binds that database to the configured device ID and
+TLS certificate fingerprint. A mismatch fails closed before hardware or either
+listener starts. The installer transfers the `device.auth.key` sidecar when
+present, refuses a mismatched destination, and applies the schema and identity
+binding offline before starting the service.
 
-`faceid-api.service` uses `.venv/bin/python` and runs the root
-`pi_device_api.py`. Do not start `verify_live.py` as a second service: the API
-is the single owner of the Pi camera and ESP32 serial connection.
+Replacing TLS intentionally requires a stopped host and an explicit destructive
+authorization rotation. Back up the coherent set, replace `device.tls.pem` by
+an operator-controlled process, then run:
+
+```bash
+FACEID_DB_PATH=/home/pi/faceid/faceid.db \
+  .venv-wireless/bin/python bass_wireless.py --mode pi \
+  --config /home/pi/faceid/device.json \
+  --rotate-tls-authorization-only
+```
+
+This command does not generate or replace a valid TLS file. It binds the
+replacement certificate atomically and revokes every phone credential, local
+session, operation grant, and pairing invite. After it succeeds, start the host,
+sign in locally with an administrator PIN, display the new QR, and issue new
+user invites. Do not merely replace TLS and claim phones were re-paired; without
+the explicit rotation the host refuses the database/TLS mismatch.
+
+If an existing administrator loses access, keep the service stopped and run the
+local interactive recovery tool; it revokes that user's existing devices and
+grants:
+
+```bash
+.venv-wireless/bin/python scripts/recover-host-admin.py \
+  --db /home/pi/faceid/faceid.db \
+  --config /home/pi/faceid/device.json \
+  --user 'Admin Name'
+```
 
 ### In the UI
 
 Normal dashboard operation uses `faceid-wireless.service` and its local page at
-`http://localhost:5056`; see the [wireless Pi handoff](docs/android-wireless.md#pi-handoff).
-The standalone `faceid-api.service` above is a separate development entrypoint.
-Do not run both camera-owning services together.
+`http://localhost:5057`; see the [wireless Pi handoff](docs/android-wireless.md#pi-handoff).
+Android uses the certificate-pinned HTTPS listener on port 5056.
 
 ### Schema (see `db.py`)
 
 - `users`, `auth_logs`, `settings`, `device_state`
+
+Face templates use the strict `BASSF001` numeric format. The runtime does not
+deserialize legacy pickle data; existing trusted databases require the separate
+[offline face-template migration](docs/android-wireless.md#face-template-migration)
+before deployment. The migration creates a validated copy and does not replace
+the active database automatically.
 
 ---
 
@@ -412,12 +499,15 @@ Facial-recognition vehicle access using a Raspberry Pi and camera: real-time det
 **Not in scope yet**
 
 - Multi-user robustness testing  
-- Anti-spoofing (photo/video)  
+- Presentation-attack detection / anti-spoofing (photo/video)
 - Full vehicle integration  
 
-**Implemented**
+**Present but safety-gated**
 
-- Physical door lock and ignition control via ESP32
+- The ESP32 serial command protocol and integration code remain in the
+  repository, but the real Pi runtime blocks all motor and ignition output until
+  acknowledgement and position feedback exist. No connected hardware was
+  exercised, so this is not physical or production-safety acceptance.
 
 ### Prerequisites
 
@@ -426,41 +516,29 @@ Facial-recognition vehicle access using a Raspberry Pi and camera: real-time det
 - A camera attached to the backend: Pi Camera Module on Pi or a USB webcam on PC.
 - Virtual environment (required on Pi, recommended on dev PC)
 
-**Python dependencies** (`requirements-pi-device-api.txt` includes
-`car_face_auth/requirements.txt`): `flask`, `pyserial`, `insightface`,
-`onnxruntime`, `opencv-python`, `numpy`, `fastapi`, `uvicorn[standard]`, and
-`python-multipart`. Picamera2 is installed by Raspberry Pi OS with
+**Python dependencies:** `requirements-http.txt` pins Flask 3.1.3, Werkzeug
+3.1.8, Pillow 12.3.0, Cheroot 11.1.2, and pyOpenSSL 26.4.0.
+`requirements-pi-device-api.txt` adds `pyserial` and the recognition stack:
+`insightface`, `onnxruntime`, OpenCV, and NumPy. Picamera2 is installed by
+Raspberry Pi OS with
 `sudo apt install python3-picamera2` and exposed to `.venv` via
 `--system-site-packages`.
 
-### Running the PoC
-
-**Option A — CLI (OpenCV window)**
-
-1. **Enroll** (from `car_face_auth/`):
-
-   ```bash
-   python src/enroll.py
-   ```
-
-   Enter a username when prompted. Press **`s`** in the **OpenCV window** to save each sample; you need **10** samples.
-
-2. **Live verification**:
-
-   ```bash
-   python src/verify_live.py
-   ```
-
-   You should see face bounding boxes, similarity scores, and messages such as `ACCESS PENDING` and `ACCESS GRANTED`.
-
-**Option B — Device API + React or Android**
+### Running recognition and enrollment
 
 See [Android wireless operation](docs/android-wireless.md) for the PC/Pi host,
 pairing, and local dashboard setup. Both UIs ask the backend to capture the face
-for unlock. Use the optional standalone Face API only for enrollment/recognition
-development; its uploaded frames cannot authorize device unlock.
+for unlock. There is no separate Face API listener.
 
-### Demo screenshots
+The standalone `enroll.py` and `verify_live.py` CLIs are retired because they
+bypass the authenticated host and used the older face-template path. They exit
+without opening the camera, serial port, or database. `test_insightface.py` is a
+historical experiment only and is not a deployment or migration tool.
+
+### Historical PoC screenshots
+
+These images show the earlier experimental CLI and are not instructions for the
+current authenticated host.
 
 **Enrollment**
 
@@ -476,20 +554,26 @@ development; its uploaded frames cannot authorize device unlock.
 
 ---
 
-## HTTP API routes (`pi_device_api.py`)
+## Device API routes (`pi_device_api.py`)
 
 | Method | Route | Description |
 |--------|-------|-------------|
 | GET | `/api/status` | Device status, lock state, battery, signal |
-| POST | `/api/unlock` | Start a backend-camera unlock scan; returns a scan session |
+| POST | `/api/unlock` | Retired; use PIN-authorized `/api/scan/start` |
 | POST | `/api/lock` | Lock the device |
 | POST | `/api/ignition/stop` | Stop ignition |
 | POST | `/api/full-reset` | Stop ignition and lock the device |
-| GET | `/api/users` | List all enrolled users |
+| GET | `/api/users` | List all users for an administrator or the current user only |
 | POST | `/api/users` | Add a new user |
 | DELETE | `/api/users/<id>` | Remove a user |
 | PATCH | `/api/users/<id>/access` | Enable/disable face access for a user |
-| POST | `/api/verify-log` | Log a face verify event |
+| POST | `/api/users/<id>/pin` | Reset a user PIN (administrator only) |
+| POST | `/api/operation-grants` | Verify current PIN for one action and target |
+| POST | `/api/session-login` | Verify the saved phone account's PIN without granting an operation |
+| POST | `/api/pairing-invites` | Issue a five-minute user invite (administrator only) |
+| GET | `/api/devices` | List paired phones (administrator only) |
+| POST | `/api/devices/<id>/revoke` | Revoke one phone (administrator only) |
+| POST | `/api/verify-log` | Retired; returns 410 and writes no event |
 | POST | `/api/scan/start` | Start a backend-camera unlock or same-driver ignition scan |
 | GET | `/api/scan/status?session_id=<id>` | Read scan progress/result |
 | POST | `/api/scan/cancel` | Cancel a running backend-camera scan |
@@ -497,18 +581,33 @@ development; its uploaded frames cannot authorize device unlock.
 | POST | `/api/enroll/start` | Start backend-camera or client-camera enrollment |
 | GET | `/api/enroll/status?session_id=<id>` | Read enrollment progress/result |
 | POST | `/api/enroll/cancel` | Cancel a running enrollment |
-| GET | `/api/logs` | Retrieve auth logs |
+| GET | `/api/logs` | Retrieve auth logs (administrator only) |
 | GET | `/api/settings` | Get device settings |
 | POST | `/api/settings` | Save device settings |
 | GET | `/health` | Process liveness and runtime details |
 | GET | `/ready` | Hardware readiness (`503` until camera/model/ESP32 are ready) |
 
-`/health` proves that the HTTP process is alive and includes `runtime_ready` plus
+`/health` proves that the API process is alive and includes `runtime_ready` plus
 camera/model/ESP32 details. It does not replace an on-Pi hardware acceptance test.
-The standalone Pi API is an unauthenticated LAN prototype. The wireless host
-wraps these routes with pairing-key authentication, and exposes minimal public
-`/health` data. See [wireless API and recovery](docs/android-wireless.md#api-and-recovery)
-for its contract. Neither entrypoint provides a direct manual unlock.
+`pi_device_api.py` only defines the injected route factory. `bass_wireless.py`
+wraps it with per-device authentication and serves it through bounded Cheroot
+11.1.2 workers with pyOpenSSL 26.4.0: Android uses HTTPS port 5056, while the
+session-authenticated dashboard bridge is available only on loopback HTTP port
+5057. See [wireless API and recovery](docs/android-wireless.md#api-and-recovery)
+for its contract. There is no standalone port 5000 listener.
+
+The host rejects requests larger than 9 MiB and JSON bodies larger than 64 KiB.
+Client enrollment accepts JPEG only, up to 8 MiB, 4096 pixels on either axis,
+and 4,194,304 total pixels. Oversized input returns 413 before the runtime
+performs enrollment or a data-changing operation. Client requests to
+`POST /api/verify-log` return 410 and cannot create an authoritative event.
+
+The fixed QR supplies TLS-pinned onboarding information only. Pairing also
+requires a short-lived administrator-issued invite and the target user's
+six-digit host PIN. The host then issues a separate revocable phone credential.
+Each sensitive operation requires a fresh 30-second grant bound to the signed-in
+user, action, and target. Earlier shared QR keys are rejected for ordinary API
+operations.
 
 ---
 
@@ -518,8 +617,7 @@ for its contract. Neither entrypoint provides a direct manual unlock.
 |------|------------|
 | Dashboard | React + Vite + Tailwind CSS |
 | Face recognition | InsightFace (buffalo_s model) |
-| Face API | FastAPI + Uvicorn (optional dev-PC browser flow) |
-| Device API | Flask |
+| Device API | Flask route factory behind Cheroot + pyOpenSSL |
 | Database | SQLite via db_api.py |
 | Camera (Pi) | Picamera2 |
 | Hardware control | pyserial → ESP32 |
@@ -533,7 +631,7 @@ Firmware and setup notes live under **`ESP32_Program`** on the `wired-main` bran
 
 https://github.com/SJSU-CMPE-195/group-project-team-face-id/tree/wired-main/ESP32_Program
 
-The Pi sends simple serial commands to the ESP32:
+The retained ESP32 protocol defines these serial commands:
 
 | Command | Action |
 |---------|--------|
@@ -541,3 +639,9 @@ The Pi sends simple serial commands to the ESP32:
 | `LOCK` | Lock door |
 | `START` | Start ignition |
 | `STOP` | Stop ignition |
+
+The current Pi runtime does not send these commands. It reports
+`actuator_control_available: false`, `physical_state_confirmed: false`, and
+`actuator_feedback: "unavailable"`. PC and developer-fixture runtimes may execute
+the same state machine only with `simulated_actuators: true`; their results do
+not describe physical hardware.

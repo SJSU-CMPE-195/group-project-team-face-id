@@ -1,18 +1,39 @@
 import React from "react";
-import { Moon, RefreshCw, ShieldCheck, Sun } from "lucide-react";
+import { LogOut, Moon, RefreshCw, ShieldCheck, Sun } from "lucide-react";
 import { useTheme } from "../context/useTheme.js";
+import { actuatorLabels } from "../utils/actuatorStatus.js";
 
 const titles = {
   control: "Console",
   users: "Users",
   logs: "Event log",
   settings: "Settings",
+  hardware: "Hardware Simulator",
 };
 
-export default function TopBar({ tab, locked, ignitionOn, online, busy, onRefresh }) {
+export default function TopBar({
+  tab,
+  locked,
+  ignitionOn,
+  online,
+  simulatedActuators,
+  actuatorControlAvailable,
+  physicalStateConfirmed,
+  busy,
+  onRefresh,
+  user,
+  onLogout,
+}) {
   const { isDark, toggleTheme } = useTheme();
-  const lockLabel = locked ? "Locked" : "Unlocked";
   const linkLabel = online ? "Host online" : "Host offline";
+  const labels = actuatorLabels({
+    online,
+    locked,
+    ignitionOn,
+    simulatedActuators,
+    actuatorControlAvailable,
+    physicalStateConfirmed,
+  });
 
   return (
     <header className="app-safe-top flex min-h-16 shrink-0 items-center justify-between border-b border-white/[0.06] bg-dna-bg/90 px-4 backdrop-blur-md sm:px-5 md:min-h-14">
@@ -27,22 +48,66 @@ export default function TopBar({ tab, locked, ignitionOn, online, busy, onRefres
               BASS
             </span>
           </div>
-          <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500 md:hidden">
-            <span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-emerald-400" : "bg-rose-400"}`} />
-            <span>{linkLabel}</span>
-            <span aria-hidden="true">·</span>
-            <span className={locked ? "text-slate-400" : "text-emerald-400"}>{lockLabel}</span>
-          </div>
+          {user ? (
+            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500 md:hidden">
+              <span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-emerald-400" : "bg-rose-400"}`} />
+              <span>{linkLabel}</span>
+              <span aria-hidden="true">·</span>
+              <span
+                className={
+                  simulatedActuators || physicalStateConfirmed
+                    ? "text-slate-400"
+                    : "text-amber-300"
+                }
+              >
+                {online && actuatorControlAvailable
+                  ? labels.lockShort
+                  : labels.control}
+              </span>
+            </div>
+          ) : null}
         </div>
       </div>
 
-      <div className="hidden items-center gap-2 md:flex">
-        <StatPill label="Link" value={online ? "Online" : "Offline"} accent={online ? "text-violet-300" : "text-rose-400"} />
-        <StatPill label="State" value={lockLabel} accent={locked ? "text-fuchsia-300" : "text-emerald-300"} />
-        <StatPill label="Ignition" value={ignitionOn ? "On" : "Off"} accent={ignitionOn ? "text-amber-300" : "text-slate-300"} />
-      </div>
+      {user ? (
+        <div className="hidden items-center gap-2 md:flex">
+          <StatPill label="Link" value={online ? "Online" : "Offline"} accent={online ? "text-violet-300" : "text-rose-400"} />
+          <StatPill
+            label="State"
+            value={labels.lockShort}
+            accent={
+              simulatedActuators || physicalStateConfirmed
+                ? "text-slate-300"
+                : "text-amber-300"
+            }
+          />
+          <StatPill
+            label="Ignition"
+            value={labels.ignitionShort}
+            accent={
+              simulatedActuators || physicalStateConfirmed
+                ? "text-slate-300"
+                : "text-amber-300"
+            }
+          />
+          <StatPill
+            label="Control"
+            value={labels.control}
+            accent={
+              online && actuatorControlAvailable
+                ? "text-violet-300"
+                : "text-amber-300"
+            }
+          />
+        </div>
+      ) : null}
 
       <div className="flex items-center gap-1">
+        {user?.name ? (
+          <span className="hidden max-w-32 truncate px-2 text-xs text-slate-400 sm:inline">
+            {user.name}
+          </span>
+        ) : null}
         <button
           type="button"
           onClick={toggleTheme}
@@ -63,6 +128,17 @@ export default function TopBar({ tab, locked, ignitionOn, online, busy, onRefres
           <RefreshCw className={`h-4 w-4 shrink-0 ${busy ? "animate-spin" : ""}`} strokeWidth={2} />
           <span className="hidden sm:inline">Refresh</span>
         </button>
+        {onLogout ? (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="flex h-12 w-12 items-center justify-center rounded-xl text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-300 md:h-9 md:w-9 md:rounded-lg"
+            title="Sign out"
+            aria-label="Sign out"
+          >
+            <LogOut className="h-4 w-4" strokeWidth={1.75} />
+          </button>
+        ) : null}
       </div>
     </header>
   );

@@ -1,14 +1,14 @@
 package com.bass.app.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -23,8 +23,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -35,8 +35,10 @@ import com.bass.app.ConnectionPhase
 import com.bass.app.R
 import com.bass.app.Tab
 import com.bass.app.ui.screens.ConsoleScreen
+import com.bass.app.ui.screens.CommissioningScreen
 import com.bass.app.ui.screens.LogsScreen
 import com.bass.app.ui.screens.PairingScreen
+import com.bass.app.ui.screens.PairingCredentialsScreen
 import com.bass.app.ui.screens.PinScreen
 import com.bass.app.ui.screens.SettingsScreen
 import com.bass.app.ui.screens.UsersScreen
@@ -45,6 +47,23 @@ import com.bass.app.ui.theme.BassTheme
 @Composable
 fun BassApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val exportMaterial = state.exportMaterial
+    var showExport by remember(exportMaterial?.content) { mutableStateOf(exportMaterial != null) }
+    val exportLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) {
+            uri ->
+            if (uri != null && exportMaterial != null) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use {
+                        writer -> writer.write(exportMaterial.content)
+                    } ?: error("Could not open selected document")
+                }.onSuccess {
+                    viewModel.exportMaterialSaved()
+                    showExport = false
+                }.onFailure { viewModel.materialExportFailed() }
+            }
+        }
 
     BassTheme {
         Surface(
@@ -59,6 +78,10 @@ fun BassApp(viewModel: AppViewModel) {
                         onSubmit = viewModel::submitPin,
                         onCancel = viewModel::cancelPin,
                     )
+                state.commissioningPrompt != null ->
+                    CommissioningScreen(state = state, viewModel = viewModel)
+                state.pairingCredentialsRequired ->
+                    PairingCredentialsScreen(state = state, viewModel = viewModel)
                 state.phase == ConnectionPhase.CONNECTED -> {
                     ConnectedApp(state = state, viewModel = viewModel)
                 }
@@ -87,6 +110,29 @@ fun BassApp(viewModel: AppViewModel) {
                 onDismiss = viewModel::cancelForgetDevice,
             )
         }
+
+        if (
+            state.phase == ConnectionPhase.CONNECTED &&
+                state.pinPrompt == null &&
+                showExport &&
+                exportMaterial != null
+        ) {
+            AlertDialog(
+                onDismissRequest = { showExport = false },
+                title = { Text(stringResource(R.string.export_material_title)) },
+                text = { Text(stringResource(R.string.export_material_description)) },
+                confirmButton = {
+                    TextButton(onClick = { exportLauncher.launch(exportMaterial.fileName) }) {
+                        Text(stringResource(R.string.export_material_action))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showExport = false }) {
+                        Text(stringResource(R.string.export_material_later))
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -94,42 +140,15 @@ fun BassApp(viewModel: AppViewModel) {
 private fun ForgetDeviceDialog(
     busy: Boolean,
     error: String?,
-    onConfirm: (Boolean) -> Unit,
+    onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var resetPin by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(stringResource(R.string.forget_device_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(R.string.forget_device_description))
-                Row(
-                    modifier =
-                        Modifier.fillMaxWidth()
-                            .toggleable(
-                                value = resetPin,
-                                enabled = !busy,
-                                role = Role.Checkbox,
-                                onValueChange = { resetPin = it },
-                            )
-                            .padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Checkbox(
-                        checked = resetPin,
-                        enabled = !busy,
-                        onCheckedChange = null,
-                    )
-                    Column(modifier = Modifier.padding(start = 8.dp)) {
-                        Text(stringResource(R.string.forget_reset_pin))
-                        Text(
-                            text = stringResource(R.string.forget_reset_pin_description),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
                 error?.let {
                     Text(
                         text = it,
@@ -142,7 +161,7 @@ private fun ForgetDeviceDialog(
         confirmButton = {
             TextButton(
                 enabled = !busy,
-                onClick = { onConfirm(resetPin) },
+                onClick = onConfirm,
             ) {
                 Text(
                     stringResource(
@@ -170,6 +189,7 @@ private fun ConnectedApp(
         bottomBar = {
             AppNavigation(
                 selectedTab = state.selectedTab,
+                isAdmin = state.identity?.user?.isAdmin == true,
                 onSelect = viewModel::selectTab,
             )
         },
@@ -188,10 +208,18 @@ private fun ConnectedApp(
                     modifier = Modifier.padding(innerPadding),
                 )
             Tab.LOGS ->
-                LogsScreen(
-                    logs = state.logs,
-                    modifier = Modifier.padding(innerPadding),
-                )
+                if (state.identity?.user?.isAdmin == true) {
+                    LogsScreen(
+                        logs = state.logs,
+                        modifier = Modifier.padding(innerPadding),
+                    )
+                } else {
+                    ConsoleScreen(
+                        state = state,
+                        viewModel = viewModel,
+                        modifier = Modifier.padding(innerPadding),
+                    )
+                }
             Tab.SETTINGS ->
                 SettingsScreen(
                     state = state,
@@ -245,15 +273,20 @@ private data class NavigationDestination(
 @Composable
 private fun AppNavigation(
     selectedTab: Tab,
+    isAdmin: Boolean,
     onSelect: (Tab) -> Unit,
 ) {
     val destinations =
         listOf(
             NavigationDestination(Tab.CONSOLE, R.string.nav_console, "⌂"),
             NavigationDestination(Tab.USERS, R.string.nav_users, "♙"),
-            NavigationDestination(Tab.LOGS, R.string.nav_logs, "≡"),
-            NavigationDestination(Tab.SETTINGS, R.string.nav_settings, "⚙"),
-        )
+        ) +
+            if (isAdmin) {
+                listOf(NavigationDestination(Tab.LOGS, R.string.nav_logs, "≡"))
+            } else {
+                emptyList()
+            } +
+            NavigationDestination(Tab.SETTINGS, R.string.nav_settings, "⚙")
 
     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
         destinations.forEach { destination ->
