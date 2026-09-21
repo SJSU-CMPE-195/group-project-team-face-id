@@ -1,5 +1,5 @@
 # The Pi Device API owns camera, face-recognition, and ESP32 control at runtime.
-# Picamera2 is installed from Raspberry Pi OS (see install.sh), not from pip.
-flask>=3.0,<4
+# Picamera2 is installed by scripts/install-wireless-pi.sh, not by pip.
+-r requirements-http.txt
 pyserial>=3.5
 -r car_face_auth/requirements.txt

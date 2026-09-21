@@ -176,6 +176,10 @@ class _SimulatedFaceEngine:
 class SimulatedPiRuntime(PiRuntime):
     """A thread-safe, configurable PiRuntime substitute for workstation use."""
 
+    actuator_feedback = "simulated"
+    actuator_control_available = True
+    simulated_actuators = True
+
     def __init__(self, db_api: Any, scenario: dict[str, Any] | None = None, *, serial_connected: bool = True):
         super().__init__(db_api, face_engine=None)
         self._simulation_lock = threading.RLock()

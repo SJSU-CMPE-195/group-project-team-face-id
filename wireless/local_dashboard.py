@@ -78,6 +78,13 @@ def _origin_of(value: str) -> str | None:
 def trusted_dashboard_request(environ: dict, expected_port: int) -> bool:
     """Validate a direct local browser request without forwarded headers."""
 
+    # SERVER_PORT and scheme come from the listener, not client headers.
+    # Never expose the host-browser bridge on the LAN TLS listener.
+    if (
+        environ.get("SERVER_PORT") != str(expected_port)
+        or environ.get("wsgi.url_scheme") != "http"
+    ):
+        return False
     if not _loopback_peer(environ):
         return False
     expected_origin = _request_origin(environ, expected_port)
@@ -133,19 +140,19 @@ class LocalDashboardMiddleware:
         application: WsgiApp,
         *,
         dist_root: Path,
-        pairing_key: str,
         port: int,
     ) -> None:
         self._application = application
         self._dist_root = dist_root.resolve()
-        self._pairing_key = pairing_key
         self._port = port
 
     def __call__(self, environ: dict, start_response: StartResponse):
         path = environ.get("PATH_INFO", "")
         if path.startswith(LOCAL_API_PREFIX):
             return self._bridge_api(environ, start_response)
-        if path == LOCAL_PAIRING_PATH or self._is_backend_path(path):
+        if (path == LOCAL_PAIRING_PATH
+                or path.startswith(("/local/security/", "/local/hardware/"))
+                or self._is_backend_path(path)):
             return self._application(environ, start_response)
         if path.startswith("/local/"):
             response = _json_response("local route not found", 404)
@@ -173,7 +180,8 @@ class LocalDashboardMiddleware:
         if not path.startswith("/api/"):
             response = _json_response("local API route not found", 404)
             return response(environ, start_response)
-        bridged["HTTP_AUTHORIZATION"] = f"Bearer {self._pairing_key}"
+        # WSGI-only marker: client headers cannot create an authenticated actor.
+        bridged["bass.local_dashboard"] = True
         return self._application(bridged, _local_start_response(start_response))
 
     def _serve_dashboard(self, environ: dict, start_response: StartResponse):

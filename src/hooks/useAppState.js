@@ -75,6 +75,7 @@ export default function useAppState() {
 
   const [deviceUsers, setDeviceUsers] = useState([]);
   const [deviceLogs, setDeviceLogs] = useState([]);
+  const [devices, setDevices] = useState([]);
 
   const [simFaceAccessAllowed, setSimFaceAccessAllowed] = useState(() => {
     try {
@@ -151,6 +152,8 @@ export default function useAppState() {
     setDeviceUsers,
     deviceLogs,
     setDeviceLogs,
+    devices,
+    setDevices,
     faceAccessAllowed,
     setFaceAccessAllowed,
     setSimFaceAccessAllowed,

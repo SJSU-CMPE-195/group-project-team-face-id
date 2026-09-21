@@ -5,7 +5,7 @@ import Switch from "./Switch";
 import Btn from "./Btn";
 import DevicePairingCard from "./DevicePairingCard";
 
-export default function SettingsTab({ settings, setSettings, busy, saveSettings }) {
+export default function SettingsTab({ settings, setSettings, busy, saveSettings, isAdmin, livenessAvailable }) {
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
       <Card>
@@ -21,6 +21,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
                 min="0"
                 max="600"
                 value={settings.autoRelockSeconds}
+                disabled={!isAdmin}
                 onChange={(e) =>
                   setSettings((s) => ({ ...s, autoRelockSeconds: Math.max(0, Math.min(600, parseInt(e.target.value || "0", 10))) }))
                 }
@@ -38,6 +39,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
                 min="0"
                 max="1800"
                 value={settings.ignitionAutoStopSeconds}
+                disabled={!isAdmin}
                 onChange={(e) =>
                   setSettings((s) => ({
                     ...s,
@@ -58,6 +60,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
                 min="0"
                 max="600"
                 value={typeof settings.promptAutoLockSeconds === "number" ? settings.promptAutoLockSeconds : 0}
+                disabled={!isAdmin}
                 onChange={(e) =>
                   setSettings((s) => ({
                     ...s,
@@ -73,12 +76,19 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
 
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm font-medium text-slate-200">Liveness detection</div>
-            <Switch ariaLabel="Liveness detection" checked={settings.liveness} onChange={(v) => setSettings((s) => ({ ...s, liveness: v }))} />
+            <Switch ariaLabel="Liveness detection" checked={settings.liveness} disabled={!isAdmin} onChange={(v) => setSettings((s) => ({ ...s, liveness: v }))} />
           </div>
+          {!livenessAvailable && settings.liveness ? (
+            <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs leading-relaxed text-amber-200">
+              Presentation-attack detection is unavailable, so verification is
+              blocked while liveness detection is enabled. An administrator may
+              disable it for prototype testing, with reduced security.
+            </div>
+          ) : null}
 
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm font-medium text-slate-200">Fail lockout</div>
-            <Switch ariaLabel="Fail lockout" checked={settings.failLockout} onChange={(v) => setSettings((s) => ({ ...s, failLockout: v }))} />
+            <Switch ariaLabel="Fail lockout" checked={settings.failLockout} disabled={!isAdmin} onChange={(v) => setSettings((s) => ({ ...s, failLockout: v }))} />
           </div>
 
           <div>
@@ -90,6 +100,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
                 min="1"
                 max="20"
                 value={settings.lockoutAfter}
+                disabled={!isAdmin}
                 onChange={(e) =>
                   setSettings((s) => ({ ...s, lockoutAfter: Math.max(1, Math.min(20, parseInt(e.target.value || "5", 10))) }))
                 }
@@ -97,7 +108,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+          {isAdmin ? <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
             <Btn
               variant="secondary"
               onClick={() =>
@@ -116,11 +127,11 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings 
             <Btn disabled={busy} onClick={saveSettings}>
               Save
             </Btn>
-          </div>
+          </div> : null}
         </div>
       </Card>
 
-      <DevicePairingCard />
+      {isAdmin ? <DevicePairingCard /> : null}
     </div>
   );
 }

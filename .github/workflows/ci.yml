@@ -32,6 +32,22 @@ jobs:
       - name: Build
         run: npm run build
 
+  android-build-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Build and lint Android app
+        working-directory: android-app
+        run: ./gradlew assembleDebug lintDebug --no-daemon --console=plain
+
   python-unit:
     runs-on: ubuntu-latest
     steps:
@@ -40,19 +56,18 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install Python test dependencies
-        run: python -m pip install 'flask>=3,<4'
+        run: python -m pip install -r requirements-http.txt numpy opencv-python-headless qrcode Pillow
       - name: Compile Python sources
         run: >-
           python -m compileall -q
-          db.py db_api.py pi_device_api.py mock_pi_device_api.py
-          car_face_auth/src/pi_runtime.py
-          car_face_auth/src/simulated_runtime.py
-          car_face_auth/src/face_engine.py
-          car_face_auth/src/api_server.py
+          db.py db_api.py safety_policy.py pi_device_api.py mock_pi_device_api.py bass_wireless.py
+          wireless car_face_auth/src scripts
       - name: Validate deployment scripts
         run: |
           bash -n install.sh
-          grep -q 'pi_device_api.py' systemd/faceid-api.service
+          bash -n scripts/install-wireless-pi.sh
+          grep -q 'bass_wireless.py' systemd/faceid-wireless.service
+          test ! -e systemd/faceid-api.service
           test ! -e systemd/faceid-verify.service
       - name: Run Python unit tests
         run: python -B -m unittest discover -s tests -v

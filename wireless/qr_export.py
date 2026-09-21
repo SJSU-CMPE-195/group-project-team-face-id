@@ -13,10 +13,6 @@ import tempfile
 from .config import DeviceConfig
 
 
-def pairing_payload_json(config: DeviceConfig) -> str:
-    return json.dumps(config.pairing_payload, separators=(",", ":"), sort_keys=True)
-
-
 def _write_private(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -34,7 +30,7 @@ def _write_private(path: Path, content: bytes) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def render_pairing_qr(config: DeviceConfig) -> bytes:
+def render_qr_payload(payload: dict[str, object]) -> bytes:
     try:
         import qrcode
         from qrcode.constants import ERROR_CORRECT_Q
@@ -49,12 +45,16 @@ def render_pairing_qr(config: DeviceConfig) -> bytes:
         box_size=10,
         border=4,
     )
-    qr.add_data(pairing_payload_json(config))
+    qr.add_data(json.dumps(payload, separators=(",", ":"), sort_keys=True))
     qr.make(fit=True)
     image = qr.make_image(fill_color="#140d2b", back_color="white")
     image_bytes = BytesIO()
     image.save(image_bytes, format="PNG")
     return image_bytes.getvalue()
+
+
+def render_pairing_qr(config: DeviceConfig) -> bytes:
+    return render_qr_payload(config.pairing_payload)
 
 
 def export_pairing_qr(config: DeviceConfig, output_dir: Path) -> tuple[Path, Path]:

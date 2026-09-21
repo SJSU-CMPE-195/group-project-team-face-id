@@ -1,6 +1,6 @@
 import React from "react";
 
-export default function Btn({ variant = "primary", disabled, onClick, children, title, className = "" }) {
+export default function Btn({ variant = "primary", disabled, onClick, children, title, className = "", type = "button" }) {
   const base =
     "inline-flex min-h-12 items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 sm:min-h-10";
   const styles =
@@ -13,7 +13,7 @@ export default function Btn({ variant = "primary", disabled, onClick, children, 
       : "bg-violet-600 text-white shadow-md shadow-violet-900/35 hover:bg-violet-500";
   return (
     <button
-      type="button"
+      type={type}
       title={title}
       className={[base, styles, className].filter(Boolean).join(" ")}
       disabled={disabled}

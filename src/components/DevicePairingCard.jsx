@@ -110,6 +110,10 @@ export default function DevicePairingCard() {
       <div className="text-sm font-semibold text-slate-100">
         Device pairing
       </div>
+      <p className="mt-2 text-xs leading-relaxed text-slate-400">
+        To pair a phone, choose Users → Pair phone. This fixed QR identifies the
+        host.
+      </p>
 
       {!localBrowser ? (
         <div className="mt-4 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm leading-relaxed text-amber-200">
@@ -169,9 +173,6 @@ export default function DevicePairingCard() {
                 />
               </div>
 
-              <p className="text-center text-xs leading-relaxed text-amber-300/90">
-                Scanning this QR grants control of this device.
-              </p>
             </div>
           )}
         </>

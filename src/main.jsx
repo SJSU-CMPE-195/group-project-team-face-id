@@ -1,8 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
-import App from "./App.jsx";
 import ThemeProvider from "./context/ThemeProvider.jsx";
+import AuthProvider from "./security/AuthProvider.jsx";
+import SecurityGate from "./security/SecurityGate.jsx";
+import HardwareSimulatorProvider from "./hardware/HardwareSimulatorProvider.jsx";
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener(
@@ -19,7 +21,11 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <ThemeProvider>
-      <App />
+      <HardwareSimulatorProvider>
+        <AuthProvider>
+          <SecurityGate />
+        </AuthProvider>
+      </HardwareSimulatorProvider>
     </ThemeProvider>
   </StrictMode>
 );

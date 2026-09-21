@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -28,6 +29,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +43,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -63,9 +67,13 @@ fun UsersScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    var displayName by remember { mutableStateOf("") }
+    val isAdmin = state.identity?.user?.isAdmin == true
+    val isOwner = state.identity?.user?.isOwner == true
+    var newName by remember { mutableStateOf("") }
+    var newPin by remember { mutableStateOf("") }
+    var newIsAdmin by remember { mutableStateOf(false) }
     var selectedSource by remember { mutableStateOf(CameraSource.PHONE) }
-    var pendingName by remember { mutableStateOf<String?>(null) }
+    var pendingUserId by remember { mutableStateOf<String?>(null) }
     var permissionDenied by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<User?>(null) }
     val cameraPermission = Manifest.permission.CAMERA
@@ -73,10 +81,10 @@ fun UsersScreen(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         permissionDenied = !granted
-        val name = pendingName
-        pendingName = null
-        if (granted && name != null) {
-            viewModel.addAndStartEnrollment(name, CameraSource.PHONE)
+        val userId = pendingUserId
+        pendingUserId = null
+        if (granted && userId != null) {
+            viewModel.startEnrollment(userId, CameraSource.PHONE)
         }
     }
     val hasCameraPermission =
@@ -95,14 +103,38 @@ fun UsersScreen(
         }
     }
 
-    fun startEnrollment(name: String) {
-        val cleanName = name.trim()
-        if (cleanName.isEmpty()) return
+    DisposableEffect(Unit) {
+        onDispose {
+            newName = ""
+            newPin = ""
+            newIsAdmin = false
+            pendingUserId = null
+        }
+    }
+    LaunchedEffect(isOwner) {
+        if (!isOwner) newIsAdmin = false
+    }
+    val inviteMaterial = state.inviteMaterial
+    val inviteExportLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) {
+            uri ->
+            if (uri != null && inviteMaterial != null) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use {
+                        it.write(inviteMaterial.content)
+                    } ?: error("Could not open selected document")
+                }.onSuccess { viewModel.clearInviteMaterial() }
+                    .onFailure { viewModel.materialExportFailed() }
+            }
+        }
+
+    fun startEnrollment(userId: String) {
+        if (!isAdmin) return
         permissionDenied = false
         if (selectedSource == CameraSource.DEVICE || hasCameraPermission) {
-            viewModel.addAndStartEnrollment(cleanName, selectedSource)
+            viewModel.startEnrollment(userId, selectedSource)
         } else {
-            pendingName = cleanName
+            pendingUserId = userId
             permissionLauncher.launch(cameraPermission)
         }
     }
@@ -112,19 +144,34 @@ fun UsersScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item {
-            EnrollmentCard(
-                state = state,
-                displayName = displayName,
-                selectedSource = selectedSource,
-                permissionDenied = permissionDenied,
-                onDisplayNameChange = { displayName = it },
-                onSourceSelected = { selectedSource = it },
-                onStart = { startEnrollment(displayName) },
-                onCancel = viewModel::cancelActiveSession,
-                onFrame = viewModel::submitEnrollmentSample,
-                onCameraError = viewModel::cameraError,
-            )
+        if (isAdmin) {
+            item {
+                AdminControlsCard(
+                    state = state,
+                    newName = newName,
+                    newPin = newPin,
+                    newIsAdmin = newIsAdmin,
+                    selectedSource = selectedSource,
+                    permissionDenied = permissionDenied,
+                    onNameChange = { newName = it.take(128) },
+                    onPinChange = { raw -> newPin = raw.filter(Char::isDigit).take(6) },
+                    onAdminChange = { newIsAdmin = it },
+                    canCreateAdmin = isOwner,
+                    onCreate = {
+                        val submittedPin = newPin.toCharArray()
+                        val submittedName = newName
+                        newName = ""
+                        newPin = ""
+                        val submittedIsAdmin = newIsAdmin
+                        newIsAdmin = false
+                        viewModel.createUser(submittedName, submittedPin, submittedIsAdmin)
+                    },
+                    onSourceSelected = { selectedSource = it },
+                    onCancel = viewModel::cancelActiveSession,
+                    onFrame = viewModel::submitEnrollmentSample,
+                    onCameraError = viewModel::cameraError,
+                )
+            }
         }
 
         item {
@@ -156,14 +203,17 @@ fun UsersScreen(
             UserCard(
                 user = user,
                 busy = state.busy,
+                isAdmin = isAdmin,
+                isOwner = isOwner,
                 onAccessChange = { viewModel.setUserAccess(user.id, it) },
-                onEnroll = { startEnrollment(user.name) },
+                onEnroll = { startEnrollment(user.id) },
                 onRemove = { deleteTarget = user },
+                onInvite = { viewModel.createPairingInvite(user.id) },
             )
         }
     }
 
-    deleteTarget?.let { user ->
+    if (isAdmin) deleteTarget?.let { user ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text(stringResource(R.string.users_remove_title, user.name)) },
@@ -188,17 +238,39 @@ fun UsersScreen(
             },
         )
     }
+    inviteMaterial?.let { material ->
+        AlertDialog(
+            onDismissRequest = viewModel::clearInviteMaterial,
+            title = { Text(stringResource(R.string.invite_ready_title)) },
+            text = { Text(stringResource(R.string.invite_ready_description)) },
+            confirmButton = {
+                TextButton(onClick = { inviteExportLauncher.launch(material.fileName) }) {
+                    Text(stringResource(R.string.invite_save_action))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::clearInviteMaterial) {
+                    Text(stringResource(R.string.action_close))
+                }
+            },
+        )
+    }
 }
 
 @Composable
-private fun EnrollmentCard(
+private fun AdminControlsCard(
     state: BassState,
-    displayName: String,
+    newName: String,
+    newPin: String,
+    newIsAdmin: Boolean,
     selectedSource: CameraSource,
     permissionDenied: Boolean,
-    onDisplayNameChange: (String) -> Unit,
+    onNameChange: (String) -> Unit,
+    onPinChange: (String) -> Unit,
+    onAdminChange: (Boolean) -> Unit,
+    canCreateAdmin: Boolean,
+    onCreate: () -> Unit,
     onSourceSelected: (CameraSource) -> Unit,
-    onStart: () -> Unit,
     onCancel: () -> Unit,
     onFrame: (ByteArray) -> Unit,
     onCameraError: (String) -> Unit,
@@ -216,6 +288,45 @@ private fun EnrollmentCard(
                 )
             },
         )
+
+        OutlinedTextField(
+            value = newName,
+            onValueChange = onNameChange,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !enrolling && !state.busy,
+            singleLine = true,
+            label = { Text(stringResource(R.string.users_display_name)) },
+            placeholder = { Text(stringResource(R.string.users_display_name_hint)) },
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(stringResource(R.string.users_make_admin))
+            Switch(
+                checked = newIsAdmin,
+                enabled = canCreateAdmin && !enrolling && !state.busy,
+                onCheckedChange = onAdminChange,
+            )
+        }
+        OutlinedTextField(
+            value = newPin,
+            onValueChange = onPinChange,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !enrolling && !state.busy,
+            singleLine = true,
+            label = { Text(stringResource(R.string.users_new_pin)) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            visualTransformation = PasswordVisualTransformation(),
+        )
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !enrolling && !state.busy && newName.isNotBlank() && newPin.length == 6,
+            onClick = onCreate,
+        ) {
+            Text(stringResource(R.string.action_add_user))
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -248,16 +359,6 @@ private fun EnrollmentCard(
                 },
             )
         }
-
-        OutlinedTextField(
-            value = displayName,
-            onValueChange = onDisplayNameChange,
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !enrolling,
-            singleLine = true,
-            label = { Text(stringResource(R.string.users_display_name)) },
-            placeholder = { Text(stringResource(R.string.users_display_name_hint)) },
-        )
 
         if (
             enrolling &&
@@ -319,17 +420,6 @@ private fun EnrollmentCard(
             ) {
                 Text(stringResource(R.string.action_cancel))
             }
-        } else {
-            Button(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !state.busy && displayName.isNotBlank() && when (selectedSource) {
-                    CameraSource.PHONE -> state.capabilities.clientCamera
-                    CameraSource.DEVICE -> state.capabilities.deviceCamera
-                },
-                onClick = onStart,
-            ) {
-                Text(stringResource(R.string.action_add_enroll))
-            }
         }
 
         if (permissionDenied) {
@@ -351,15 +441,20 @@ private fun EnrollmentCard(
 private fun UserCard(
     user: User,
     busy: Boolean,
+    isAdmin: Boolean,
+    isOwner: Boolean,
     onAccessChange: (Boolean) -> Unit,
     onEnroll: () -> Unit,
     onRemove: () -> Unit,
+    onInvite: () -> Unit,
 ) {
-    val added = DateUtils.getRelativeTimeSpanString(
-        user.createdAtMillis,
-        System.currentTimeMillis(),
-        DateUtils.MINUTE_IN_MILLIS,
-    ).toString()
+    val context = LocalContext.current
+    val added =
+        DateUtils.getRelativeTimeSpanString(
+            context,
+            user.createdAtMillis,
+            false,
+        ).toString()
 
     BassCard {
         Row(
@@ -382,14 +477,27 @@ private fun UserCard(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            StatusChip(
-                text = if (user.enrolled) {
-                    stringResource(R.string.status_enrolled)
-                } else {
-                    stringResource(R.string.status_not_enrolled)
-                },
-                tone = if (user.enrolled) ChipTone.SUCCESS else ChipTone.WARNING,
-            )
+            Column(horizontalAlignment = Alignment.End) {
+                if (user.isOwner) {
+                    StatusChip(
+                        text = stringResource(R.string.users_owner),
+                        tone = ChipTone.SUCCESS,
+                    )
+                } else if (user.isAdmin) {
+                    StatusChip(
+                        text = stringResource(R.string.users_admin),
+                        tone = ChipTone.INFO,
+                    )
+                }
+                StatusChip(
+                    text = if (user.enrolled) {
+                        stringResource(R.string.status_enrolled)
+                    } else {
+                        stringResource(R.string.status_not_enrolled)
+                    },
+                    tone = if (user.enrolled) ChipTone.SUCCESS else ChipTone.WARNING,
+                )
+            }
         }
 
         Row(
@@ -406,14 +514,23 @@ private fun UserCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )
-            Switch(
-                checked = user.faceAccess,
-                enabled = !busy,
-                onCheckedChange = onAccessChange,
-            )
+            if (isAdmin && !user.isOwner) {
+                Switch(
+                    checked = user.faceAccess,
+                    enabled = !busy,
+                    onCheckedChange = onAccessChange,
+                )
+            }
         }
 
-        if (!user.enrolled) {
+        if (isAdmin && (!user.isOwner || isOwner)) {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy,
+                onClick = onInvite,
+            ) {
+                Text(stringResource(R.string.users_phone_invite))
+            }
             Button(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !busy,
@@ -421,16 +538,18 @@ private fun UserCard(
             ) {
                 Text(stringResource(R.string.action_enroll_face))
             }
-        }
-        OutlinedButton(
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-            onClick = onRemove,
-        ) {
-            Text(
-                text = stringResource(R.string.action_remove),
-                color = MaterialTheme.colorScheme.error,
-            )
+            if (!user.isOwner) {
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                    onClick = onRemove,
+                ) {
+                    Text(
+                        text = stringResource(R.string.action_remove),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
         }
     }
 }

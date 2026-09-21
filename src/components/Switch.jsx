@@ -1,11 +1,12 @@
 import React from "react";
 
-export default function Switch({ checked, onChange, ariaLabel }) {
+export default function Switch({ checked, onChange, ariaLabel, disabled = false }) {
   return (
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className="flex h-12 w-14 shrink-0 items-center justify-center rounded-xl"
+      disabled={disabled}
+      className="flex h-12 w-14 shrink-0 items-center justify-center rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
       aria-pressed={checked}
       aria-label={ariaLabel}
     >

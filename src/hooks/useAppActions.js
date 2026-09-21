@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef } from "react";
 import { genId } from "../utils/helpers";
+import useSecurity from "../security/useSecurity.js";
+import useOperationGrant from "../security/useOperationGrant.js";
+import { resolveRuntimeCapabilities } from "../utils/actuatorStatus.js";
 
 export default function useAppActions(state) {
+  const { user } = useSecurity();
+  const { requestGrant } = useOperationGrant();
   const {
     mode,
     baseUrl,
@@ -10,12 +15,12 @@ export default function useAppActions(state) {
     setSim,
     setStatus,
     api,
-    name,
-    setName,
+    status,
     settings,
     setSettings,
     setDeviceUsers,
     setDeviceLogs,
+    setDevices,
     faceApiUrl,
     sim,
     deviceUsers,
@@ -24,6 +29,12 @@ export default function useAppActions(state) {
   const simRelockTimerRef = useRef(null);
   const simIgnitionStopTimerRef = useRef(null);
   const deviceIgnitionStopCheckTimerRef = useRef(null);
+  const { simulatedActuators, physicalStateConfirmed } =
+    resolveRuntimeCapabilities({
+      mode,
+      runtime: status?.runtime,
+      capabilities: status?.capabilities,
+    });
 
   const clearSimRelockTimer = useCallback(() => {
     if (simRelockTimerRef.current) {
@@ -92,16 +103,21 @@ export default function useAppActions(state) {
     const silent = !!opts.silent;
     setBusy(true);
     try {
-      const s = await api.status();
-      setStatus(s);
+      const [status, deviceInfo] = await Promise.all([
+        api.status(),
+        api.deviceInfo(),
+      ]);
+      setStatus({ ...status, capabilities: deviceInfo.capabilities });
       if (mode === "device") {
-        const [users, logs, remoteSettings] = await Promise.all([
+        const [users, logs, remoteSettings, devices] = await Promise.all([
           api.users(),
-          api.logs(),
+          user.is_admin ? api.logs() : Promise.resolve([]),
           api.getSettings(),
+          user.is_admin ? api.devices() : Promise.resolve([]),
         ]);
         setDeviceUsers(users);
         setDeviceLogs(logs);
+        setDevices(devices);
         setSettings((prev) => ({ ...prev, ...remoteSettings }));
       }
       if (!silent) {
@@ -178,10 +194,20 @@ export default function useAppActions(state) {
           logs: [{ id: genId("log"), ts: Date.now(), type: "lock", ok: true, detail: "Locked (sim)" }, ...s.logs].slice(0, 80),
         }));
       } else {
-        await api.lock();
+        const grant = await requestGrant("device.lock", "", "lock device");
+        if (!grant) return false;
+        await api.lock(grant);
       }
       await refresh({ silent: true });
-      popToast("ok", "Locked", "Device reports locked.");
+      popToast(
+        "ok",
+        simulatedActuators ? "Simulation updated" : "Lock command accepted",
+        simulatedActuators
+          ? "Simulated lock state is locked."
+          : physicalStateConfirmed
+            ? "Physical lock state is confirmed."
+            : "Physical lock position remains unconfirmed.",
+      );
       return true;
     } catch (e) {
       popToast("err", "Lock failed", e.message);
@@ -191,30 +217,28 @@ export default function useAppActions(state) {
     }
   };
 
-  const addUser = async () => {
-    const n = name.trim();
-    if (!n) return popToast("err", "Name required", "Please enter a user name.");
-    setBusy(true);
-    try {
-      await api.addUser(n);
-      setName("");
-      if (mode === "device") await refresh({ silent: true });
-      popToast("ok", "Enrolled", `Added ${n}`);
-    } catch (e) {
-      popToast("err", "Enroll failed", e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const doIgnitionStop = async () => {
     setBusy(true);
     try {
-      await api.ignitionStop();
+      const grant = await requestGrant(
+        "ignition.stop",
+        "",
+        "stop ignition",
+      );
+      if (!grant) return false;
+      await api.ignitionStop(grant);
       if (mode === "sim") clearSimIgnitionStopTimer();
       if (mode === "device") clearDeviceIgnitionStopCheckTimer();
       await refresh({ silent: true });
-      popToast("ok", "Ignition", "Ignition stopped.");
+      popToast(
+        "ok",
+        simulatedActuators ? "Simulation updated" : "Stop command accepted",
+        simulatedActuators
+          ? "Simulated ignition is stopped."
+          : physicalStateConfirmed
+            ? "Physical ignition stop is confirmed."
+            : "Physical ignition state remains unconfirmed.",
+      );
       return true;
     } catch (e) {
       popToast("err", "Ignition stop failed", e.message);
@@ -230,9 +254,19 @@ export default function useAppActions(state) {
       clearSimRelockTimer();
       clearSimIgnitionStopTimer();
       clearDeviceIgnitionStopCheckTimer();
-      await api.fullReset();
+      const grant = await requestGrant("device.reset", "", "full reset");
+      if (!grant) return false;
+      await api.fullReset(grant);
       await refresh({ silent: true });
-      popToast("ok", "Full reset", "Ignition stopped and lock engaged.");
+      popToast(
+        "ok",
+        simulatedActuators ? "Simulation reset" : "Reset command accepted",
+        simulatedActuators
+          ? "Simulated ignition stopped and lock engaged."
+          : physicalStateConfirmed
+            ? "Physical stop and lock state are confirmed."
+            : "Physical lock and ignition states remain unconfirmed.",
+      );
       return true;
     } catch (e) {
       popToast("err", "Full reset failed", e.message);
@@ -243,15 +277,17 @@ export default function useAppActions(state) {
   };
 
   /** Register user on device/sim without clearing the name field or toasting (for combined face enroll flow). */
-  const addUserToDirectory = async (displayName) => {
+  const addUserToDirectory = async (displayName, pin, isAdmin = false) => {
     const n = displayName.trim();
     if (!n) throw new Error("Name required");
-    const user = await api.addUser(n);
+    const grant = await requestGrant("user.create", "", "create user");
+    if (!grant) return null;
+    const createdUser = await api.addUser(n, pin, isAdmin, grant);
     if (mode === "device") {
       const users = await api.users();
       setDeviceUsers(users);
     }
-    return user;
+    return createdUser;
   };
 
   const delUser = async (id) => {
@@ -286,7 +322,9 @@ export default function useAppActions(state) {
         }
       }
 
-      await api.delUser(id);
+      const grant = await requestGrant("user.delete", id, "remove user");
+      if (!grant) return;
+      await api.delUser(id, grant);
       if (mode === "sim" && displayName) {
         setSimFaceAccessAllowed((prev) => {
           const next = { ...prev };
@@ -306,7 +344,13 @@ export default function useAppActions(state) {
   const saveSettings = async () => {
     setBusy(true);
     try {
-      await api.saveSettings(settings);
+      const grant = await requestGrant(
+        "settings.update",
+        "",
+        "save settings",
+      );
+      if (!grant) return;
+      await api.saveSettings(settings, grant);
       if (mode === "device") await refresh({ silent: true });
       popToast("ok", "Saved", "Settings updated.");
     } catch (e) {
@@ -321,7 +365,6 @@ export default function useAppActions(state) {
     doLock,
     doIgnitionStop,
     doFullReset,
-    addUser,
     addUserToDirectory,
     delUser,
     saveSettings,

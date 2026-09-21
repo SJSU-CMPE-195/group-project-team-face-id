@@ -6,10 +6,21 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=pi
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 WorkingDirectory="/home/pi/faceid/group-project-team-face-id-main"
 Environment="BASS_RUNTIME_MODE=pi"
 Environment="BASS_HOST=0.0.0.0"
 Environment="BASS_PORT=5056"
+Environment="BASS_DASHBOARD_PORT=5057"
+Environment="BASS_OPENSSL=/usr/bin/openssl"
 Environment="BASS_DEVICE_CONFIG=/home/pi/faceid/device.json"
 Environment="FACEID_DB_PATH=/home/pi/faceid/faceid.db"
 Environment="PYTHONUNBUFFERED=1"

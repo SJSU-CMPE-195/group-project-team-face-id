@@ -10,6 +10,8 @@ import subprocess
 import threading
 from typing import Callable, Iterable
 
+from .config import API_PROTOCOL_VERSION
+
 
 SERVICE_TYPE = "_bass._tcp.local."
 PRIVATE_NETWORKS = tuple(
@@ -161,7 +163,8 @@ class MdnsAdvertiser:
             port=self._port,
             properties={
                 b"device_id": self._device_id.encode("ascii"),
-                b"protocol_version": b"1",
+                b"protocol_version": str(API_PROTOCOL_VERSION).encode("ascii"),
+                b"transport": b"https",
             },
             server=host_name,
         )

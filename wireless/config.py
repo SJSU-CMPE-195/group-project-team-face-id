@@ -13,7 +13,9 @@ import tempfile
 import uuid
 
 
-PROTOCOL_VERSION = 1
+CONFIG_VERSION = 1
+PROTOCOL_VERSION = 3
+API_PROTOCOL_VERSION = 3
 PAIRING_KEY_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -27,13 +29,19 @@ class DeviceConfig:
     device_id: str
     pairing_key: str
     name: str
+    tls_certificate_sha256: str | None = None
 
     @property
     def pairing_payload(self) -> dict[str, object]:
+        if not self.tls_certificate_sha256:
+            raise DeviceConfigError(
+                "Provision the host TLS certificate before exporting its QR."
+            )
         return {
-            "version": self.version,
+            "version": PROTOCOL_VERSION,
             "device_id": self.device_id,
-            "pairing_key": self.pairing_key,
+            "purpose": "device",
+            "tls_certificate_sha256": self.tls_certificate_sha256,
         }
 
 
@@ -70,9 +78,9 @@ def read_device_config(
 
     if not isinstance(raw, dict):
         raise DeviceConfigError(f"device config must be a JSON object: {path}")
-    if raw.get("version") != PROTOCOL_VERSION:
+    if raw.get("version") != CONFIG_VERSION:
         raise DeviceConfigError(
-            f"device config version must be {PROTOCOL_VERSION}: {path}"
+            f"device config version must be {CONFIG_VERSION}: {path}"
         )
 
     device_id = raw.get("device_id")
@@ -125,7 +133,9 @@ def load_or_create_device_config(path: Path | None = None) -> DeviceConfig:
     encoded = (
         json.dumps(
             {
-                **config.pairing_payload,
+                "version": CONFIG_VERSION,
+                "device_id": config.device_id,
+                "pairing_key": config.pairing_key,
                 "name": config.name,
             },
             indent=2,

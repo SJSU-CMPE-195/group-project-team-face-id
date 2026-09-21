@@ -4,10 +4,16 @@ param(
     [string]$Mode = "pc",
     [ValidateRange(1, 65535)]
     [int]$Port = 5056,
-    [string[]]$AdvertiseAddress = @()
+    [ValidateRange(1, 65535)]
+    [int]$DashboardPort = $(if ($env:BASS_DASHBOARD_PORT) { [int]$env:BASS_DASHBOARD_PORT } else { 5057 }),
+    [string[]]$AdvertiseAddress = @(),
+    [switch]$HardwareSimulator
 )
 
 $ErrorActionPreference = "Stop"
+if ($HardwareSimulator -and $Mode -ne "pc") {
+    throw "Hardware simulation requires PC development mode."
+}
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvDir = Join-Path $repoRoot ".venv-wireless"
 $wirelessPython = Join-Path $venvDir "Scripts\python.exe"
@@ -23,7 +29,22 @@ if (-not (Test-Path -LiteralPath $wirelessPython)) {
     }
 }
 
-& $wirelessPython -c "import flask, cv2, insightface, onnxruntime, qrcode, zeroconf" 2>$null
+$httpRequirements = Join-Path $repoRoot "requirements-http.txt"
+$dependencyProbe = @'
+import sys
+from pathlib import Path
+from importlib.metadata import version
+import flask, cv2, insightface, onnxruntime, qrcode, zeroconf, cheroot, OpenSSL
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    requirement = line.strip()
+    if not requirement or requirement.startswith("#"):
+        continue
+    package, expected = requirement.split("==", 1)
+    if version(package) != expected:
+        raise RuntimeError(f"{package} requires {expected}")
+'@
+$dependencyProbe | & $wirelessPython - $httpRequirements 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing missing wireless host dependencies..."
     & $wirelessPython -m pip install -r $requirements
@@ -44,10 +65,14 @@ $launcherArguments = @(
     $entrypoint,
     "--mode", $Mode,
     "--host", "0.0.0.0",
-    "--port", $Port
+    "--port", $Port,
+    "--dashboard-port", $DashboardPort
 )
 foreach ($address in $AdvertiseAddress) {
     $launcherArguments += @("--advertise-address", $address)
+}
+if ($HardwareSimulator) {
+    $launcherArguments += "--hardware-simulator"
 }
 
 Push-Location $repoRoot

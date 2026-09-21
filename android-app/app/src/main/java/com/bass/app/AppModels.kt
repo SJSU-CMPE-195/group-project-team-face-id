@@ -11,6 +11,7 @@ enum class ConnectionPhase {
     UNPAIRED,
     DISCOVERING,
     CONNECTING,
+    SIGN_IN_REQUIRED,
     CONNECTED,
     UNAUTHORIZED,
     OFFLINE,
@@ -31,16 +32,36 @@ enum class CameraSource {
 }
 
 enum class PinStage {
-    CREATE,
-    CONFIRM,
     VERIFY,
 }
 
+enum class CommissioningPurpose(val wireValue: String) {
+    DEVICE("device"),
+    ACTIVATION("activation"),
+    RECOVERY("recovery"),
+    TRANSFER("transfer"),
+}
+
+data class CommissioningPrompt(
+    val purpose: CommissioningPurpose,
+    val busy: Boolean = false,
+)
+
+data class ExportMaterial(
+    val fileName: String,
+    val content: String,
+)
+
 enum class PinPurpose {
-    PAIR,
+    LOGIN,
     ENROLL,
     UNLOCK,
-    SETUP,
+    IGNITION,
+    USER_ADMIN,
+    SETTINGS,
+    LOCK,
+    STOP_IGNITION,
+    RESET,
 }
 
 data class PinPrompt(
@@ -57,7 +78,7 @@ data class DeviceInfo(
     val id: String,
     val name: String,
     val address: String,
-    val protocolVersion: Int = 1,
+    val protocolVersion: Int = 3,
 )
 
 data class DeviceStatus(
@@ -67,12 +88,18 @@ data class DeviceStatus(
     val signal: Int? = null,
     val online: Boolean = true,
     val simulatedActuator: Boolean = false,
+    val actuatorControlAvailable: Boolean = false,
+    val actuatorFeedback: String = "unavailable",
+    val physicalStateConfirmed: Boolean = false,
 )
 
 data class Capabilities(
     val clientCamera: Boolean = false,
     val deviceCamera: Boolean = false,
     val simulatedActuator: Boolean = false,
+    val livenessAvailable: Boolean = false,
+    val actuatorControlAvailable: Boolean = false,
+    val actuatorFeedback: String = "unavailable",
 )
 
 data class User(
@@ -81,6 +108,20 @@ data class User(
     val faceAccess: Boolean,
     val enrolled: Boolean,
     val createdAtMillis: Long,
+    val isAdmin: Boolean = false,
+    val isOwner: Boolean = false,
+)
+
+data class SessionUser(
+    val id: String,
+    val name: String,
+    val isAdmin: Boolean,
+    val isOwner: Boolean = false,
+)
+
+data class SessionIdentity(
+    val user: SessionUser,
+    val deviceId: String,
 )
 
 data class FaceStatus(val enrolledNames: List<String> = emptyList(), val count: Int = 0)
@@ -107,6 +148,13 @@ data class BassState(
     val showForgetDeviceDialog: Boolean = false,
     val forgetDeviceError: String? = null,
     val phase: ConnectionPhase = ConnectionPhase.UNPAIRED,
+    val pairingCredentialsRequired: Boolean = false,
+    val pairingInviteReady: Boolean = false,
+    val commissioningPrompt: CommissioningPrompt? = null,
+    val exportMaterial: ExportMaterial? = null,
+    val inviteMaterial: ExportMaterial? = null,
+    val transferPending: Boolean = false,
+    val identity: SessionIdentity? = null,
     val device: DeviceInfo? = null,
     val status: DeviceStatus? = null,
     val capabilities: Capabilities = Capabilities(),
@@ -125,3 +173,6 @@ data class BassState(
     val error: String? = null,
     val selectedTab: Tab = Tab.CONSOLE,
 )
+
+internal val BassState.canControlActuators: Boolean
+    get() = status?.actuatorControlAvailable ?: capabilities.actuatorControlAvailable
