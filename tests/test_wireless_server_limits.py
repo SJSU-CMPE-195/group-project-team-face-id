@@ -306,17 +306,56 @@ class WirelessServerLimitTests(unittest.TestCase):
                 connection.close()
 
     def test_worker_queue_and_overflow_path_are_bounded(self):
-        limits = self.limits(threads=2, accepted_connections=1)
+        limits = self.limits(
+            threads=2,
+            accepted_connections=1,
+            timeout_seconds=3,
+        )
         with self.running_server(limits=limits) as (server, port):
-            clients = [
-                socket.create_connection(("127.0.0.1", port), timeout=1)
-                for _ in range(12)
-            ]
-            self.addCleanup(lambda: [client.close() for client in clients])
-            time.sleep(0.1)
-            self.assertEqual(len(server.requests._threads), limits.threads)
-            self.assertLessEqual(server.requests.qsize, limits.accepted_connections)
-            self.assertEqual(server._unservicable_conns.qsize(), 0)
+            clients = []
+            try:
+                for _ in range(limits.threads):
+                    clients.append(
+                        socket.create_connection(("127.0.0.1", port), timeout=1)
+                    )
+                deadline = time.monotonic() + 1
+                while server.requests.idle and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(server.requests.idle, 0)
+
+                clients.append(
+                    socket.create_connection(("127.0.0.1", port), timeout=1)
+                )
+                deadline = time.monotonic() + 1
+                while server.requests.qsize < limits.accepted_connections and (
+                    time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                self.assertEqual(
+                    server.requests.qsize,
+                    limits.accepted_connections,
+                )
+
+                overflow = socket.create_connection(
+                    ("127.0.0.1", port),
+                    timeout=1,
+                )
+                clients.append(overflow)
+                overflow.settimeout(1)
+                try:
+                    self.assertEqual(overflow.recv(1), b"")
+                except ConnectionResetError:
+                    pass
+
+                self.assertEqual(len(server.requests._threads), limits.threads)
+                self.assertLessEqual(
+                    server.requests.qsize,
+                    limits.accepted_connections,
+                )
+                self.assertEqual(server._unservicable_conns.qsize(), 0)
+            finally:
+                for client in clients:
+                    client.close()
 
     def test_overflow_connection_is_closed_without_503_queue(self):
         class FullRequests:

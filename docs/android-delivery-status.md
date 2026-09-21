@@ -10,8 +10,13 @@ live listener checks and USB package-manager evidence. Plans remain untracked,
 including `pin-return-plan.md` and `security-publication-plan.md`.
 
 The Gradle wrapper's executable bit is included so the new Ubuntu Android CI job
-can run `./gradlew`. PR checks and merge are not yet observed in this preparation
-snapshot; inspect the GitHub PR for their subsequent result.
+can run `./gradlew`. The first run of [PR #7](https://github.com/SJSU-CMPE-195/group-project-team-face-id/pull/7)
+passed Web lint/build. Android SDK setup requested the removed `tools` package;
+the workflow now explicitly requests `platform-tools`. Python passed 223 tests
+and failed one connection-limit test on a Linux socket timeout. That test now
+fills workers and the accepted queue in order, verifies overflow closure and
+closes sockets on every exit; the 11-test module passes locally. The corrections
+require fresh CI; inspect the PR for its subsequent checks and merge result.
 
 ## Returning account login
 
