@@ -49,7 +49,16 @@ class LocalSessions:
                     raise SecurityError("invalid_csrf", 403, "Refresh the dashboard and try again.")
         # Do not hold the session lock while acquiring the shared product
         # barrier: a concurrent login/reset takes these locks in that order.
-        return self.security.principal(session.device_token), session
+        try:
+            principal = self.security.principal(session.device_token)
+        except SecurityError as exc:
+            if exc.status == 401:
+                # A rejected credential must not leave a stale CSRF gate behind.
+                with self._lock:
+                    if self._sessions.get(cookie) is session:
+                        self._sessions.pop(cookie, None)
+            raise
+        return principal, session
 
     def register(self, app):
         @app.get("/local/security/status")

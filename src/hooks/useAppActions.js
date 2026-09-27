@@ -29,12 +29,11 @@ export default function useAppActions(state) {
   const simRelockTimerRef = useRef(null);
   const simIgnitionStopTimerRef = useRef(null);
   const deviceIgnitionStopCheckTimerRef = useRef(null);
-  const { simulatedActuators, physicalStateConfirmed } =
-    resolveRuntimeCapabilities({
-      mode,
-      runtime: status?.runtime,
-      capabilities: status?.capabilities,
-    });
+  const { simulatedActuators } = resolveRuntimeCapabilities({
+    mode,
+    runtime: status?.runtime,
+    capabilities: status?.capabilities,
+  });
 
   const clearSimRelockTimer = useCallback(() => {
     if (simRelockTimerRef.current) {
@@ -103,11 +102,15 @@ export default function useAppActions(state) {
     const silent = !!opts.silent;
     setBusy(true);
     try {
-      const [status, deviceInfo] = await Promise.all([
+      const [remoteStatus, deviceInfo] = await Promise.all([
         api.status(),
         api.deviceInfo(),
       ]);
-      setStatus({ ...status, capabilities: deviceInfo.capabilities });
+      const refreshedStatus = {
+        ...remoteStatus,
+        capabilities: deviceInfo.capabilities,
+      };
+      setStatus(refreshedStatus);
       if (mode === "device") {
         const [users, logs, remoteSettings, devices] = await Promise.all([
           api.users(),
@@ -123,9 +126,11 @@ export default function useAppActions(state) {
       if (!silent) {
         popToast("ok", "Refreshed", mode === "device" ? `Connected to ${baseUrl}` : "Simulation updated");
       }
+      return refreshedStatus;
     } catch (e) {
       setStatus((p) => ({ ...p, online: false }));
-      popToast("err", "Connection failed", e.message);
+      if (!silent) popToast("err", "Connection failed", e.message);
+      return null;
     } finally {
       setBusy(false);
     }
@@ -186,6 +191,7 @@ export default function useAppActions(state) {
       if (mode === "device") {
         clearDeviceIgnitionStopCheckTimer();
       }
+      let result = null;
       if (mode === "sim") {
         setSim((s) => ({
           ...s,
@@ -196,20 +202,38 @@ export default function useAppActions(state) {
       } else {
         const grant = await requestGrant("device.lock", "", "lock device");
         if (!grant) return false;
-        await api.lock(grant);
+        result = await api.lock(grant);
       }
-      await refresh({ silent: true });
+      const refreshed = await refresh({ silent: true });
       popToast(
-        "ok",
-        simulatedActuators ? "Simulation updated" : "Lock command accepted",
-        simulatedActuators
-          ? "Simulated lock state is locked."
-          : physicalStateConfirmed
+        refreshed ? "ok" : "info",
+        simulatedActuators && refreshed
+          ? "Simulation updated"
+          : "Lock command accepted",
+        !refreshed
+          ? "Command accepted, but updated device state could not be refreshed."
+          : simulatedActuators
+            ? "Simulated lock state is locked."
+            : result?.physical_state_confirmed === true
             ? "Physical lock state is confirmed."
-            : "Physical lock position remains unconfirmed.",
+              : "Physical lock position remains unconfirmed.",
       );
       return true;
     } catch (e) {
+      if (e.payload?.command_sent === true && e.payload?.locked === true) {
+        clearSimRelockTimer();
+        clearSimIgnitionStopTimer();
+        clearDeviceIgnitionStopCheckTimer();
+        const refreshed = await refresh({ silent: true });
+        popToast(
+          "info",
+          "Lock commands sent",
+          `The device accepted stop and lock, but ${e.message}.${
+            refreshed ? "" : " Updated device state could not be refreshed."
+          }`,
+        );
+        return true;
+      }
       popToast("err", "Lock failed", e.message);
       return false;
     } finally {
@@ -226,18 +250,22 @@ export default function useAppActions(state) {
         "stop ignition",
       );
       if (!grant) return false;
-      await api.ignitionStop(grant);
+      const result = await api.ignitionStop(grant);
       if (mode === "sim") clearSimIgnitionStopTimer();
       if (mode === "device") clearDeviceIgnitionStopCheckTimer();
-      await refresh({ silent: true });
+      const refreshed = await refresh({ silent: true });
       popToast(
-        "ok",
-        simulatedActuators ? "Simulation updated" : "Stop command accepted",
-        simulatedActuators
-          ? "Simulated ignition is stopped."
-          : physicalStateConfirmed
+        refreshed ? "ok" : "info",
+        simulatedActuators && refreshed
+          ? "Simulation updated"
+          : "Stop command accepted",
+        !refreshed
+          ? "Command accepted, but updated device state could not be refreshed."
+          : simulatedActuators
+            ? "Simulated ignition is stopped."
+            : result?.physical_state_confirmed === true
             ? "Physical ignition stop is confirmed."
-            : "Physical ignition state remains unconfirmed.",
+              : "Physical ignition state remains unconfirmed.",
       );
       return true;
     } catch (e) {
@@ -251,24 +279,42 @@ export default function useAppActions(state) {
   const doFullReset = async () => {
     setBusy(true);
     try {
+      const grant = await requestGrant("device.reset", "", "full reset");
+      if (!grant) return false;
+      const result = await api.fullReset(grant);
       clearSimRelockTimer();
       clearSimIgnitionStopTimer();
       clearDeviceIgnitionStopCheckTimer();
-      const grant = await requestGrant("device.reset", "", "full reset");
-      if (!grant) return false;
-      await api.fullReset(grant);
-      await refresh({ silent: true });
+      const refreshed = await refresh({ silent: true });
       popToast(
-        "ok",
-        simulatedActuators ? "Simulation reset" : "Reset command accepted",
-        simulatedActuators
-          ? "Simulated ignition stopped and lock engaged."
-          : physicalStateConfirmed
+        refreshed ? "ok" : "info",
+        simulatedActuators && refreshed
+          ? "Simulation reset"
+          : "Reset command accepted",
+        !refreshed
+          ? "Reset accepted, but updated device state could not be refreshed."
+          : simulatedActuators
+            ? "Simulated ignition stopped and lock engaged."
+            : result?.physical_state_confirmed === true
             ? "Physical stop and lock state are confirmed."
-            : "Physical lock and ignition states remain unconfirmed.",
+              : "Physical lock and ignition states remain unconfirmed.",
       );
       return true;
     } catch (e) {
+      if (e.payload?.command_sent === true && e.payload?.locked === true) {
+        clearSimRelockTimer();
+        clearSimIgnitionStopTimer();
+        clearDeviceIgnitionStopCheckTimer();
+        const refreshed = await refresh({ silent: true });
+        popToast(
+          "info",
+          "Reset partially completed",
+          `The device accepted stop and lock, but ${e.message}.${
+            refreshed ? "" : " Updated device state could not be refreshed."
+          }`,
+        );
+        return false;
+      }
       popToast("err", "Full reset failed", e.message);
       return false;
     } finally {
@@ -280,12 +326,21 @@ export default function useAppActions(state) {
   const addUserToDirectory = async (displayName, pin, isAdmin = false) => {
     const n = displayName.trim();
     if (!n) throw new Error("Name required");
-    const grant = await requestGrant("user.create", "", "create user");
+    if (n.length > 100) throw new Error("Display name must be 100 characters or fewer.");
+    const grant = await requestGrant("user.create", "", `create ${n}`, {
+      name: n,
+      pin,
+    });
     if (!grant) return null;
-    const createdUser = await api.addUser(n, pin, isAdmin, grant);
+    const createdUser = await api.addUser(n, pin, isAdmin, grant, true);
+    const { enrollment_grant: _enrollmentGrant, ...user } = createdUser;
     if (mode === "device") {
-      const users = await api.users();
-      setDeviceUsers(users);
+      setDeviceUsers((users) => [...users, user]);
+    } else {
+      setSim((previous) => ({
+        ...previous,
+        users: [...previous.users, user],
+      }));
     }
     return createdUser;
   };
@@ -299,6 +354,18 @@ export default function useAppActions(state) {
 
     setBusy(true);
     try {
+      const grant = await requestGrant("user.delete", id, "remove user");
+      if (!grant) return;
+      await api.delUser(id, grant);
+      if (mode === "device") {
+        setDeviceUsers((users) => users.filter((user) => user.id !== id));
+      } else {
+        setSim((previous) => ({
+          ...previous,
+          users: previous.users.filter((user) => user.id !== id),
+        }));
+      }
+
       if (mode === "sim" && cleanFace && displayName) {
         try {
           const r = await fetch(`${cleanFace}/api/face/remove`, {
@@ -322,9 +389,6 @@ export default function useAppActions(state) {
         }
       }
 
-      const grant = await requestGrant("user.delete", id, "remove user");
-      if (!grant) return;
-      await api.delUser(id, grant);
       if (mode === "sim" && displayName) {
         setSimFaceAccessAllowed((prev) => {
           const next = { ...prev };
@@ -332,8 +396,15 @@ export default function useAppActions(state) {
           return next;
         });
       }
-      if (mode === "device") await refresh({ silent: true });
-      popToast("ok", "Removed", "User and face data updated where available.");
+      const refreshed =
+        mode === "device" ? await refresh({ silent: true }) : true;
+      popToast(
+        refreshed ? "ok" : "info",
+        "Removed",
+        refreshed
+          ? "User and face data updated where available."
+          : "User removed, but the latest device data could not be refreshed.",
+      );
     } catch (e) {
       popToast("err", "Delete failed", e.message);
     } finally {
@@ -351,8 +422,15 @@ export default function useAppActions(state) {
       );
       if (!grant) return;
       await api.saveSettings(settings, grant);
-      if (mode === "device") await refresh({ silent: true });
-      popToast("ok", "Saved", "Settings updated.");
+      const refreshed =
+        mode === "device" ? await refresh({ silent: true }) : true;
+      popToast(
+        refreshed ? "ok" : "info",
+        "Saved",
+        refreshed
+          ? "Settings updated."
+          : "Settings saved, but the latest values could not be refreshed.",
+      );
     } catch (e) {
       popToast("err", "Save failed", e.message);
     } finally {

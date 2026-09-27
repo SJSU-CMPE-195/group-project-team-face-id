@@ -213,23 +213,37 @@ class PiRuntime:
         self._spawn(session["id"], self._run_scan)
         return self._scan_view(session)
 
-    def camera_status(self) -> dict[str, Any]:
+    def camera_status(
+        self,
+        *,
+        authorization: Any | None = None,
+    ) -> dict[str, Any]:
         """Return the latest host-camera session and live preview availability."""
 
         with self._lock:
-            host_sessions = [
-                session
-                for session in self._sessions.values()
-                if session.get("source") == self.camera_source
-                and session.get("kind") in {"scan", "enroll"}
-            ]
-            session = max(
-                host_sessions,
+            host_sessions = sorted(
+                (
+                    session
+                    for session in self._sessions.values()
+                    if session.get("source") == self.camera_source
+                    and session.get("kind") in {"scan", "enroll"}
+                ),
                 key=lambda item: item["created_at"],
-                default=None,
+                reverse=True,
             )
+
+        session = None
+        for candidate in host_sessions:
+            try:
+                self._authorization.require_camera_viewer(candidate, authorization)
+            except AuthorizationRejected:
+                continue
+            session = candidate
+            break
+
+        with self._lock:
             session_view = None
-            if session:
+            if session and self._sessions.get(session["id"]) is session:
                 view = (
                     self._scan_view(session)
                     if session["kind"] == "scan"
@@ -238,10 +252,15 @@ class PiRuntime:
                 session_view = {"kind": session["kind"], **view}
             capture = self._camera_capture
             active_session_id = self._active_session_id
-            frame_id = self._camera_frame_id
+            frame_id = 0 if self._authorization.required else self._camera_frame_id
 
         frame = None
-        if capture and capture.session_id == active_session_id:
+        if (
+            session
+            and capture
+            and capture.session_id == session["id"]
+            and capture.session_id == active_session_id
+        ):
             frame = capture.snapshot()
             frame_id = max(frame_id, capture.frame_id)
         frame_available = bool(
@@ -264,7 +283,7 @@ class PiRuntime:
     ) -> bytes | None:
         """Return the fresh cached JPEG for the active host-camera session."""
 
-        self.require_session_owner(session_id, authorization)
+        self.require_camera_viewer(session_id, authorization)
         capture = self._active_camera_capture(session_id)
         if not capture:
             return None
@@ -285,7 +304,7 @@ class PiRuntime:
     ) -> Iterator[bytes] | None:
         """Stream fresh JPEGs without owning or controlling camera capture."""
 
-        self.require_session_owner(session_id, authorization)
+        self.require_camera_viewer(session_id, authorization)
         capture = self._active_camera_capture(session_id)
         if not capture:
             return None
@@ -294,7 +313,10 @@ class PiRuntime:
             frame_id = -1
             last_jpeg_at = time.monotonic()
             while self._camera_capture_is_active(session_id, capture):
-                if not self._session_authorization_is_current(session_id):
+                if (
+                    not self._session_authorization_is_current(session_id)
+                    or not self._camera_viewer_is_current(session_id, authorization)
+                ):
                     return
                 frame = capture.wait_for_newer(frame_id, 1.0)
                 if frame is None:
@@ -314,7 +336,10 @@ class PiRuntime:
                 last_jpeg_at = time.monotonic()
                 if not self._camera_capture_is_active(session_id, capture):
                     return
-                if not self._session_authorization_is_current(session_id):
+                if (
+                    not self._session_authorization_is_current(session_id)
+                    or not self._camera_viewer_is_current(session_id, authorization)
+                ):
                     return
                 yield self._multipart_frame(frame)
 
@@ -685,6 +710,33 @@ class PiRuntime:
             self._authorization.require_owner(session, authorization)
         except AuthorizationRejected as exc:
             raise RuntimeRequestError(str(exc), 403) from exc
+
+    def require_camera_viewer(
+        self,
+        session_id: str,
+        authorization: Any | None,
+    ) -> None:
+        """Authorize read-only camera access without granting session control."""
+
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                raise RuntimeRequestError("unknown session", 404)
+        try:
+            self._authorization.require_camera_viewer(session, authorization)
+        except AuthorizationRejected as exc:
+            raise RuntimeRequestError(str(exc), 403) from exc
+
+    def _camera_viewer_is_current(
+        self,
+        session_id: str,
+        authorization: Any | None,
+    ) -> bool:
+        try:
+            self.require_camera_viewer(session_id, authorization)
+            return True
+        except RuntimeRequestError:
+            return False
 
     def _session_authorization_is_current(self, session_id: str) -> bool:
         with self._lock:

@@ -596,40 +596,22 @@ export default function ControlTab({
 
   const handleFullReset = useCallback(async () => {
     if (!online || !actuatorControlAvailable) return;
-    pendingStartCancellationRef.current = null;
-    const { activeScan, generation } = invalidateScan();
-    if (activeScan) {
-      activeScanRef.current = activeScan;
-      try {
-        const cancelledRaw = await cancelRemoteScan(activeScan);
-        confirmedCancellation(cancelledRaw, scan?.purpose || "unlock");
-        if (generation === scanGenerationRef.current) {
-          activeScanRef.current = null;
-        }
-      } catch {
-        if (generation === scanGenerationRef.current) {
-          activeScanRef.current = activeScan;
-        }
-      }
-    }
-    if (generation !== scanGenerationRef.current) return;
+    const generation = scanGenerationRef.current;
     const ok = await doFullReset();
-    if (generation !== scanGenerationRef.current) return;
-    if (ok) {
-      activeScanRef.current = null;
-      unlockOwnerRef.current = null;
-      setUnlockOwner(null);
-      setPromptCountdown(null);
-      setFlowStage("unlock_verify");
-      setScan(null);
-    }
+    if (!ok || generation !== scanGenerationRef.current) return;
+    pendingStartCancellationRef.current = null;
+    invalidateScan();
+    activeScanRef.current = null;
+    unlockOwnerRef.current = null;
+    setUnlockOwner(null);
+    setPromptCountdown(null);
+    setFlowStage("unlock_verify");
+    setScan(null);
   }, [
     actuatorControlAvailable,
-    cancelRemoteScan,
     doFullReset,
     invalidateScan,
     online,
-    scan?.purpose,
   ]);
 
   useEffect(() => {

@@ -53,7 +53,10 @@ LOCAL_DEVICE_SECONDS = 15 * 60
 MAX_MOBILE_DEVICES_PER_USER = 10
 MAX_ACTIVE_GRANTS_PER_DEVICE = 32
 OWNER_PROTECTED_ACTIONS = frozenset(
-    {"user.delete", "user.access", "enrollment.start", "user.pin", "device.revoke"}
+    {
+        "user.delete", "user.access", "enrollment.start", "user.pin",
+        "device.revoke", "pairing.invite",
+    }
 )
 
 class SecurityStore:
@@ -406,13 +409,17 @@ class SecurityStore:
         name: str,
         pin: str,
         is_admin: bool = False,
+        enroll_face: bool = False,
     ) -> dict[str, Any]:
         name = bounded_text(name, "name", 100)
         validate_pin(pin)
         if type(is_admin) is not bool:
             raise SecurityError("invalid_role", 400, "is_admin must be a boolean")
+        if type(enroll_face) is not bool:
+            raise SecurityError("invalid_request", 400, "enroll_face must be a boolean")
         salt, verifier = new_pin_record(pin, self._pepper, self._pin_iterations)
         now = self._now()
+        enrollment_grant = None
         with self._lock, self._get_conn() as conn:
             self._begin(conn)
             current = principal_from_row(self._require_admin(conn, admin, now))
@@ -449,7 +456,25 @@ class SecurityStore:
                 "ok",
                 f"Created by {admin.user_id}; admin={int(is_admin)}",
             )
-        return created_user_payload(user_id, name, is_admin, now)
+            if enroll_face:
+                enrollment_grant = self._issue_operation_grant(
+                    conn,
+                    current,
+                    "enrollment.start",
+                    user_id,
+                    now,
+                )
+                self._audit(
+                    conn,
+                    current.user_id,
+                    "operation_grant_issued",
+                    "ok",
+                    f"enrollment.start:{user_id}:via-user-create",
+                )
+        result = created_user_payload(user_id, name, is_admin, now)
+        if enrollment_grant is not None:
+            result["enrollment_grant"] = enrollment_grant["grant_token"]
+        return result
 
     def issue_invite(
         self,
@@ -461,7 +486,10 @@ class SecurityStore:
         token = secrets.token_hex(32)
         with self._lock, self._get_conn() as conn:
             self._begin(conn)
-            self._require_admin(conn, admin, now)
+            current = principal_from_row(self._require_admin(conn, admin, now))
+            self._require_owner_target_control(
+                conn, current, "pairing.invite", target_user_id
+            )
             target = self._security_user(conn, target_user_id)
             if target is None:
                 raise SecurityError("user_not_found", 404, "active user not found")
@@ -934,38 +962,12 @@ class SecurityStore:
                     f"{action}:{pin_error.code}",
                 )
             else:
-                self._prune(conn, now)
-                conn.execute(
-                    "DELETE FROM operation_grants "
-                    "WHERE device_id=? AND action=? AND target IS ?",
-                    (current.device_id, action, target),
-                )
-                active_count = conn.execute(
-                    "SELECT COUNT(*) AS count FROM operation_grants "
-                    "WHERE device_id=? AND expires_at>?",
-                    (current.device_id, now),
-                ).fetchone()["count"]
-                if active_count >= MAX_ACTIVE_GRANTS_PER_DEVICE:
-                    raise SecurityError(
-                        "grant_limit_reached",
-                        429,
-                        "too many active operation grants",
-                    )
-                token = secrets.token_hex(32)
-                conn.execute(
-                    "INSERT INTO operation_grants "
-                    "(token_hash, device_id, user_id, action, target, "
-                    "auth_version, expires_at, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                    (
-                        token_hash(token),
-                        current.device_id,
-                        current.user_id,
-                        action,
-                        target,
-                        current.auth_version,
-                        now + OPERATION_GRANT_SECONDS,
-                        now,
-                    ),
+                result = self._issue_operation_grant(
+                    conn,
+                    current,
+                    action,
+                    target,
+                    now,
                 )
                 self._audit(
                     conn,
@@ -974,14 +976,56 @@ class SecurityStore:
                     "ok",
                     f"{action}:{target or '-'}",
                 )
-                result = {
-                    "grant_token": token,
-                    "expires_in": OPERATION_GRANT_SECONDS,
-                }
         if pin_error is not None:
             raise pin_error
         assert result is not None
         return result
+
+    def _issue_operation_grant(
+        self,
+        conn: sqlite3.Connection,
+        current: Principal,
+        action: str,
+        target: str | None,
+        now: int,
+    ) -> dict[str, Any]:
+        self._prune(conn, now)
+        conn.execute(
+            "DELETE FROM operation_grants "
+            "WHERE device_id=? AND action=? AND target IS ?",
+            (current.device_id, action, target),
+        )
+        active_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM operation_grants "
+            "WHERE device_id=? AND expires_at>?",
+            (current.device_id, now),
+        ).fetchone()["count"]
+        if active_count >= MAX_ACTIVE_GRANTS_PER_DEVICE:
+            raise SecurityError(
+                "grant_limit_reached",
+                429,
+                "too many active operation grants",
+            )
+        token = secrets.token_hex(32)
+        conn.execute(
+            "INSERT INTO operation_grants "
+            "(token_hash, device_id, user_id, action, target, "
+            "auth_version, expires_at, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                token_hash(token),
+                current.device_id,
+                current.user_id,
+                action,
+                target,
+                current.auth_version,
+                now + OPERATION_GRANT_SECONDS,
+                now,
+            ),
+        )
+        return {
+            "grant_token": token,
+            "expires_in": OPERATION_GRANT_SECONDS,
+        }
 
     def consume_grant(
         self,

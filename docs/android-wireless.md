@@ -163,7 +163,11 @@ protection, PAD or physical actuator acceptance is supplied by this panel.
 ## Watch a phone-triggered scan on the host
 
 Open the dashboard on the backend computer at `http://localhost:5057` (or
-`http://localhost:5173` during development). Leave its **Control** tab open.
+`http://localhost:5173` during development). Sign in as an administrator and
+leave its **Control** tab open. Administrators can preview sessions started on
+other devices. Regular users can view only sessions they started on their own
+device. Preview permission does not allow cancelling or changing another
+device's session.
 Starting face unlock or ignition verification on the phone displays the host's
 camera image in the original camera viewport and progress in the existing scan
 status area. Backend-camera enrollment uses the same viewport while Control is
@@ -430,12 +434,16 @@ database state into a physical success claim. There is no environment-variable
 bypass. Enrollment and administrator data tasks remain available, subject to
 the liveness policy. PC controls remain available and are labelled simulated.
 
-`GET /api/camera/status` returns the camera source, latest host-camera session
-public status (including its `kind`), `frame_id`, and `frame_available`.
+`GET /api/camera/status` returns the camera source, latest visible host-camera
+session status (including its `kind`), `frame_id`, and `frame_available`.
+Administrators may preview sessions across devices; regular users see only
+their own device's sessions. The same policy applies to frames and streams.
+Changing or cancelling a session still requires its original actor device.
 `GET /api/camera/stream?session_id=...` returns a continuous
 `multipart/x-mixed-replace; boundary=frame` JPEG stream for the active session.
 An inactive or mismatched session returns 204; a missing identifier returns 400.
-The stream ends with the session or when capture fails or becomes stale.
+The stream ends with the session, when access is revoked, or when capture fails
+or becomes stale.
 Disconnecting a viewer does not stop capture or cancel the session.
 `GET /api/camera/frame?session_id=...` returns the matching active session's
 cached JPEG (200), no available frame (204), or a missing-session-id error

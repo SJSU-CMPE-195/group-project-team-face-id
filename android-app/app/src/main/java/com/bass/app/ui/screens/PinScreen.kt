@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.bass.app.PinPrompt
 import com.bass.app.PinPurpose
+import com.bass.app.PinStage
 import com.bass.app.R
 
 private const val PIN_LENGTH = 6
@@ -98,13 +99,20 @@ fun PinScreen(
                     fontWeight = FontWeight.Black,
                 )
                 Text(
-                    text = stringResource(prompt.titleResource()),
+                    text =
+                        stringResource(
+                            if (prompt.stage == PinStage.CONFIRM_NEW_USER) {
+                                R.string.pin_confirm_new_user_title
+                            } else {
+                                R.string.pin_verify_title
+                            }
+                        ),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                 )
                 Text(
-                    text = stringResource(prompt.descriptionResource()),
+                    text = prompt.description(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
@@ -287,17 +295,22 @@ private fun NumberPad(
     }
 }
 
-private fun PinPrompt.titleResource(): Int = R.string.pin_verify_title
-
-private fun PinPrompt.descriptionResource(): Int =
-    when (purpose) {
-        PinPurpose.LOGIN -> R.string.pin_login_description
-        PinPurpose.ENROLL -> R.string.pin_enroll_description
-        PinPurpose.UNLOCK -> R.string.pin_unlock_description
-        PinPurpose.IGNITION -> R.string.pin_ignition_description
-        PinPurpose.USER_ADMIN -> R.string.pin_user_admin_description
-        PinPurpose.SETTINGS -> R.string.pin_settings_description
-        PinPurpose.LOCK -> R.string.pin_lock_description
-        PinPurpose.STOP_IGNITION -> R.string.pin_stop_ignition_description
-        PinPurpose.RESET -> R.string.pin_reset_description
+@Composable
+private fun PinPrompt.description(): String =
+    if (stage == PinStage.CONFIRM_NEW_USER) {
+        stringResource(R.string.pin_confirm_new_user_description, confirmationName.orEmpty())
+    } else {
+        stringResource(
+            when (purpose) {
+                PinPurpose.LOGIN -> R.string.pin_login_description
+                PinPurpose.ENROLL -> R.string.pin_enroll_description
+                PinPurpose.UNLOCK -> R.string.pin_unlock_description
+                PinPurpose.IGNITION -> R.string.pin_ignition_description
+                PinPurpose.USER_ADMIN -> R.string.pin_user_admin_description
+                PinPurpose.SETTINGS -> R.string.pin_settings_description
+                PinPurpose.LOCK -> R.string.pin_lock_description
+                PinPurpose.STOP_IGNITION -> R.string.pin_stop_ignition_description
+                PinPurpose.RESET -> R.string.pin_reset_description
+            }
+        )
     }

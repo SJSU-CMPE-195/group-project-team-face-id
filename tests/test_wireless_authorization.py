@@ -198,6 +198,20 @@ class WirelessAuthorizationTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 403, replay.json)
         self.assertEqual(self.fixture.db.get_settings_for_ui()["autoRelockSeconds"], 12)
 
+    def test_user_list_keeps_roles_and_regular_user_scope(self):
+        user, token, _ = self.pair_user()
+        response = self.client.get("/api/users", headers=self.fixture.headers())
+        self.assertEqual(response.status_code, 200)
+        roles = {row["id"]: row["is_admin"] for row in response.json}
+        self.assertTrue(roles[self.fixture.admin.user_id])
+        self.assertFalse(roles[user["id"]])
+        own = self.client.get(
+            "/api/users", headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(own.status_code, 200)
+        self.assertEqual([row["id"] for row in own.json], [user["id"]])
+        self.assertFalse(own.json[0]["is_admin"])
+
     def test_control_grant_accepts_empty_target_and_requires_pin(self):
         grant = self.client.post("/api/operation-grants", json={
             "pin": self.fixture.pin, "action": "device.lock", "target_user_id": "",
@@ -205,6 +219,51 @@ class WirelessAuthorizationTests(unittest.TestCase):
         self.assertEqual(grant.status_code, 200, grant.json)
         response = self.client.post("/api/lock", json={}, headers=self.fixture.headers(grant.json["grant_token"]))
         self.assertEqual(response.status_code, 200, response.json)
+
+    def test_create_user_enrollment_grant_is_scoped_single_use_and_expires(self):
+        def create(name):
+            return self.mutation(
+                "/api/users",
+                "user.create",
+                {"name": name, "pin": "654321", "enroll_face": True},
+            )
+
+        with mock.patch("wireless.security.time.time", return_value=1_000):
+            created = create("Enrollment user")
+            self.assertEqual(created.status_code, 201, created.json)
+            token = created.json["enrollment_grant"]
+            target = created.json["id"]
+
+            with self.assertRaises(SecurityError) as wrong_target:
+                self.security.consume_grant(
+                    self.fixture.principal(),
+                    token,
+                    "enrollment.start",
+                    self.fixture.admin.user_id,
+                )
+            self.assertEqual(wrong_target.exception.code, "invalid_operation_grant")
+
+            self.security.consume_grant(
+                self.fixture.principal(), token, "enrollment.start", target
+            )
+            with self.assertRaises(SecurityError) as reused:
+                self.security.consume_grant(
+                    self.fixture.principal(), token, "enrollment.start", target
+                )
+            self.assertEqual(reused.exception.code, "invalid_operation_grant")
+
+            expiring = create("Expiring enrollment user")
+            self.assertEqual(expiring.status_code, 201, expiring.json)
+
+        with mock.patch("wireless.security.time.time", return_value=1_030):
+            with self.assertRaises(SecurityError) as expired:
+                self.security.consume_grant(
+                    self.fixture.principal(),
+                    expiring.json["enrollment_grant"],
+                    "enrollment.start",
+                    expiring.json["id"],
+                )
+            self.assertEqual(expired.exception.code, "invalid_operation_grant")
 
     def test_grant_wrong_target_cannot_delete_another_user(self):
         first = self.security.create_user(self.fixture.principal(), "One", "654321")
@@ -300,6 +359,48 @@ class WirelessAuthorizationTests(unittest.TestCase):
         self.assertEqual(logout.status_code, 200)
         self.assertEqual(self.client.get("/local/security/session", base_url=self.origin,
                                         headers=self.local_headers).status_code, 401)
+
+    def test_revoked_browser_session_is_evicted_before_logout_csrf(self):
+        selected = {"user_id": self.fixture.admin.user_id, "pin": self.fixture.pin}
+        login = self.client.post(
+            "/local/security/login",
+            base_url=self.origin,
+            json=selected,
+            headers=self.local_headers,
+        )
+        self.assertEqual(login.status_code, 200, login.json)
+
+        active_without_csrf = self.client.post(
+            "/local/security/logout",
+            base_url=self.origin,
+            headers=self.local_headers,
+        )
+        self.assertEqual(active_without_csrf.status_code, 403)
+        self.assertEqual(active_without_csrf.json["code"], "invalid_csrf")
+
+        replacement = self.app.test_client().post(
+            "/local/security/login",
+            base_url=self.origin,
+            json=selected,
+            headers=self.local_headers,
+        )
+        self.assertEqual(replacement.status_code, 200, replacement.json)
+
+        expired = self.client.get(
+            "/local/security/session",
+            base_url=self.origin,
+            headers=self.local_headers,
+        )
+        self.assertEqual(expired.status_code, 401)
+        self.assertEqual(expired.json["code"], "invalid_device_credential")
+
+        logout = self.client.post(
+            "/local/security/logout",
+            base_url=self.origin,
+            headers=self.local_headers,
+        )
+        self.assertEqual(logout.status_code, 401)
+        self.assertEqual(logout.json["code"], "login_required")
 
     def test_phone_entry_is_bound_to_bearer_and_grants_no_operation(self):
         user, token, _ = self.pair_user()

@@ -19,11 +19,15 @@ async function fetchJson(url, options = {}, onUnauthorized) {
   if (response.status === 401) onUnauthorized?.();
   if (!response.ok) {
     const detail = data?.message || data?.error || data?.detail;
-    throw new Error(
+    const error = new Error(
       typeof detail === "string"
         ? detail
         : `HTTP ${response.status} ${response.statusText}`,
     );
+    error.status = response.status;
+    error.code = data?.code;
+    error.payload = data;
+    throw error;
   }
   if (!contentType.includes("application/json")) {
     throw new Error(`Expected JSON response from ${url}`);
@@ -47,11 +51,15 @@ async function fetchFormJson(url, form, headers, onUnauthorized) {
   if (response.status === 401) onUnauthorized?.();
   if (!response.ok) {
     const detail = data?.message || data?.error || data?.detail;
-    throw new Error(
+    const error = new Error(
       typeof detail === "string"
         ? detail
         : `HTTP ${response.status} ${response.statusText}`,
     );
+    error.status = response.status;
+    error.code = data?.code;
+    error.payload = data;
+    throw error;
   }
   if (!contentType.includes("application/json")) {
     throw new Error(`Expected JSON response from ${url}`);
@@ -111,12 +119,17 @@ export default function useApi(baseUrl) {
         mutate("/api/full-reset", { method: "POST" }, grantToken),
       users: () => get("/api/users"),
       faceStatus: () => get("/api/face-status"),
-      addUser: (name, pin, isAdmin, grantToken) =>
+      addUser: (name, pin, isAdmin, grantToken, enrollFace = false) =>
         mutate(
           "/api/users",
           {
             method: "POST",
-            body: JSON.stringify({ name, pin, is_admin: !!isAdmin }),
+            body: JSON.stringify({
+              name,
+              pin,
+              is_admin: !!isAdmin,
+              enroll_face: enrollFace,
+            }),
           },
           grantToken,
         ),

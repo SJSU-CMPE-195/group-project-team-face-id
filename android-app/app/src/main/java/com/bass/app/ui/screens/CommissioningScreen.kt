@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import com.bass.app.AppViewModel
 import com.bass.app.BassState
 import com.bass.app.CommissioningPurpose
+import com.bass.app.MAX_USER_NAME_LENGTH
 import com.bass.app.R
 import com.bass.app.ui.components.BassCard
 
@@ -90,7 +91,7 @@ fun CommissioningScreen(state: BassState, viewModel: AppViewModel) {
             if (needsName) {
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it.take(128) },
+                    onValueChange = { name = it.take(MAX_USER_NAME_LENGTH) },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !state.busy,
                     singleLine = true,

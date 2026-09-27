@@ -78,7 +78,10 @@ class OwnerProtectionTests(unittest.TestCase):
         self.assertTrue(self.security.principal(self.owner_token).is_owner)
 
     def test_owner_target_grants_are_blocked_at_issue_and_consume(self):
-        for action in ("user.delete", "user.access", "enrollment.start", "user.pin"):
+        for action in (
+            "user.delete", "user.access", "enrollment.start", "user.pin",
+            "pairing.invite",
+        ):
             with self.subTest(action=action):
                 with self.assertRaises(SecurityError) as blocked:
                     self.security.authorize(
@@ -112,6 +115,18 @@ class OwnerProtectionTests(unittest.TestCase):
                 self.admin, token, "user.delete", self.owner_id
             )
         self.assertEqual(consume.exception.code, "owner_required")
+
+    def test_only_owner_can_issue_owner_phone_invite(self):
+        invite = self.security.issue_invite(self.owner, self.owner_id)
+        with self.assertRaises(SecurityError) as blocked:
+            self.security.issue_invite(self.admin, self.owner_id)
+        self.assertEqual(blocked.exception.code, "owner_required")
+        paired = self.security.pair(
+            invite["invite_token"], "123456", "Another owner phone"
+        )
+        self.assertTrue(self.security.principal(paired["device_token"]).is_owner)
+        admin_invite = self.security.issue_invite(self.admin, self.admin.user_id)
+        self.assertIn("invite_token", admin_invite)
 
     def test_database_guards_owner_delete_disable_and_demotion(self):
         statements = (

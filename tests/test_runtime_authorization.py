@@ -289,6 +289,60 @@ class RuntimeAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(capture.wait_calls, 0)
 
+    def test_admin_camera_view_does_not_grant_session_control(self):
+        session = self.start_scan()
+
+        self.runtime.require_camera_viewer(session["id"], self.admin)
+        self.assertIsNone(
+            self.runtime.camera_frame(session["id"], authorization=self.admin)
+        )
+        with self.assertRaisesRegex(RuntimeRequestError, "another authorization"):
+            self.runtime.require_session_owner(session["id"], self.admin)
+        with self.assertRaisesRegex(RuntimeRequestError, "another authorization"):
+            self.runtime.require_camera_viewer(session["id"], self.ada_tablet)
+
+    def test_camera_status_selects_latest_session_visible_to_viewer(self):
+        ada_session = self.start_scan()
+        self.runtime._release_session(ada_session["id"])
+        bob_session = self.start_scan(self.bob)
+
+        self.assertEqual(
+            self.runtime.camera_status(authorization=self.admin)["session"][
+                "session_id"
+            ],
+            bob_session["id"],
+        )
+        self.assertEqual(
+            self.runtime.camera_status(authorization=self.ada)["session"]["session_id"],
+            ada_session["id"],
+        )
+        self.assertIsNone(
+            self.runtime.camera_status(authorization=self.ada_tablet)["session"]
+        )
+
+        unsecured = AuthorizationRuntime(self.db, self.face_engine)
+        unsecured_session = unsecured.start_scan(expected_user="Ada")
+        self.assertEqual(
+            unsecured.camera_status()["session"]["session_id"],
+            unsecured_session["session_id"],
+        )
+
+    def test_revoked_admin_camera_stream_stops_before_waiting(self):
+        session = self.start_scan()
+        capture = FakeCapture(session["id"])
+        self.runtime._camera_capture = capture
+        stream = self.runtime.camera_stream(
+            session["id"],
+            authorization=self.admin,
+        )
+        self.assertIsNotNone(stream)
+        self.store.revoke("admin")
+
+        with self.assertRaises(StopIteration):
+            next(stream)
+
+        self.assertEqual(capture.wait_calls, 0)
+
     def test_non_admin_cannot_start_enrollment(self):
         with self.assertRaisesRegex(RuntimeRequestError, "administrator") as raised:
             self.runtime.start_client_enrollment(

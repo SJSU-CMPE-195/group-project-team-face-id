@@ -1,6 +1,7 @@
 package com.bass.app
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -20,6 +21,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val mutableState = MutableStateFlow(BassState())
     val state = mutableState.asStateFlow()
+    private val mutableNewUserDraft = MutableStateFlow(NewUserDraft())
+    val newUserDraft = mutableNewUserDraft.asStateFlow()
     private val store = PairingStore(application)
     private val discovery = DeviceDiscovery(application)
     private val connector = DeviceConnector(application, discovery)
@@ -127,6 +130,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     },
             ).copy(inviteMaterial = null)
         }
+        clearNewUserDraft()
     }
 
     fun selectTab(tab: Tab) {
@@ -134,6 +138,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (tab != state.value.selectedTab) {
             pinProtection.cancel()
             stopSession(restorePrompt = true)
+            if (state.value.selectedTab == Tab.USERS) clearNewUserDraft()
         }
         mutableState.update { it.copy(selectedTab = tab) }
     }
@@ -284,7 +289,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             qr == null ||
                 qr.purpose == CommissioningPurpose.DEVICE ||
                 (qr.purpose != CommissioningPurpose.RECOVERY && cleanName.isEmpty()) ||
-                cleanName.length > 128 ||
+                cleanName.length > MAX_USER_NAME_LENGTH ||
                 pin.size != 6 ||
                 pin.any { it !in '0'..'9' }
         ) {
@@ -512,6 +517,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pendingCommissioning = null
         pendingTransfer = null
         settingsDirty = false
+        clearNewUserDraft()
         mutableState.value = BassState()
     }
 
@@ -662,11 +668,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             purpose = PinPurpose.LOGIN,
             verify = { pin ->
                 try {
-                    DeviceAuth.sessionLogin(
-                        connected.api,
-                        pin,
-                        connected.pairing.identity,
-                    ).deviceId
+                    PinVerification(
+                        DeviceAuth.sessionLogin(
+                            connected.api,
+                            pin,
+                            connected.pairing.identity,
+                        ).deviceId
+                    )
                 } catch (error: ApiException) {
                     if (error.errorCode == "invalid_credentials") {
                         throw IllegalArgumentException(text(R.string.sign_in_invalid_pin))
@@ -889,6 +897,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun requestGrant(
         purpose: PinPurpose,
         operation: OperationRequest,
+        confirmation: PinConfirmation? = null,
         onCancelled: () -> Unit = {},
         action: (String) -> Unit,
     ) {
@@ -906,17 +915,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val epoch = generation
         val owner = pairing
+        val actorId = state.value.identity?.user?.id
         val tab = state.value.selectedTab
         mutableState.update { it.copy(error = null) }
         pinProtection.request(
             purpose = purpose,
-            verify = { pin -> DeviceAuth.operationGrant(client, pin, operation).token },
+            verify = { pin ->
+                val requestedAt = SystemClock.elapsedRealtime()
+                val grant = DeviceAuth.operationGrant(client, pin, operation)
+                PinVerification(
+                    value = grant.token,
+                    expiresAtElapsedRealtime = requestedAt + grant.expiresIn * 1000L,
+                )
+            },
+            confirmation = confirmation,
             onCancelled = onCancelled,
         ) { grant ->
             val sameContext =
                 foreground &&
                     generation == epoch &&
                     pairing == owner &&
+                    state.value.identity?.user?.id == actorId &&
                     state.value.selectedTab == tab &&
                     (!operation.action.requiresActuatorControl ||
                         state.value.canControlActuators)
@@ -994,13 +1013,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createUser(name: String, newPin: CharArray, isAdmin: Boolean = false) {
-        val cleanName = name.trim()
+    fun updateNewUserName(name: String) {
+        mutableNewUserDraft.update {
+            it.copy(name = name.take(MAX_USER_NAME_LENGTH), revision = it.revision + 1)
+        }
+    }
+
+    fun updateNewUserPin(pin: String) {
+        mutableNewUserDraft.update {
+            it.copy(
+                pin = pin.filter(Char::isDigit).take(6),
+                revision = it.revision + 1,
+            )
+        }
+    }
+
+    fun updateNewUserAdmin(isAdmin: Boolean) {
+        mutableNewUserDraft.update {
+            if (it.isAdmin == isAdmin) {
+                it
+            } else {
+                it.copy(isAdmin = isAdmin, revision = it.revision + 1)
+            }
+        }
+    }
+
+    fun createUser() {
+        val draft = newUserDraft.value
+        val cleanName = draft.name.trim()
+        val newPin = draft.pin.toCharArray()
         val validPin = newPin.size == 6 && newPin.all { it in '0'..'9' }
         if (
             state.value.identity?.user?.isAdmin != true ||
                 cleanName.isEmpty() ||
-                cleanName.length > 128 ||
+                cleanName.length > MAX_USER_NAME_LENGTH ||
                 !validPin
         ) {
             newPin.fill('\u0000')
@@ -1009,15 +1055,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         requestGrant(
             PinPurpose.USER_ADMIN,
             OperationRequest(OperationAction.USER_CREATE),
+            confirmation = PinConfirmation(cleanName, newPin),
             onCancelled = { newPin.fill('\u0000') },
         ) { grant ->
+            if (newUserDraft.value.revision != draft.revision) {
+                newPin.fill('\u0000')
+                return@requestGrant
+            }
             val body =
                 JSONObject()
                     .put("name", cleanName)
                     .put("pin", String(newPin))
-                    .put("is_admin", isAdmin)
+                    .put("is_admin", draft.isAdmin)
             newPin.fill('\u0000')
-            command("/api/users", body = body, operationGrant = grant)
+            command(
+                "/api/users",
+                body = body,
+                operationGrant = grant,
+                after = { clearNewUserDraft(draft.revision) },
+            )
+        }
+    }
+
+    private fun clearNewUserDraft(expectedRevision: Long? = null) {
+        mutableNewUserDraft.update {
+            if (expectedRevision != null && it.revision != expectedRevision) {
+                it
+            } else {
+                NewUserDraft(revision = it.revision + 1)
+            }
         }
     }
 

@@ -78,8 +78,9 @@ face, then start Unlock from either the dashboard or the paired Android app.
 The PC captures its webcam and unlocks only after a successful match. Its
 actuator output remains simulated. See [host setup](docs/android-wireless.md).
 
-Keep the host dashboard's Control tab open to see its camera view when Android
-starts a scan. See [watch a phone-triggered scan](docs/android-wireless.md#watch-a-phone-triggered-scan-on-the-host).
+Sign in to the host dashboard as an administrator and keep its Control tab open
+to see the camera view when Android starts a scan. Regular users can preview
+only sessions started on their own device. See [watch a phone-triggered scan](docs/android-wireless.md#watch-a-phone-triggered-scan-on-the-host).
 
 ### Hardware Simulator tab on the current PC host
 
@@ -364,8 +365,18 @@ The Android app reaches the authenticated LAN API over HTTPS on port 5056.
 2. Select the backend/device camera as the enrollment source.
 3. For a new user, enter a display name and a new six-digit PIN. For an existing
    user, enter their exact display name.
-4. Select **Add & enroll face**, then enter the administrator PIN when asked.
+4. Select **Add & enroll face**, then enter your signed-in administrator account's
+   PIN. For a new user, the second prompt confirms the new user's PIN entered in
+   step 3. The account is created only after the PINs match.
 5. Wait for the backend to capture the required samples.
+
+If camera enrollment fails or is cancelled, the account stays in the user list.
+Retry with the same display name to enroll that account's face. Removal is a
+separate action under **People & Access**.
+
+To reset a PIN, enter the replacement PIN, approve with your signed-in account's
+PIN, then confirm the replacement PIN. Resetting a PIN signs that user out on
+all devices and invalidates their invitations. Their phones must be paired again.
 
 The face embedding is stored in the selected backend's SQLite database and is available to
 the Device API's scan flow.
@@ -564,7 +575,7 @@ current authenticated host.
 | POST | `/api/ignition/stop` | Stop ignition |
 | POST | `/api/full-reset` | Stop ignition and lock the device |
 | GET | `/api/users` | List all users for an administrator or the current user only |
-| POST | `/api/users` | Add a new user |
+| POST | `/api/users` | Add a new user; `enroll_face: true` also returns a one-use `enrollment_grant` for that user |
 | DELETE | `/api/users/<id>` | Remove a user |
 | PATCH | `/api/users/<id>/access` | Enable/disable face access for a user |
 | POST | `/api/users/<id>/pin` | Reset a user PIN (administrator only) |

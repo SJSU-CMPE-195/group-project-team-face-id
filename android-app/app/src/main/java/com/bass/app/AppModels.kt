@@ -1,5 +1,7 @@
 package com.bass.app
 
+const val MAX_USER_NAME_LENGTH = 100
+
 enum class Tab {
     CONSOLE,
     USERS,
@@ -33,6 +35,7 @@ enum class CameraSource {
 
 enum class PinStage {
     VERIFY,
+    CONFIRM_NEW_USER,
 }
 
 enum class CommissioningPurpose(val wireValue: String) {
@@ -68,10 +71,18 @@ data class PinPrompt(
     val id: Long,
     val stage: PinStage,
     val purpose: PinPurpose,
+    val confirmationName: String? = null,
     val busy: Boolean = false,
     val error: String? = null,
     val lockedSeconds: Int = 0,
     val inputRevision: Int = 0,
+)
+
+data class NewUserDraft(
+    val name: String = "",
+    val pin: String = "",
+    val isAdmin: Boolean = false,
+    val revision: Long = 0,
 )
 
 data class DeviceInfo(
