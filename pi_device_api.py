@@ -223,7 +223,8 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
 
     @app.get("/api/camera/status")
     def api_camera_status():
-        return jsonify(runtime_impl.camera_status())
+        authorization = {"authorization": g.principal} if g.get("principal") else {}
+        return jsonify(runtime_impl.camera_status(**authorization))
 
     @app.get("/api/camera/frame")
     def api_camera_frame():
@@ -298,6 +299,11 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
         actor = g.get("principal")
         if actor and not actor.is_admin:
             users = [user for user in users if user["id"] == actor.user_id]
+        security = app.extensions.get("bass_security")
+        if security:
+            for user in users:
+                identity = security.get_user(user["id"])
+                user["is_admin"] = bool(identity and identity["is_admin"])
         return jsonify(users)
 
     @app.get("/api/face-status")
@@ -324,7 +330,8 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
         security = app.extensions.get("bass_security")
         if security:
             result = security.create_user(g.principal, name, body.get("pin"),
-                                          body.get("is_admin", False))
+                                          body.get("is_admin", False),
+                                          body.get("enroll_face", False))
         else:
             result = db_module.add_user(name)
         if result.get("ok") is False:

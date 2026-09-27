@@ -139,6 +139,31 @@ class RuntimeAuthorization:
         except Exception as exc:
             raise AuthorizationRejected("authorization could not be verified") from exc
 
+    def require_camera_viewer(
+        self,
+        session: dict[str, Any],
+        principal: Any | None,
+    ) -> None:
+        """Allow current admins to observe any camera session; keep users device-bound."""
+
+        if self._store is None:
+            return
+        if principal is None:
+            raise AuthorizationRejected("authenticated authorization is required")
+        _device_id, _user_id, _auth_version, is_admin = self._principal_fields(
+            principal
+        )
+        if not is_admin:
+            self.require_owner(session, principal)
+            return
+        try:
+            if not self._store.still_authorized(principal):
+                raise AuthorizationRejected("authorization is no longer valid")
+        except AuthorizationRejected:
+            raise
+        except Exception as exc:
+            raise AuthorizationRejected("authorization could not be verified") from exc
+
     def session_is_current(
         self,
         session: dict[str, Any],

@@ -21,8 +21,9 @@ _ACTIONS = {
 }
 _SESSION_ENDPOINTS = {
     "api_scan_status", "api_scan_cancel", "api_enroll_status", "api_enroll_cancel",
-    "api_enroll_sample", "api_enroll_finish", "api_camera_frame", "api_camera_stream",
+    "api_enroll_sample", "api_enroll_finish",
 }
+_CAMERA_ENDPOINTS = {"api_camera_frame", "api_camera_stream"}
 
 
 def authorize_request(security, runtime, db_module):
@@ -32,7 +33,7 @@ def authorize_request(security, runtime, db_module):
         raise SecurityError("admin_required", 403, "Administrator permission is required.")
     if endpoint == "api_unlock":
         raise SecurityError("route_retired", 410, "Use a PIN-authorized host camera scan.")
-    if endpoint in _SESSION_ENDPOINTS:
+    if endpoint in _SESSION_ENDPOINTS or endpoint in _CAMERA_ENDPOINTS:
         if request.method == "GET":
             body = request.args
         elif endpoint == "api_enroll_sample":
@@ -42,7 +43,10 @@ def authorize_request(security, runtime, db_module):
         session_id = body.get("session_id") or body.get("sessionId")
         if not isinstance(session_id, str) or not 1 <= len(session_id) <= 128:
             raise SecurityError("invalid_session", 400, "A valid session ID is required.")
-        runtime.require_session_owner(session_id, actor)
+        if endpoint in _CAMERA_ENDPOINTS:
+            runtime.require_camera_viewer(session_id, actor)
+        else:
+            runtime.require_session_owner(session_id, actor)
         return
 
     action = _ACTIONS.get(endpoint)

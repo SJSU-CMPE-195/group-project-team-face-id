@@ -48,6 +48,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bass.app.AppViewModel
 import com.bass.app.BassState
 import com.bass.app.CameraSource
@@ -69,9 +70,7 @@ fun UsersScreen(
     val context = LocalContext.current
     val isAdmin = state.identity?.user?.isAdmin == true
     val isOwner = state.identity?.user?.isOwner == true
-    var newName by remember { mutableStateOf("") }
-    var newPin by remember { mutableStateOf("") }
-    var newIsAdmin by remember { mutableStateOf(false) }
+    val newUserDraft by viewModel.newUserDraft.collectAsStateWithLifecycle()
     var selectedSource by remember { mutableStateOf(CameraSource.PHONE) }
     var pendingUserId by remember { mutableStateOf<String?>(null) }
     var permissionDenied by remember { mutableStateOf(false) }
@@ -105,14 +104,11 @@ fun UsersScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            newName = ""
-            newPin = ""
-            newIsAdmin = false
             pendingUserId = null
         }
     }
     LaunchedEffect(isOwner) {
-        if (!isOwner) newIsAdmin = false
+        if (!isOwner) viewModel.updateNewUserAdmin(false)
     }
     val inviteMaterial = state.inviteMaterial
     val inviteExportLauncher =
@@ -148,24 +144,16 @@ fun UsersScreen(
             item {
                 AdminControlsCard(
                     state = state,
-                    newName = newName,
-                    newPin = newPin,
-                    newIsAdmin = newIsAdmin,
+                    newName = newUserDraft.name,
+                    newPin = newUserDraft.pin,
+                    newIsAdmin = newUserDraft.isAdmin,
                     selectedSource = selectedSource,
                     permissionDenied = permissionDenied,
-                    onNameChange = { newName = it.take(128) },
-                    onPinChange = { raw -> newPin = raw.filter(Char::isDigit).take(6) },
-                    onAdminChange = { newIsAdmin = it },
+                    onNameChange = viewModel::updateNewUserName,
+                    onPinChange = viewModel::updateNewUserPin,
+                    onAdminChange = viewModel::updateNewUserAdmin,
                     canCreateAdmin = isOwner,
-                    onCreate = {
-                        val submittedPin = newPin.toCharArray()
-                        val submittedName = newName
-                        newName = ""
-                        newPin = ""
-                        val submittedIsAdmin = newIsAdmin
-                        newIsAdmin = false
-                        viewModel.createUser(submittedName, submittedPin, submittedIsAdmin)
-                    },
+                    onCreate = viewModel::createUser,
                     onSourceSelected = { selectedSource = it },
                     onCancel = viewModel::cancelActiveSession,
                     onFrame = viewModel::submitEnrollmentSample,

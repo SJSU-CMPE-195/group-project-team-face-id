@@ -56,14 +56,12 @@ export default function UsersTab({
   const cleanApi = (faceApiUrl || "").trim().replace(/\/$/, "");
 
   const [localFaceNames, setLocalFaceNames] = useState([]);
-  const [enrollSession, setEnrollSession] = useState(null);
   const [enrollCount, setEnrollCount] = useState(0);
   const [, setEnrollCamOn] = useState(false);
   const [enrollingAuto, setEnrollingAuto] = useState(false);
   const [enrollSource, setEnrollSource] = useState(
     mode === "device" ? "device_camera" : "phone_camera",
   );
-  const [piEnrollStatus, setPiEnrollStatus] = useState(null);
   const [newUserPin, setNewUserPin] = useState("");
   const [newUserIsAdmin, setNewUserIsAdmin] = useState(false);
   const [pinDrafts, setPinDrafts] = useState({});
@@ -73,40 +71,19 @@ export default function UsersTab({
   const enrollVideoRef = useRef(null);
   const enrollCanvasRef = useRef(null);
   const enrollStreamRef = useRef(null);
-  const cancelAutoRef = useRef(false);
   const piEnrollPollRef = useRef(null);
-  const createdEnrollUserRef = useRef(null);
+  const activeEnrollRef = useRef(null);
+  const enrollGenerationRef = useRef(0);
+  const pendingEnrollCancelRef = useRef(null);
   /** Previous Face API name list — only sync *new* names into sim (avoids re-adding after Remove when fetch returns same set with a new array ref). */
   const prevFaceNamesRef = useRef(null);
 
   const clearPiEnrollPoll = useCallback(() => {
     if (piEnrollPollRef.current) {
-      clearInterval(piEnrollPollRef.current);
+      clearTimeout(piEnrollPollRef.current);
       piEnrollPollRef.current = null;
     }
   }, []);
-
-  const cleanupCreatedEnrollUser = useCallback(async () => {
-    const createdUser = createdEnrollUserRef.current;
-    if (!createdUser?.id) return;
-    try {
-      const grant = await requestGrant(
-        "user.delete",
-        createdUser.id,
-        "remove incomplete user",
-      );
-      if (!grant) {
-        createdEnrollUserRef.current = null;
-        return;
-      }
-      await api.delUser(createdUser.id, grant);
-      createdEnrollUserRef.current = null;
-      if (mode === "device") setDeviceUsers(await api.users());
-    } catch {
-      createdEnrollUserRef.current = null;
-      /* The original enrollment error remains the actionable message. */
-    }
-  }, [api, mode, requestGrant, setDeviceUsers]);
 
   const refreshLocalFaces = useCallback(async () => {
     try {
@@ -253,8 +230,14 @@ export default function UsersTab({
 
   useEffect(
     () => () => {
-      cancelAutoRef.current = true;
+      enrollGenerationRef.current += 1;
+      pendingEnrollCancelRef.current = null;
       clearPiEnrollPoll();
+      const activeEnrollment = activeEnrollRef.current;
+      activeEnrollRef.current = null;
+      if (activeEnrollment?.cancel) {
+        void activeEnrollment.cancel().catch(() => {});
+      }
       if (enrollStreamRef.current) {
         enrollStreamRef.current.getTracks().forEach((t) => t.stop());
         enrollStreamRef.current = null;
@@ -272,12 +255,17 @@ export default function UsersTab({
     setEnrollCamOn(false);
   }, []);
 
-  const startEnrollCamera = useCallback(async () => {
+  const startEnrollCamera = useCallback(async (generation) => {
+    let stream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
       });
+      if (generation !== enrollGenerationRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return false;
+      }
       enrollStreamRef.current = stream;
       if (enrollVideoRef.current) {
         const video = enrollVideoRef.current;
@@ -287,31 +275,44 @@ export default function UsersTab({
         await video.play().catch((e) => {
           if (e.name !== "AbortError") throw e;
         });
+        if (generation !== enrollGenerationRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          if (enrollStreamRef.current === stream) enrollStreamRef.current = null;
+          if (video.srcObject === stream) video.srcObject = null;
+          return false;
+        }
       }
       setEnrollCamOn(true);
       return true;
     } catch (e) {
-      popToast("err", "Camera", e.message || "Permission denied");
+      if (stream) stream.getTracks().forEach((track) => track.stop());
+      if (enrollStreamRef.current === stream) enrollStreamRef.current = null;
+      if (enrollVideoRef.current?.srcObject === stream) {
+        enrollVideoRef.current.srcObject = null;
+      }
+      if (generation === enrollGenerationRef.current) {
+        popToast("err", "Camera", e.message || "Permission denied");
+      }
       return false;
     }
   }, [popToast]);
 
   const cancelRemoteSession = async (sid) => {
     if (!sid) return;
-    try {
-      if (mode === "device") {
-        await api.piEnrollCancel(sid);
-        return;
-      }
-      if (!cleanApi) return;
-      await fetch(`${cleanApi}/api/enroll/cancel`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sid }),
-      });
-    } catch {
-      /* ignore */
+    if (mode === "device") return api.piEnrollCancel(sid);
+    if (!cleanApi) throw new Error("Face API is not configured.");
+    const response = await fetch(`${cleanApi}/api/enroll/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sid }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(
+        typeof result.detail === "string" ? result.detail : response.statusText,
+      );
     }
+    return result;
   };
 
   const grabFrameBlob = async () => {
@@ -344,8 +345,6 @@ export default function UsersTab({
     if (mode === "device") {
       const data = await api.piEnrollFinish(sessionId);
       if (!data.ok || data.state !== "completed") throw new Error(data.message || "Backend host could not save face enrollment");
-      popToast("ok", "Face enrolled", `${data.user} — ${data.count || SAMPLES_NEEDED} samples saved to the backend host.`);
-      setFaceAccessAllowed((prev) => ({ ...prev, [data.user]: true }));
       return data;
     }
     const r = await fetch(`${cleanApi}/api/enroll/finish`, {
@@ -355,40 +354,155 @@ export default function UsersTab({
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
-    popToast("ok", "Face enrolled", `${data.user} — ${data.samples} samples saved to local DB.`);
-    setFaceAccessAllowed((prev) => ({ ...prev, [data.user]: true }));
+    return data;
   };
 
   const resetEnrollUi = () => {
     clearPiEnrollPoll();
-    setEnrollSession(null);
+    activeEnrollRef.current = null;
+    pendingEnrollCancelRef.current = null;
     setEnrollCount(0);
-    setPiEnrollStatus(null);
     stopEnrollCamera();
     setEnrollingAuto(false);
   };
 
-  const finishPiEnroll = async (status, displayName) => {
+  const trackActiveEnrollment = (generation, sessionId, displayName) => {
+    const activeEnrollment = {
+      generation,
+      sessionId,
+      displayName,
+      cancel: () => cancelRemoteSession(sessionId),
+    };
+    activeEnrollRef.current = activeEnrollment;
+    return activeEnrollment;
+  };
+
+  const finishPiEnroll = async (status, displayName, generation) => {
+    if (generation !== enrollGenerationRef.current) return;
     clearPiEnrollPoll();
     const state = status?.state || "error";
+    const enrolledName = status?.user || displayName;
+    const cameraDescription =
+      status?.source === "client_camera"
+        ? "this device camera"
+        : "the backend camera";
+    enrollGenerationRef.current += 1;
+    resetEnrollUi();
     if (state === "completed") {
-      createdEnrollUserRef.current = null;
       if (status?.recognition_available === false) {
-        popToast("info", "Enrollment simulated", `${displayName} was added, but this fake does not store a recognition template.`);
+        popToast("info", "Enrollment simulated", `${enrolledName} was added, but this fake does not store a recognition template.`);
       } else {
-        popToast("ok", "Face enrolled", `${displayName} enrolled from the backend camera.`);
+        popToast("ok", "Face enrolled", `${enrolledName} enrolled from ${cameraDescription}.`);
       }
-      setFaceAccessAllowed((prev) => ({ ...prev, [displayName]: true }));
+      setFaceAccessAllowed((prev) => ({ ...prev, [enrolledName]: true }));
       setName("");
       await refreshLocalFaces();
     } else if (state === "cancelled") {
-      await cleanupCreatedEnrollUser();
-      popToast("info", "Cancelled", "Backend camera enrollment stopped.");
+      popToast("info", "Cancelled", `${cameraDescription} enrollment stopped.`);
     } else {
-      await cleanupCreatedEnrollUser();
       popToast("err", "Enrollment failed", status?.message || "Backend camera enrollment did not complete.");
     }
+  };
+
+  const settleEnrollmentCancellation = async (
+    activeEnrollment,
+    generation,
+    failureMessage = "",
+  ) => {
+    if (generation !== enrollGenerationRef.current) return;
+    stopEnrollCamera();
+    activeEnrollRef.current = {
+      ...activeEnrollment,
+      generation,
+      cancelling: true,
+    };
+    try {
+      const result = await activeEnrollment.cancel();
+      if (generation !== enrollGenerationRef.current) return;
+      if (result?.state === "cancelled") {
+        enrollGenerationRef.current += 1;
+        resetEnrollUi();
+        if (failureMessage) {
+          popToast(
+            "err",
+            "Enrollment failed",
+            `${failureMessage} Backend enrollment was cancelled.`,
+          );
+        } else {
+          popToast("info", "Cancelled", "Camera enrollment stopped.");
+        }
+        return;
+      }
+      if (PI_ENROLL_FINAL_STATES.has(result?.state)) {
+        await finishPiEnroll(
+          result,
+          activeEnrollment.displayName,
+          generation,
+        );
+        return;
+      }
+      throw new Error(result?.message || "Backend did not confirm cancellation.");
+    } catch (error) {
+      if (generation !== enrollGenerationRef.current) return;
+      const message = failureMessage
+        ? `${failureMessage} Backend cancellation failed: ${error.message}`
+        : error.message || "Backend did not confirm cancellation.";
+      activeEnrollRef.current = {
+        ...activeEnrollment,
+        generation,
+        cancelling: false,
+      };
+      setEnrollingAuto(true);
+      popToast(
+        "err",
+        failureMessage ? "Enrollment connection lost" : "Cancel failed",
+        message,
+      );
+    }
+  };
+
+  const finishPendingEnrollmentCancellation = (startGeneration) => {
+    const pendingCancellation = pendingEnrollCancelRef.current;
+    if (
+      pendingCancellation?.startGeneration !== startGeneration ||
+      pendingCancellation.cancelGeneration !== enrollGenerationRef.current
+    ) {
+      return false;
+    }
+    pendingEnrollCancelRef.current = null;
+    enrollGenerationRef.current += 1;
     resetEnrollUi();
+    popToast("info", "Cancelled", "Enrollment stopped before the camera started.");
+    return true;
+  };
+
+  const cancelStaleStartedEnrollment = async (
+    startGeneration,
+    sessionId,
+    displayName,
+  ) => {
+    const pendingCancellation = pendingEnrollCancelRef.current;
+    if (
+      pendingCancellation?.startGeneration === startGeneration &&
+      pendingCancellation.cancelGeneration === enrollGenerationRef.current
+    ) {
+      pendingEnrollCancelRef.current = null;
+      const activeEnrollment = trackActiveEnrollment(
+        pendingCancellation.cancelGeneration,
+        sessionId,
+        displayName,
+      );
+      await settleEnrollmentCancellation(
+        activeEnrollment,
+        pendingCancellation.cancelGeneration,
+      );
+      return;
+    }
+    try {
+      await cancelRemoteSession(sessionId);
+    } catch {
+      /* Component unmounted or a newer enrollment owns the UI. */
+    }
   };
 
   const prepareEnrollmentUser = async (displayName) => {
@@ -409,14 +523,20 @@ export default function UsersTab({
       newUserPin,
       currentUser.is_owner && newUserIsAdmin,
     );
+    if (!created?.id) return null;
     setNewUserPin("");
     setNewUserIsAdmin(false);
-    if (!created?.id) return null;
-    createdEnrollUserRef.current = created;
+    if (!created.enrollment_grant) {
+      throw new Error(
+        "The user was created, but the host did not authorize enrollment. " +
+          "Update and restart the host, then retry enrollment for this user.",
+      );
+    }
     return created;
   };
 
   const authorizeEnrollment = (user) =>
+    user.enrollment_grant ||
     requestGrant("enrollment.start", user.id, `enroll ${user.name}`);
 
   const runPiCameraEnroll = async (displayName) => {
@@ -425,26 +545,39 @@ export default function UsersTab({
       return;
     }
 
-    cancelAutoRef.current = false;
+    const generation = enrollGenerationRef.current + 1;
+    enrollGenerationRef.current = generation;
+    pendingEnrollCancelRef.current = null;
+    activeEnrollRef.current = null;
     setEnrollingAuto(true);
     setEnrollCount(0);
-    setPiEnrollStatus({ state: "starting", count: 0, samples_needed: SAMPLES_NEEDED, source: "device_camera" });
 
     let enrollmentUser;
     let grantToken;
     try {
       enrollmentUser = await prepareEnrollmentUser(displayName);
+      if (generation !== enrollGenerationRef.current) {
+        finishPendingEnrollmentCancellation(generation);
+        return;
+      }
       if (!enrollmentUser) {
         resetEnrollUi();
         return;
       }
       grantToken = await authorizeEnrollment(enrollmentUser);
+      if (generation !== enrollGenerationRef.current) {
+        finishPendingEnrollmentCancellation(generation);
+        return;
+      }
       if (!grantToken) {
-        await cleanupCreatedEnrollUser();
         resetEnrollUi();
         return;
       }
     } catch (e) {
+      if (generation !== enrollGenerationRef.current) {
+        finishPendingEnrollmentCancellation(generation);
+        return;
+      }
       popToast("err", "Add user failed", e.message);
       resetEnrollUi();
       return;
@@ -453,53 +586,105 @@ export default function UsersTab({
     let sessionId;
     try {
       const start = await api.piEnrollStart(
-        { name: displayName, source: "device_camera" },
+        { user_id: enrollmentUser.id, source: "device_camera" },
         grantToken,
       );
       sessionId = start.session_id || start.sessionId;
+      if (generation !== enrollGenerationRef.current) {
+        if (sessionId) {
+          await cancelStaleStartedEnrollment(
+            generation,
+            sessionId,
+            displayName,
+          );
+        } else {
+          finishPendingEnrollmentCancellation(generation);
+        }
+        return;
+      }
+      if (!sessionId) {
+        await finishPiEnroll(
+          {
+            state: "error",
+            message: "Backend host did not return an enrollment session.",
+          },
+          displayName,
+          generation,
+        );
+        return;
+      }
       const next = {
         ...start,
         state: start.state || "capturing",
         session_id: sessionId,
         samples_needed: start.samples_needed || SAMPLES_NEEDED,
       };
-      setPiEnrollStatus(next);
+      const activeEnrollment = trackActiveEnrollment(
+        generation,
+        sessionId,
+        displayName,
+      );
       setEnrollCount(next.count || 0);
 
       if (PI_ENROLL_FINAL_STATES.has(next.state)) {
-        await finishPiEnroll(next, displayName);
+        await finishPiEnroll(next, displayName, generation);
         return;
       }
+
+      const poll = async () => {
+        if (
+          generation !== enrollGenerationRef.current ||
+          activeEnrollRef.current !== activeEnrollment
+        ) {
+          return;
+        }
+        try {
+          const raw = await api.piEnrollStatus(sessionId);
+          if (
+            generation !== enrollGenerationRef.current ||
+            activeEnrollRef.current !== activeEnrollment
+          ) {
+            return;
+          }
+          const status = {
+            ...raw,
+            state: raw.state || "capturing",
+            session_id: raw.session_id || raw.sessionId || sessionId,
+            samples_needed: raw.samples_needed || SAMPLES_NEEDED,
+          };
+          setEnrollCount(status.count || 0);
+          if (PI_ENROLL_FINAL_STATES.has(status.state)) {
+            await finishPiEnroll(status, displayName, generation);
+          } else {
+            piEnrollPollRef.current = setTimeout(poll, 1000);
+          }
+        } catch (error) {
+          if (
+            generation !== enrollGenerationRef.current ||
+            activeEnrollRef.current !== activeEnrollment
+          ) {
+            return;
+          }
+          clearPiEnrollPoll();
+          await settleEnrollmentCancellation(
+            activeEnrollment,
+            generation,
+            error.message || "Could not read enrollment status.",
+          );
+        }
+      };
+      piEnrollPollRef.current = setTimeout(poll, 1000);
+      return;
     } catch (e) {
-      await cleanupCreatedEnrollUser();
+      if (generation !== enrollGenerationRef.current) {
+        finishPendingEnrollmentCancellation(generation);
+        return;
+      }
       popToast("err", "Enrollment start failed", e.message);
       resetEnrollUi();
       return;
     }
 
-    if (!sessionId) {
-      await finishPiEnroll({ state: "error", message: "Backend host did not return an enrollment session." }, displayName);
-      return;
-    }
-
-    piEnrollPollRef.current = setInterval(async () => {
-      try {
-        const raw = await api.piEnrollStatus(sessionId);
-        const next = {
-          ...raw,
-          state: raw.state || "capturing",
-          session_id: raw.session_id || raw.sessionId || sessionId,
-          samples_needed: raw.samples_needed || SAMPLES_NEEDED,
-        };
-        setPiEnrollStatus(next);
-        setEnrollCount(next.count || 0);
-        if (PI_ENROLL_FINAL_STATES.has(next.state)) {
-          await finishPiEnroll(next, displayName);
-        }
-      } catch (e) {
-        await finishPiEnroll({ state: "error", message: e.message }, displayName);
-      }
-    }, 1000);
   };
 
   const runAddAndEnroll = async () => {
@@ -512,7 +697,10 @@ export default function UsersTab({
     }
     if (mode !== "device" && !cleanApi) return popToast("err", "Face API", "Set Face API URL under Control → Connection.");
 
-    cancelAutoRef.current = false;
+    const generation = enrollGenerationRef.current + 1;
+    enrollGenerationRef.current = generation;
+    pendingEnrollCancelRef.current = null;
+    activeEnrollRef.current = null;
     setEnrollingAuto(true);
     setEnrollCount(0);
 
@@ -520,37 +708,39 @@ export default function UsersTab({
     let grantToken;
     try {
       enrollmentUser = await prepareEnrollmentUser(n);
+      if (generation !== enrollGenerationRef.current) {
+        finishPendingEnrollmentCancellation(generation);
+        return;
+      }
       if (!enrollmentUser) {
         setEnrollingAuto(false);
         return;
       }
       grantToken = await authorizeEnrollment(enrollmentUser);
+      if (generation !== enrollGenerationRef.current) {
+        finishPendingEnrollmentCancellation(generation);
+        return;
+      }
       if (!grantToken) {
-        await cleanupCreatedEnrollUser();
         setEnrollingAuto(false);
         return;
       }
     } catch (e) {
+      if (generation !== enrollGenerationRef.current) {
+        finishPendingEnrollmentCancellation(generation);
+        return;
+      }
       popToast("err", "Add user failed", e.message);
       setEnrollingAuto(false);
       return;
     }
-
-    if (cancelAutoRef.current) {
-      await cleanupCreatedEnrollUser();
-      setEnrollingAuto(false);
-      popToast("info", "Cancelled", "Enrollment stopped.");
-      return;
-    }
-
-    if (enrollSession) await cancelRemoteSession(enrollSession);
 
     let sessionId;
     try {
       let data;
       if (mode === "device") {
         data = await api.piEnrollStart(
-          { name: n, source: "client_camera" },
+          { user_id: enrollmentUser.id, source: "client_camera" },
           grantToken,
         );
       } else {
@@ -563,107 +753,153 @@ export default function UsersTab({
         if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : r.statusText);
       }
       sessionId = data.session_id;
-      setEnrollSession(sessionId);
+      if (generation !== enrollGenerationRef.current) {
+        if (sessionId) {
+          await cancelStaleStartedEnrollment(generation, sessionId, n);
+        } else {
+          finishPendingEnrollmentCancellation(generation);
+        }
+        return;
+      }
+      if (!sessionId) {
+        throw new Error("Backend host did not return an enrollment session.");
+      }
     } catch (e) {
-      await cleanupCreatedEnrollUser();
+      if (generation !== enrollGenerationRef.current) {
+        finishPendingEnrollmentCancellation(generation);
+        return;
+      }
       popToast("err", "Enrollment start failed", e.message);
       setEnrollingAuto(false);
       return;
     }
 
-    if (cancelAutoRef.current) {
-      await cancelRemoteSession(sessionId);
-      await cleanupCreatedEnrollUser();
-      resetEnrollUi();
-      popToast("info", "Cancelled", "Enrollment stopped.");
-      return;
-    }
+    const activeEnrollment = trackActiveEnrollment(generation, sessionId, n);
 
-    const camOk = await startEnrollCamera();
+    const camOk = await startEnrollCamera(generation);
+    if (generation !== enrollGenerationRef.current) return;
     if (!camOk) {
-      await cancelRemoteSession(sessionId);
-      await cleanupCreatedEnrollUser();
-      resetEnrollUi();
+      await settleEnrollmentCancellation(
+        activeEnrollment,
+        generation,
+        "This device camera could not start.",
+      );
       return;
     }
 
     const video = enrollVideoRef.current;
     let waited = 0;
-    while (video && video.readyState < 2 && waited < 60) {
+    while (
+      video &&
+      video.readyState < 2 &&
+      waited < 60 &&
+      generation === enrollGenerationRef.current
+    ) {
       await sleep(50);
       waited++;
     }
+    if (generation !== enrollGenerationRef.current) return;
 
     let count = 0;
     let attempts = 0;
     try {
-      while (count < SAMPLES_NEEDED && attempts < MAX_AUTO_ATTEMPTS && !cancelAutoRef.current) {
+      while (
+        count < SAMPLES_NEEDED &&
+        attempts < MAX_AUTO_ATTEMPTS &&
+        generation === enrollGenerationRef.current
+      ) {
         if (attempts > 0) await sleep(AUTO_CAPTURE_MS);
-        if (cancelAutoRef.current) break;
+        if (generation !== enrollGenerationRef.current) break;
         attempts++;
         const blob = await grabFrameBlob();
         const data = await postSample(sessionId, blob);
+        if (generation !== enrollGenerationRef.current) return;
         count = data.count ?? count;
         setEnrollCount(count);
       }
     } catch (e) {
-      popToast("err", "Capture failed", e.message);
-      await cancelRemoteSession(sessionId);
-      await cleanupCreatedEnrollUser();
-      resetEnrollUi();
+      if (generation !== enrollGenerationRef.current) return;
+      await settleEnrollmentCancellation(
+        activeEnrollment,
+        generation,
+        `Capture failed: ${e.message}`,
+      );
       return;
     }
 
-    if (cancelAutoRef.current) {
-      await cancelRemoteSession(sessionId);
-      await cleanupCreatedEnrollUser();
-      resetEnrollUi();
-      popToast("info", "Cancelled", "Enrollment stopped.");
-      return;
-    }
+    if (generation !== enrollGenerationRef.current) return;
 
     if (count < SAMPLES_NEEDED) {
-      popToast(
-        "err",
-        "Enrollment incomplete",
+      await settleEnrollmentCancellation(
+        activeEnrollment,
+        generation,
         `Got ${count}/${SAMPLES_NEEDED} valid samples. Keep one face in frame and try again.`,
       );
-      await cancelRemoteSession(sessionId);
-      await cleanupCreatedEnrollUser();
-      resetEnrollUi();
       return;
     }
 
     try {
-      await finishEnrollWithId(sessionId);
-      createdEnrollUserRef.current = null;
+      const result = await finishEnrollWithId(sessionId);
+      if (generation !== enrollGenerationRef.current) return;
+      const enrolledName = result.user || n;
+      enrollGenerationRef.current += 1;
+      resetEnrollUi();
+      popToast(
+        "ok",
+        "Face enrolled",
+        `${enrolledName} — ${result.count || result.samples || SAMPLES_NEEDED} samples saved to the backend host.`,
+      );
+      setFaceAccessAllowed((prev) => ({ ...prev, [enrolledName]: true }));
       setName("");
       await refreshLocalFaces();
     } catch (e) {
-      await cancelRemoteSession(sessionId);
-      await cleanupCreatedEnrollUser();
-      popToast("err", "Finish failed", e.message);
-    } finally {
-      resetEnrollUi();
+      if (generation !== enrollGenerationRef.current) return;
+      await settleEnrollmentCancellation(
+        activeEnrollment,
+        generation,
+        `Finish failed: ${e.message}`,
+      );
     }
   };
 
   const onCancelEnroll = async () => {
-    cancelAutoRef.current = true;
-    if (enrollSource === "device_camera" || mode === "device") {
-      const sessionId = piEnrollStatus?.session_id || piEnrollStatus?.sessionId || enrollSession;
-      clearPiEnrollPoll();
-      if (sessionId) {
-        try {
-          await api.piEnrollCancel(sessionId);
-        } catch {
-          /* ignore cancel failures */
-        }
-      }
-      await cleanupCreatedEnrollUser();
-      resetEnrollUi();
-      popToast("info", "Cancelled", `${enrollSource === "device_camera" ? "Backend" : "This device"} camera enrollment stopped.`);
+    if (
+      activeEnrollRef.current?.cancelling ||
+      pendingEnrollCancelRef.current?.cancelGeneration ===
+        enrollGenerationRef.current
+    ) {
+      return;
     }
+    const startGeneration = enrollGenerationRef.current;
+    const cancelGeneration = startGeneration + 1;
+    const activeEnrollment = activeEnrollRef.current;
+    enrollGenerationRef.current = cancelGeneration;
+    clearPiEnrollPoll();
+    stopEnrollCamera();
+
+    if (!activeEnrollment?.sessionId) {
+      pendingEnrollCancelRef.current = {
+        startGeneration,
+        cancelGeneration,
+      };
+      popToast(
+        "info",
+        "Cancellation requested",
+        "Enrollment will be cancelled when the backend returns its session.",
+      );
+      return;
+    }
+
+    const cancellingEnrollment = {
+      ...activeEnrollment,
+      generation: cancelGeneration,
+      cancelling: true,
+    };
+    activeEnrollRef.current = cancellingEnrollment;
+    await settleEnrollmentCancellation(
+      cancellingEnrollment,
+      cancelGeneration,
+    );
   };
 
   const updateAccess = async (user, allowed) => {
@@ -704,15 +940,27 @@ export default function UsersTab({
         "user.pin",
         user.id,
         `reset PIN for ${user.name}`,
+        { name: user.name, pin },
       );
       if (!grant) return;
       await api.resetUserPin(user.id, pin, grant);
       setPinDrafts((previous) => ({ ...previous, [user.id]: "" }));
+      if (invite?.userId === user.id) setInvite(null);
       if (user.id === currentUser.id) {
         expireSession("login");
         return;
       }
-      popToast("ok", "PIN updated", `${user.name}'s PIN was reset.`);
+      setDevices((previous) =>
+        previous.map((device) =>
+          device.user_id === user.id ? { ...device, active: false } : device,
+        ),
+      );
+      popToast(
+        "ok",
+        "PIN updated",
+        `${user.name}'s paired phones were revoked. Pair them again with the new PIN.`,
+      );
+      void api.devices().then(setDevices).catch(() => {});
     } catch (error) {
       popToast("err", "PIN reset failed", error.message);
     }
@@ -818,7 +1066,7 @@ export default function UsersTab({
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="min-w-0 flex-1">
             <label htmlFor="display-name" className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-slate-500">Display name</label>
-            <Input id="display-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" disabled={enrollingAuto} />
+            <Input id="display-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" maxLength={100} disabled={enrollingAuto} />
           </div>
           <div>
             <label htmlFor="new-user-pin" className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-slate-500">New user PIN</label>

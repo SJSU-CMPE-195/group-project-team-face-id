@@ -181,11 +181,13 @@
     <string name="export_write_failed">Could not write the selected document. Choose another location and try again.</string>
 
     <string name="pin_verify_title">Enter your BASS PIN</string>
+    <string name="pin_confirm_new_user_title">Confirm the new user PIN</string>
+    <string name="pin_confirm_new_user_description">Re-enter the new 6-digit PIN for %1$s.</string>
     <string name="pin_login_description">Enter the remembered account’s PIN to continue.</string>
     <string name="pin_enroll_description">Enter your administrator PIN to start or replace this face enrollment.</string>
     <string name="pin_unlock_description">Enter your PIN to start a face scan with the paired device camera.</string>
     <string name="pin_ignition_description">Enter your account PIN to verify your face and start ignition.</string>
-    <string name="pin_user_admin_description">Enter your administrator PIN to change this user.</string>
+    <string name="pin_user_admin_description">Enter your login account’s administrator PIN to manage users.</string>
     <string name="pin_settings_description">Enter your administrator PIN to save these settings.</string>
     <string name="pin_lock_description">Enter your account PIN to lock the device.</string>
     <string name="pin_stop_ignition_description">Enter your account PIN to stop ignition.</string>
@@ -194,6 +196,8 @@
     <string name="pin_delete">Delete last digit</string>
     <string name="pin_submit">Confirm</string>
     <string name="pin_invalid">Enter all 6 digits.</string>
+    <string name="pin_new_user_mismatch">PINs do not match. Re-enter the new PIN for %1$s.</string>
+    <string name="pin_approval_expired">Approval expired. Enter your administrator PIN again.</string>
     <plurals name="pin_locked_seconds">
         <item quantity="one">Try again in %1$d second.</item>
         <item quantity="other">Try again in %1$d seconds.</item>
