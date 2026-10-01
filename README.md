@@ -631,10 +631,154 @@ operations.
 | Device API | Flask route factory behind Cheroot + pyOpenSSL |
 | Database | SQLite via db_api.py |
 | Camera (Pi) | Picamera2 |
-| Hardware control | pyserial → ESP32 |
+| Hardware control | pyserial → ESP32 (CAN migration planned; see below) |
 | Auto-start | systemd |
 
 ---
+
+---
+
+## Hardware wiring
+
+All pin numbers below are taken from the firmware actually in this repository
+(`ESP32_Program/src/Step_Motor_Lock.ino`). Note that `ESP32_Program/ReadMe.md` is
+**out of date**: it describes an earlier build that used two DC motors on a single
+L298N. The current firmware drives the lock with a 28BYJ-48 stepper through a
+ULN2003 instead.
+
+### Bill of materials
+
+| Component | Role | Notes |
+|---|---|---|
+| Raspberry Pi 5 | Host: camera, recognition, API, dashboard | Runs `bass_wireless.py` |
+| Pi Camera Module (CSI) | Enrollment and unlock capture | Pi 5 uses a **22-pin 0.5 mm** cable, not the 15-pin Pi 4 type |
+| ESP32 (WROOM, CP2102N USB) | Motor controller | Appears as `/dev/ttyUSB0` |
+| L298N dual H-bridge | DC motor driver | Engine ignition motor |
+| DC motor | Simulates engine ignition | Driven from L298N OUT1/OUT2 |
+| ULN2003 driver board | Stepper driver | Normally ships with the 28BYJ-48 |
+| 28BYJ-48 stepper | Simulates the door lock actuator | 2048 half-steps per lock throw |
+| MCP2515 CAN module | CAN controller for the Pi | SPI — **see the voltage warning below** |
+| SN65HVD230 transceiver | CAN transceiver for the ESP32 | Natively 3.3 V, correct for the ESP32 |
+| External 12 V supply | Motor power | Never power motors from the ESP32 |
+
+### ESP32 GPIO allocation
+
+| GPIO | Signal | Connects to |
+|---|---|---|
+| 14 | `ENA` — PWM, 1 kHz, 8-bit | L298N `ENA` |
+| 26 | `IN1` | L298N `IN1` |
+| 27 | `IN2` | L298N `IN2` |
+| 18 | `STEP_IN1` | ULN2003 `IN1` |
+| 16 | `STEP_IN2` | ULN2003 `IN2` |
+| 21 | `STEP_IN3` | ULN2003 `IN3` |
+| 22 | `STEP_IN4` | ULN2003 `IN4` |
+| 4 | CAN RX *(planned)* | SN65HVD230 `CRX` / `R` |
+| 5 | CAN TX *(planned)* | SN65HVD230 `CTX` / `D` |
+
+GPIO 4 and 5 are unused by the motor code, so adding the CAN transceiver creates
+no pin conflict.
+
+### DC motor — engine ignition (L298N)
+
+| ESP32 | L298N |
+|---|---|
+| GPIO14 | `ENA` |
+| GPIO26 | `IN1` |
+| GPIO27 | `IN2` |
+| GND | `GND` (must be common with the supply) |
+
+| L298N terminal | Connects to |
+|---|---|
+| `+12V` | External 12 V supply (+) |
+| `GND` | Supply (−) **and** ESP32 GND |
+| `OUT1` | DC motor terminal 1 |
+| `OUT2` | DC motor terminal 2 |
+
+Speed is PWM on `ENA` through `ledcAttach(ENA, 1000, 8)`, so `SPEED 0`–`SPEED 255`
+maps directly onto duty cycle. Direction comes from IN1/IN2: `HIGH`/`LOW` runs the
+motor, `LOW`/`LOW` lets it coast to a stop.
+
+### Stepper motor — door lock (ULN2003 + 28BYJ-48)
+
+| ESP32 | ULN2003 |
+|---|---|
+| GPIO18 | `IN1` |
+| GPIO16 | `IN2` |
+| GPIO21 | `IN3` |
+| GPIO22 | `IN4` |
+| GND | `GND` (common) |
+
+| ULN2003 | Connects to |
+|---|---|
+| `+5V` | 5 V supply — the L298N's onboard 5 V regulator can provide this |
+| `GND` | Common ground |
+| 5-pin socket | 28BYJ-48 keyed connector |
+
+The firmware constructs the stepper like this:
+
+```cpp
+AccelStepper lockMotor(AccelStepper::HALF4WIRE, STEP_IN1, STEP_IN3, STEP_IN2, STEP_IN4);
+```
+
+`STEP_IN2` and `STEP_IN3` are deliberately swapped in that call. This is the
+correct coil ordering for a 28BYJ-48 driven through a ULN2003 — do not "correct"
+it to sequential order, or the motor will buzz and vibrate without rotating. One
+lock throw is `LOCK_STEPS = 2048` half-steps.
+
+### CAN bus — Raspberry Pi side (MCP2515, SPI)
+
+> **Voltage warning — read before powering on.** Most MCP2515 breakout boards (the
+> ones carrying a TJA1050 transceiver) are designed to run at 5 V. At 5 V the
+> module's `SO`/MISO pin drives roughly 5 V into the Pi's GPIO 9, which is
+> **3.3 V only and not 5 V tolerant**. This can damage the SoC. Choose one of:
+> power the module from 3.3 V (Pin 1) instead — the MCP2515 itself runs fine at
+> 3.3 V, and on a short two-node bench bus against a 3.3 V SN65HVD230 this
+> generally works; or level-shift the MISO line alone; or use a 3.3 V-native
+> module.
+
+| MCP2515 pin | Pi physical pin | Pi signal |
+|---|---|---|
+| `VCC` | 1 (preferred) or 2 | 3.3 V — or 5 V, with the warning above |
+| `GND` | 6 | GND |
+| `CS` | 24 | GPIO8 / SPI0 CE0 |
+| `SO` | 21 | GPIO9 / SPI0 MISO |
+| `SI` | 19 | GPIO10 / SPI0 MOSI |
+| `SCK` | 23 | GPIO11 / SPI0 SCLK |
+| `INT` | 22 | GPIO25 |
+
+`INT` on GPIO25 must match the `interrupt=` value in the device-tree overlay below.
+
+### CAN bus — ESP32 side (SN65HVD230)
+
+| SN65HVD230 pin | ESP32 |
+|---|---|
+| `VCC` / `3V3` | 3V3 — **not** 5 V |
+| `GND` | GND (common) |
+| `CTX` / `D` | GPIO5 (TWAI TX) |
+| `CRX` / `R` | GPIO4 (TWAI RX) |
+
+### CAN bus — between the two nodes
+
+| MCP2515 (Pi) | SN65HVD230 (ESP32) |
+|---|---|
+| `CANH` | `CANH` |
+| `CANL` | `CANL` |
+
+Both ends of a CAN bus need a 120 Ω termination resistor — two in total, no more
+and no fewer. Both modules usually carry one on board, enabled by a jumper or
+solder bridge; with exactly two nodes, enable both. Verify with a multimeter:
+measure across `CANH`/`CANL` with everything powered **off** and expect roughly
+**60 Ω** (the two 120 Ω resistors in parallel).
+
+### Power and ground rules
+
+- **One common ground.** ESP32 GND, L298N GND, ULN2003 GND and the 12 V supply
+  negative must all be tied together, or control signals have no reference and
+  behaviour becomes erratic.
+- **Never drive motors from the ESP32's 3V3 or 5V pins.** Motor current must come
+  from the external supply through the driver boards.
+- The ESP32 itself is powered over USB from the Pi during testing.
+- Bring the 12 V supply up only after the signal wiring has been checked.
 
 ## Hardware integration (ESP32)
 
@@ -646,13 +790,182 @@ The retained ESP32 protocol defines these serial commands:
 
 | Command | Action |
 |---------|--------|
-| `UNLOCK` | Unlock door |
-| `LOCK` | Lock door |
-| `START` | Start ignition |
-| `STOP` | Stop ignition |
+| `UNLOCK` | Unlock door (stepper to the unlocked position) |
+| `LOCK` | Lock door (stepper to the locked position) |
+| `START` | Start ignition (DC motor on; `ON` is accepted as an alias) |
+| `STOP` | Stop ignition (DC motor off; `OFF` is accepted as an alias) |
+| `SPEED X` | Set ignition motor speed, `X` from 0 to 255 |
 
 The current Pi runtime does not send these commands. It reports
 `actuator_control_available: false`, `physical_state_confirmed: false`, and
 `actuator_feedback: "unavailable"`. PC and developer-fixture runtimes may execute
 the same state machine only with `simulated_actuators: true`; their results do
 not describe physical hardware.
+
+---
+
+## CAN bus migration (planned, not yet implemented)
+
+**Status: design only.** No CAN code exists in this repository yet — the Pi still
+talks to the ESP32 over USB serial at 115200 baud. This section records the
+intended change so the wiring above has context.
+
+### Why this matters more than a protocol swap
+
+The Pi deliberately blocks every physical actuator output today:
+
+```python
+actuator_control_available = False
+actuator_block_reason = (
+    "Physical actuator output is disabled until command feedback is "
+    "implemented and validated."
+)
+```
+
+Over plain serial the Pi can only know that bytes left the UART — never that the
+lock actually moved. Rather than fire motors blindly, the runtime gates them.
+This gate disables the whole unlock scan flow in the dashboard, not just the motor
+output; enrollment and administrator tasks stay available.
+
+CAN supplies exactly what that gate is waiting for: frames are acknowledged at the
+hardware level, and a status frame returned by the ESP32 reports real lock and
+ignition state. **Completing this migration is what unblocks the motors**, which is
+why it is the critical path for full-system integration.
+
+### Proposed frame format
+
+| ID | Direction | Payload |
+|---|---|---|
+| `0x100` | Pi → ESP32 | `[cmd, arg, counter]` — cmd: 1=LOCK, 2=UNLOCK, 3=START, 4=STOP, 5=SPEED (`arg` 0–255) |
+| `0x101` | ESP32 → Pi | `[locked, engine_on, speed, last_cmd_echo]` |
+
+Fixed 8-byte frames remove the string parsing and partial-read handling that the
+current `Serial.readStringUntil('\n')` loop needs.
+
+### Raspberry Pi OS configuration
+
+Add to `/boot/firmware/config.txt`:
+
+```
+dtparam=spi=on
+dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25
+```
+
+Set `oscillator=` to match the crystal can soldered to your MCP2515 board —
+**8 MHz and 16 MHz are both common**. A mismatch brings the interface up cleanly
+and then passes zero frames, which is the single most common cause of a CAN bus
+that appears dead for no visible reason.
+
+After a reboot:
+
+```bash
+sudo ip link set can0 up type can bitrate 500000
+candump can0      # from can-utils
+```
+
+Confirm frames move with `candump` **before** writing any Python. Use the same
+bitrate on both nodes; 500 kbit/s is the automotive norm.
+
+### Code that will change
+
+| Area | File |
+|---|---|
+| Add `python-can` | `requirements-pi-device-api.txt` |
+| Replace the serial transport with a CAN bus handle | `car_face_auth/src/pi_runtime.py` |
+| Replace the `_send_command` stub with a real send + ACK wait | `car_face_auth/src/pi_runtime.py` |
+| Remove USB-descriptor port discovery (`ESP_KEYWORDS`, `_find_esp_port`) | `car_face_auth/src/pi_runtime.py` |
+| Add a receive path for `0x101` status frames | `car_face_auth/src/pi_runtime.py` |
+| Rename `esp32_connected` / `serial_port` status fields to CAN equivalents | `car_face_auth/src/pi_runtime.py`, dashboard status consumers |
+| Provide a CAN twin of `_SimulatedSerial` | `car_face_auth/src/simulated_runtime.py` |
+| Port the command loop to the TWAI driver (`driver/twai.h`) and emit status frames | `ESP32_Program/src/Step_Motor_Lock.ino` |
+| Update serial mocks | `tests/test_runtime_safety.py`, `tests/test_simulated_pi_api.py` |
+
+Keeping the `_send_command(command: str) -> bool` signature and swapping only its
+body means the scan, unlock and auto-relock logic above it needs no changes.
+
+### Security note
+
+CAN has no authentication. Any node physically on the bus can inject an unlock
+frame and the ESP32 will obey. That is not a defect in this design — it is how
+real vehicle CAN buses behave, and it underpins most published car-hacking work.
+Because the goal here is a realistic vehicle environment, this prototype
+reproduces that property faithfully. The careful authentication, session and
+authorization work described earlier in this README protects the **network API**;
+it does not extend to the CAN bus. A rolling counter plus a short MAC on command
+frames would mitigate it if the project chooses to go further.
+
+---
+
+## Troubleshooting
+
+### `rpicam-hello --list-cameras` reports "No cameras available!"
+
+A lit LED on the camera board only proves the 3.3 V and GND pins are making
+contact. Sensor detection happens over a separate I2C pair on the same ribbon.
+Confirm what the kernel actually sees:
+
+```bash
+v4l2-ctl --list-devices          # expect an rp1-cfe entry, not only pispbe
+dmesg | grep -iE "rp1-cfe|imx|ov5"
+ls /dev/i2c-*                    # a camera creates its own I2C bus
+```
+
+If there is no `rp1-cfe` entry and no camera I2C bus, no overlay was loaded.
+`camera_auto_detect=1` recognises official Raspberry Pi modules only and fails
+silently on third-party boards. Force the sensor explicitly in
+`/boot/firmware/config.txt` and reboot:
+
+```
+camera_auto_detect=0
+dtoverlay=ov5647,cam0
+```
+
+Substitute `imx219`, `imx477` or `imx708` as appropriate, and `cam1` for the other
+connector. If the sensor then probes, auto-detect simply did not know the board.
+If `dmesg` instead reports `failed to read chip id`, the software is now correct
+and the fault is physical — reseat the ribbon, confirm you are using a **22-pin
+0.5 mm** Pi 5 cable rather than a 15-pin Pi 4 cable, and try the other connector.
+
+CSI cameras are enumerated only at boot, so a camera connected to a running Pi
+will never appear until it is rebooted.
+
+### Enrollment and unlock scans return 503
+
+`liveness_detection` defaults to `true`, but presentation-attack detection is not
+implemented (`liveness_available = False`). `car_face_auth/src/runtime_safety.py`
+fails closed in that combination. An administrator can disable the setting under
+**Settings** for prototype testing; doing so reduces security and does not
+establish production or anti-spoofing safety.
+
+### A user exists but has no face template
+
+Creating an account and capturing a face are separate steps, and the account
+persists if capture fails. Re-enrol by entering that user's **exact display name**
+in **Users → Display Name**, leaving the PIN box empty, and selecting **Add &
+enroll face**. An existing name is matched case-insensitively and reused rather
+than duplicated. The PIN field is required only when creating a new account.
+
+### "Start face unlock" is greyed out
+
+`canStartScan` requires `actuatorControlAvailable`, which is `false` on the Pi by
+design. See the CAN migration section above. There is no environment-variable
+bypass.
+
+### `STOP, LOCK command was not sent` at startup
+
+The same actuator gate, reported at boot. It is not a serial fault, a wiring
+problem or an ESP32 failure.
+
+### The dashboard shows stale UI
+
+The host serves the built `dist/` directory. Run `npm run build` after frontend
+changes, or use `npm run dev` on port 5173 during development.
+
+### The host cannot find its database
+
+`--mode pi` defaults to `/home/pi/faceid/faceid.db`. On a Pi whose user is not
+`pi`, set the path explicitly:
+
+```bash
+export FACEID_DB_PATH=/home/<user>/faceid/faceid.db
+```
