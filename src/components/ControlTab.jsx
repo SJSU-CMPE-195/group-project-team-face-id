@@ -125,7 +125,7 @@ export default function ControlTab({
                     : !cameraAvailable
                       ? "The selected backend has no available camera."
                       : !actuatorControlAvailable
-                        ? "Real Pi outputs are blocked until actuator feedback is available."
+                        ? "The backend's actuator controls are unavailable."
                         : "");
 
   const clearPoll = useCallback(() => {
@@ -313,7 +313,7 @@ export default function ControlTab({
         popToast(
           "info",
           "Physical outputs blocked",
-          "Real Pi lock and ignition controls require command acknowledgement and position feedback.",
+          "The backend does not currently provide lock or ignition controls.",
         );
         return;
       }
@@ -757,7 +757,7 @@ export default function ControlTab({
 
           {online && !actuatorControlAvailable ? (
             <div className="mt-4 text-sm leading-relaxed text-amber-200/90">
-              Real Pi lock and ignition outputs are blocked. Enrollment and
+              Lock and ignition controls are unavailable. Enrollment and
               administrator data tasks remain available.
             </div>
           ) : null}

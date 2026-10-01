@@ -233,7 +233,9 @@ def secure_wireless_app(
                     "simulated_actuators": mode == "pc",
                     "liveness_available": False,
                     "actuator_feedback": "simulated" if mode == "pc" else "unavailable",
-                    "actuator_control_available": mode == "pc",
+                    "actuator_control_available": getattr(
+                        runtime, "actuator_control_available", mode == "pc",
+                    ),
                     "physical_state_confirmed": False,
                     "phone_ownership": commissioning is not None,
                 },

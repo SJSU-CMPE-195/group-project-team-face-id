@@ -163,30 +163,37 @@ class WriteProbe:
     def __init__(self) -> None:
         self.writes = []
         self.closed = False
+        self.flush_calls = 0
 
     def write(self, payload):
         self.writes.append(payload)
+        return len(payload)
+
+    def flush(self):
+        self.flush_calls += 1
 
     def close(self):
         self.closed = True
 
 
-class BlockedPhysicalRuntime(PiRuntime):
+class PhysicalRuntimeProbe(PiRuntime):
     def __init__(self, db):
         super().__init__(db)
         self.ensure_serial_calls = 0
         self.camera_open_calls = 0
+        self.serial_probe = WriteProbe()
 
     def _ensure_serial(self):
         self.ensure_serial_calls += 1
-        raise AssertionError("blocked output must not open serial")
+        self._serial = self.serial_probe
+        return self._serial
 
     def _spawn(self, session_id, target):
-        raise AssertionError("blocked scan must not spawn a camera worker")
+        pass
 
     def _open_camera(self, owner_id=None):
         self.camera_open_calls += 1
-        raise AssertionError("blocked scan must not open a camera")
+        raise AssertionError("serial check must not open a camera")
 
     def _close_camera(self, owner_id=None):
         return True
@@ -587,37 +594,48 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertTrue(status["simulated_actuators"])
         self.assertFalse(status["physical_state_confirmed"])
 
-    def test_physical_pi_blocks_every_command_before_serial_or_camera(self):
-        runtime = BlockedPhysicalRuntime(self.db)
-        serial = WriteProbe()
-        runtime._serial = serial
+    def test_physical_pi_sends_commands_without_confirming_position(self):
+        runtime = PhysicalRuntimeProbe(self.db)
+        serial = runtime.serial_probe
         set_actuation_state(runtime, unlock_owner="Ada")
 
         status = runtime.status()
         self.assertFalse(status["ready"])
-        self.assertFalse(status["actuator_control_available"])
+        self.assertTrue(status["actuator_control_available"])
         self.assertFalse(status["simulated_actuators"])
         self.assertFalse(status["esp32_connected"])
-        self.assertIn("disabled", status["error"])
+        self.assertFalse(status["physical_state_confirmed"])
+        self.assertEqual(status["actuator_feedback"], "unavailable")
+        self.assertIsNone(status["error"])
 
-        with self.assertRaises(RuntimeRequestError) as raised:
-            runtime.start_scan(expected_user="Ada")
-        self.assertEqual(raised.exception.status_code, 503)
+        runtime.start_scan(expected_user="Ada")
 
         for command in ("UNLOCK", "START", "LOCK", "STOP"):
-            self.assertFalse(runtime._send_command(command))
-        self.assertFalse(runtime.set_ignition(True)["ok"])
-        self.assertFalse(runtime.set_ignition(False)["ok"])
-        self.assertFalse(runtime.force_lock(reason="blocked")["ok"])
+            self.assertTrue(runtime._send_command(command))
+        self.assertFalse(runtime._send_command("UNLOCK\nSTART"))
+        self.assertEqual(
+            serial.writes,
+            [b"UNLOCK\n", b"START\n", b"LOCK\n", b"STOP\n"],
+        )
+        self.assertEqual(runtime.ensure_serial_calls, 4)
+        self.assertEqual(serial.flush_calls, 4)
+        self.assertTrue(runtime.status()["esp32_connected"])
+        self.assertTrue(runtime.set_ignition(True)["ok"])
+        self.assertTrue(runtime.set_ignition(False)["ok"])
+        lock_result = runtime.force_lock(reason="prototype")
+        self.assertTrue(lock_result["ok"])
+        self.assertFalse(lock_result["physical_state_confirmed"])
+        self.assertEqual(serial.writes[-2:], [b"STOP\n", b"LOCK\n"])
 
-        runtime._modules = {"probe": True}
-        runtime.close()
+        with patch.object(serial, "write", return_value=0):
+            self.assertFalse(runtime._send_command("UNLOCK"))
 
-        self.assertEqual(runtime.ensure_serial_calls, 0)
+        self.assertIn("incomplete ESP32 serial write", runtime.status()["error"])
+        self.assertIsNone(runtime._serial)
+        self.assertFalse(runtime.status()["esp32_connected"])
         self.assertEqual(runtime.camera_open_calls, 0)
-        self.assertEqual(serial.writes, [])
         self.assertTrue(serial.closed)
-        self.assertEqual(self.db.lock_writes, 0)
+        self.assertEqual(self.db.lock_writes, 1)
 
 
 if __name__ == "__main__":

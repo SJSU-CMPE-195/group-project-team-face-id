@@ -61,12 +61,9 @@ class PiRuntime:
     camera_source = "pi_camera"
     camera_label = "Pi camera"
     actuator_feedback = "unavailable"
-    actuator_control_available = False
+    actuator_control_available = True
     simulated_actuators = False
-    actuator_block_reason = (
-        "Physical actuator output is disabled until command feedback is "
-        "implemented and validated."
-    )
+    actuator_block_reason = "Actuator control is unavailable."
     liveness_available = False
 
     def __init__(self, db_api: Any, *, face_engine: Any | None = None):
@@ -1162,8 +1159,29 @@ class PiRuntime:
             return connection
 
     def _send_command(self, command: str, connect: bool = True) -> bool:
-        self._record_error(self.actuator_block_reason, "serial")
-        return False
+        if not self.actuator_control_available:
+            self._record_error(self.actuator_block_reason, "serial")
+            return False
+        if command not in {"UNLOCK", "LOCK", "START", "STOP"}:
+            self._record_error("Unknown actuator command", "serial")
+            return False
+        try:
+            connection = self._ensure_serial() if connect else self._serial
+            if connection is None:
+                raise RuntimeError("ESP32 serial device is not connected")
+            payload = (command + "\n").encode("ascii")
+            with self._serial_lock:
+                if connection.write(payload) != len(payload):
+                    raise RuntimeError("incomplete ESP32 serial write")
+                connection.flush()
+            # Serial delivery does not confirm motor movement or lock position.
+            with self._lock:
+                self._serial_error = None
+            return True
+        except Exception as exc:
+            self._record_error(f"ESP32 command {command} failed: {exc}", "serial")
+            self._close_serial()
+            return False
 
     def _close_serial(self) -> None:
         with self._serial_lock:

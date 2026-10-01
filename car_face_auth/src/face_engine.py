@@ -28,7 +28,7 @@ if str(_REPO_ROOT) not in sys.path:
 LOGGER = logging.getLogger(__name__)
 
 SAMPLES_NEEDED = MAX_EMBEDDINGS
-THRESHOLD = 0.75
+THRESHOLD = 0.50
 WINDOW_SIZE = 10
 MIN_MATCHES = 6
 

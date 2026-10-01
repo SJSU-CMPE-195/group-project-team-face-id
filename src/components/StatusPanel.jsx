@@ -35,8 +35,7 @@ export default function StatusPanel({
           </div>
           {online && !actuatorControlAvailable ? (
             <div className="mt-3 max-w-xl text-sm leading-relaxed text-amber-200/90">
-              Real Pi lock and ignition outputs are blocked until command
-              acknowledgement and position feedback are implemented.
+              The backend does not currently provide lock or ignition controls.
             </div>
           ) : null}
           {online && actuatorControlAvailable && !locked ? (
