@@ -163,7 +163,6 @@ class PinnedJsonExchange:
         )
 
     async def _finish_tls(self) -> None:
-        deadline = _deadline(TLS_EOF_TIMEOUT_SECONDS)
         while True:
             try:
                 self._tls.unwrap()
@@ -171,12 +170,8 @@ class PinnedJsonExchange:
                 return
             except ssl.SSLWantWriteError:
                 await self._flush_ciphertext()
-            except ssl.SSLWantReadError:
-                await self._flush_ciphertext()
-                self._incoming.write(
-                    await self._tunnel.read_tls(_remaining(deadline, "TLS close"))
-                )
-            except ssl.SSLZeroReturnError:
+            except (ssl.SSLWantReadError, ssl.SSLZeroReturnError):
+                # A complete framed response does not require a peer close_notify.
                 await self._flush_ciphertext()
                 return
 
