@@ -496,6 +496,10 @@ class BluezBleGateway:
         self._application_registered = False
         self._advertisement_registered = False
         self._registration_started = False
+        self._registration_pending = False
+        self._shutdown_requested = False
+        self._shutdown_source_id: int | None = None
+        self._closing = False
         self._pending_writes: dict[
             str,
             tuple[
@@ -508,10 +512,10 @@ class BluezBleGateway:
     def __enter__(self):
         try:
             self.start()
-        except RuntimeError:
-            raise
-        except Exception as exc:
+        except BaseException as exc:
             self.close()
+            if isinstance(exc, RuntimeError) or not isinstance(exc, Exception):
+                raise
             raise RuntimeError("BlueZ initialization failed") from exc
         return self
 
@@ -585,11 +589,14 @@ class BluezBleGateway:
         if self._registration_started:
             raise RuntimeError("BLE gateway registration already started")
         self._registration_started = True
+        if self._shutdown_requested:
+            return
         application, advertisement = self._objects[0], self._objects[-1]
         registration_error: list[BaseException] = []
         timeout_source = [None]
 
         def fail(exc) -> None:
+            self._registration_pending = False
             if not registration_error:
                 registration_error.append(exc)
             self._loop.quit()
@@ -600,10 +607,14 @@ class BluezBleGateway:
             return False
 
         def advertisement_registered() -> None:
+            self._registration_pending = False
             self._advertisement_registered = True
             if timeout_source[0] is not None:
                 self._glib.source_remove(timeout_source[0])
                 timeout_source[0] = None
+            if self._shutdown_requested or self._closing:
+                self._loop.quit()
+                return
             try:
                 if on_ready is not None:
                     on_ready()
@@ -612,6 +623,10 @@ class BluezBleGateway:
 
         def application_registered() -> None:
             self._application_registered = True
+            if self._shutdown_requested or self._closing:
+                self._registration_pending = False
+                self._loop.quit()
+                return
             try:
                 self._advertising_manager.RegisterAdvertisement(
                     advertisement.object_path,
@@ -626,6 +641,7 @@ class BluezBleGateway:
             REGISTRATION_TIMEOUT_SECONDS,
             timed_out,
         )
+        self._registration_pending = True
         try:
             self._gatt_manager.RegisterApplication(
                 application.object_path,
@@ -639,15 +655,47 @@ class BluezBleGateway:
             self._loop.run()
         if timeout_source[0] is not None:
             self._glib.source_remove(timeout_source[0])
+        if self._shutdown_requested:
+            assert not self._registration_pending, (
+                "BLE registration must settle before shutdown cleanup"
+            )
         if registration_error:
             raise RuntimeError("BlueZ could not register the BASS BLE service") from (
                 registration_error[0]
             )
 
+    def request_shutdown(self) -> None:
+        """Ask the owning GLib loop to stop without raising across a callback."""
+
+        if self._shutdown_requested:
+            return
+        self._shutdown_requested = True
+        if (
+            self._closing
+            or self._registration_pending
+            or self._glib is None
+            or self._shutdown_source_id is not None
+        ):
+            return
+        self._shutdown_source_id = self._glib.idle_add(self._finish_shutdown_request)
+
+    def _finish_shutdown_request(self) -> bool:
+        self._shutdown_source_id = None
+        if not self._registration_pending and self._loop is not None:
+            self._loop.quit()
+        return False
+
     def close(self) -> None:
+        self._closing = True
+        self._shutdown_requested = True
         loop = self._loop
         if loop is not None:
             loop.quit()
+        shutdown_source_id = self._shutdown_source_id
+        self._shutdown_source_id = None
+        if shutdown_source_id is not None and self._glib is not None:
+            with suppress(Exception):
+                self._glib.source_remove(shutdown_source_id)
         for device in tuple(self._pending_writes):
             self._cancel_pending_write(device, "BLE gateway is stopping")
         if self._signal_match is not None:

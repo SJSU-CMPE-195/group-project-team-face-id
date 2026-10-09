@@ -319,8 +319,17 @@ def _run(arguments: argparse.Namespace) -> int:
     if arguments.hardware_simulator:
         lifecycle.enable_developer_controls(config_path, arguments.dashboard_port)
     previous_signal_handlers: dict[signal.Signals, object] = {}
+    active_ble_gateway = None
+    shutdown_requested = False
 
     def request_shutdown(_signum, _frame):
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            return
+        shutdown_requested = True
+        if active_ble_gateway is not None:
+            active_ble_gateway.request_shutdown()
+            return
         raise KeyboardInterrupt
 
     try:
@@ -377,6 +386,8 @@ def _run(arguments: argparse.Namespace) -> int:
                             device_id=config.device_id,
                             upstream_port=arguments.port,
                         ) as ble_gateway:
+                            active_ble_gateway = ble_gateway
+
                             def ble_ready() -> None:
                                 _export_requested_qr(arguments, config_path, config)
                                 _print_host_ready(
@@ -387,7 +398,11 @@ def _run(arguments: argparse.Namespace) -> int:
                                 )
                                 print("  BLE clients:   up to 4", flush=True)
 
-                            ble_gateway.serve(on_ready=ble_ready)
+                            try:
+                                ble_gateway.serve(on_ready=ble_ready)
+                            finally:
+                                print("Stopping BASS Bluetooth service...", flush=True)
+                        print("Stopping BASS HTTP services...", flush=True)
                 else:
                     _export_requested_qr(arguments, config_path, config)
                     _print_host_ready(arguments, config, tls_identity, database_path)
@@ -405,10 +420,12 @@ def _run(arguments: argparse.Namespace) -> int:
                 print("Stopping BASS wireless host...", flush=True)
     finally:
         try:
+            print("Stopping BASS runtime...", flush=True)
             runtime.close()
         finally:
             for shutdown_signal, previous_handler in previous_signal_handlers.items():
                 signal.signal(shutdown_signal, previous_handler)
+    print("BASS wireless host stopped.", flush=True)
     return 0
 
 

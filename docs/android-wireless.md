@@ -674,6 +674,20 @@ before explicitly disabling those services. Inspect the installed service with
 `systemctl status faceid-wireless.service` and
 `journalctl -u faceid-wireless.service -n 50 --no-pager`.
 
+For a foreground host, press Ctrl+C once to request shutdown. SIGTERM uses the
+same cleanup path; for the installed service, use
+`sudo systemctl stop faceid-wireless.service`. The Pi host explicitly exits its
+GLib loop and reports Bluetooth, HTTP, and runtime cleanup stages. Wait for the
+process to exit before starting another host. If it stalls, retain the last
+stage and traceback for diagnosis; a stage message alone does not prove exit or
+database-lock release.
+
+Ctrl+Z suspends a foreground process and leaves its database lock held. Resume
+that job with `fg` in its original shell before requesting shutdown. Do not
+delete the lock file to work around a live or suspended process. Pi signal,
+service-stop, and restart behavior still require hardware acceptance; a stuck
+hardware operation can delay cleanup after the GLib loop has stopped.
+
 On the Pi itself, open `http://localhost:5057` using its browser (substitute
 `BASS_DASHBOARD_PORT` if changed). Controls and Users pairing use that running
 service automatically. Android connects over BLE to the Pi's loopback HTTPS port
