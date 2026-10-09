@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import signal
 import socket
+import sqlite3
 import sys
 import webbrowser
 
@@ -17,7 +18,6 @@ from wireless.config import (
     load_or_create_device_config,
     read_device_config,
 )
-from wireless.mdns import MdnsAdvertiser, MdnsError, discover_lan_addresses
 from wireless.qr_export import export_pairing_qr
 from wireless.tls import load_or_create_tls_identity
 
@@ -43,12 +43,16 @@ def _parser() -> argparse.ArgumentParser:
         "--hardware-simulator", action="store_true",
         help="PC only: local developer controls (already enabled by default)",
     )
-    parser.add_argument("--host", default=os.environ.get("BASS_HOST", "0.0.0.0"))
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("BASS_HOST"),
+        help="loopback API bind address (must be 127.0.0.1)",
+    )
     parser.add_argument(
         "--port",
         type=_port,
         default=_port(os.environ.get("BASS_PORT", "5056")),
-        help="LAN HTTPS port (default: 5056)",
+        help="HTTPS API port (default: 5056)",
     )
     parser.add_argument(
         "--dashboard-port",
@@ -57,12 +61,6 @@ def _parser() -> argparse.ArgumentParser:
         help="loopback-only HTTP dashboard port (default: 5057)",
     )
     parser.add_argument("--config", type=Path, default=default_config_path())
-    parser.add_argument(
-        "--advertise-address",
-        action="append",
-        default=[],
-        help="assigned private IPv4 address to advertise; may be repeated",
-    )
     parser.add_argument("--export-qr", type=Path, metavar="DIRECTORY")
     parser.add_argument("--show-qr", action="store_true")
     offline_commands = parser.add_mutually_exclusive_group()
@@ -92,11 +90,6 @@ def _check_port(host: str, port: int) -> None:
         raise RuntimeError(f"TCP port {port} is unavailable on {host}: {exc}") from exc
 
 
-def _requested_addresses(arguments: argparse.Namespace) -> tuple[str, ...]:
-    environment_addresses = os.environ.get("BASS_ADVERTISE_ADDRESS", "").split(",")
-    return tuple(arguments.advertise_address or environment_addresses)
-
-
 def _database_path(mode: str) -> Path:
     default_path = (
         REPO_ROOT / ".cache" / "mock_faceid.db"
@@ -118,6 +111,37 @@ def _prepare_database(mode: str) -> Path:
 
     init_db()
     return database_path
+
+
+def _persistent_identity_exists(database_path: Path) -> bool:
+    """Detect state that makes silent config/TLS regeneration unsafe."""
+
+    if not database_path.is_file():
+        return False
+    try:
+        connection = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
+        try:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "host_identity" in tables and connection.execute(
+                "SELECT 1 FROM host_identity WHERE id=1"
+            ).fetchone():
+                return True
+            return "paired_devices" in tables and bool(
+                connection.execute(
+                    "SELECT 1 FROM paired_devices WHERE active=1 LIMIT 1"
+                ).fetchone()
+            )
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(
+            f"Cannot validate persistent host identity in {database_path}: {exc}"
+        ) from exc
 
 
 def _build_runtime(mode: str):
@@ -143,6 +167,39 @@ def _show_qr(config_path: Path, config, output_dir: Path | None) -> None:
         print("Open the printable QR path above in a local browser.", flush=True)
 
 
+def _export_requested_qr(arguments, config_path: Path, config) -> None:
+    if not arguments.export_qr and not arguments.show_qr:
+        return
+    destination = arguments.export_qr or config_path.parent
+    if arguments.show_qr:
+        _show_qr(config_path, config, destination)
+    else:
+        png_path, html_path = export_pairing_qr(config, destination)
+        print(f"Pairing QR PNG:  {png_path}")
+        print(f"Printable QR:   {html_path}")
+
+
+def _print_host_ready(arguments, config, tls_identity, database_path: Path) -> None:
+    print("BASS wireless host ready", flush=True)
+    print(f"  Mode:          {arguments.mode}", flush=True)
+    print(f"  Device:        {config.name} ({config.device_id})", flush=True)
+    if arguments.mode == "pi":
+        print(f"  API upstream:  https://127.0.0.1:{arguments.port} (BLE only)", flush=True)
+    if (DASHBOARD_DIST_ROOT / "index.html").is_file():
+        print(
+            f"  Dashboard:     http://localhost:{arguments.dashboard_port}/",
+            flush=True,
+        )
+    else:
+        print(
+            "  Dashboard:     unavailable; build on development/CI and copy dist/ "
+            "into the project root",
+            flush=True,
+        )
+    print(f"  TLS identity:  {tls_identity.path}", flush=True)
+    print(f"  Database:      {database_path}", flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.validate_config or arguments.validate_transfer_config:
@@ -154,6 +211,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(arguments: argparse.Namespace) -> int:
+    if arguments.host is None:
+        arguments.host = "127.0.0.1"
+    if arguments.host != "127.0.0.1":
+        raise ValueError("BASS requires --host 127.0.0.1; LAN fallback is disabled.")
     if arguments.hardware_simulator and arguments.mode != "pc":
         raise ValueError("Hardware simulation requires explicit PC development mode.")
     offline_command = any((
@@ -187,6 +248,17 @@ def _run(arguments: argparse.Namespace) -> int:
     from wireless.developer_reset import assert_reset_complete
 
     assert_reset_complete(config_path)
+    identity_must_exist = (
+        not arguments.rotate_tls_authorization_only
+        and _persistent_identity_exists(_database_path(arguments.mode))
+    )
+    if identity_must_exist and (
+        not config_path.is_file() or not config_path.with_suffix(".tls.pem").is_file()
+    ):
+        raise RuntimeError(
+            "Persistent paired host state exists, but its device config or TLS identity "
+            "is missing. Restore the matching backup; no replacement identity was created."
+        )
     config = load_or_create_device_config(config_path)
     tls_identity = load_or_create_tls_identity(config_path, config.device_id)
     config = replace(config, tls_certificate_sha256=tls_identity.certificate_sha256)
@@ -234,13 +306,18 @@ def _run(arguments: argparse.Namespace) -> int:
         if arguments.rotate_tls_authorization_only:
             print("All device credentials are revoked. Sign in locally and issue new pairing invitations.")
         return 0
+    interrupted = security.enrollment.interrupt_pending()
+    if interrupted:
+        print(
+            f"Marked {interrupted} unfinished enrollment request(s) interrupted.",
+            flush=True,
+        )
     runtime = _build_runtime(arguments.mode)
     from wireless.host_lifecycle import HostLifecycle
 
     lifecycle = HostLifecycle(security, config, runtime)
     if arguments.hardware_simulator:
         lifecycle.enable_developer_controls(config_path, arguments.dashboard_port)
-    advertiser = None
     previous_signal_handlers: dict[signal.Signals, object] = {}
 
     def request_shutdown(_signum, _frame):
@@ -264,7 +341,7 @@ def _run(arguments: argparse.Namespace) -> int:
         from pi_device_api import create_app
         import db_api
         from wireless.api import secure_wireless_app
-        from wireless.server import wireless_servers
+        from wireless.server import serving_in_background, wireless_servers
 
         app = secure_wireless_app(
             create_app(db_module=db_api, runtime=runtime),
@@ -279,66 +356,59 @@ def _run(arguments: argparse.Namespace) -> int:
             transfer_handler=None,
             recovery_handler=lifecycle.recover_owner,
         )
-        requested_addresses = _requested_addresses(arguments)
-        address_provider = lambda: discover_lan_addresses(requested_addresses)
-        advertiser = MdnsAdvertiser(
-            device_id=config.device_id,
-            port=arguments.port,
-            address_provider=address_provider,
-            refresh_seconds=float(
-                os.environ.get("BASS_MDNS_REFRESH_SECONDS", "10")
-            ),
-        )
         with wireless_servers(
             app,
             host=arguments.host,
             port=arguments.port,
             dashboard_port=arguments.dashboard_port,
             tls_identity_path=tls_identity.path,
+            ble_transport=arguments.mode == "pi",
         ) as https_server:
-            addresses = advertiser.start()
-            if arguments.export_qr or arguments.show_qr:
-                destination = arguments.export_qr or config_path.parent
-                if arguments.show_qr:
-                    _show_qr(config_path, config, destination)
-                else:
-                    png_path, html_path = export_pairing_qr(config, destination)
-                    print(f"Pairing QR PNG:  {png_path}")
-                    print(f"Printable QR:   {html_path}")
-            print("BASS wireless host ready", flush=True)
-            print(f"  Mode:          {arguments.mode}", flush=True)
-            print(f"  Device:        {config.name} ({config.device_id})", flush=True)
-            print(f"  API:           https://{addresses[0]}:{arguments.port}", flush=True)
-            if (DASHBOARD_DIST_ROOT / "index.html").is_file():
-                print(
-                    f"  Dashboard:     http://localhost:{arguments.dashboard_port}/",
-                    flush=True,
-                )
-            else:
-                print(
-                    "  Dashboard:     unavailable; build on development/CI and copy dist/ "
-                    "into the project root",
-                    flush=True,
-                )
-            print(f"  TLS identity:  {tls_identity.path}", flush=True)
-            print(f"  Database:      {database_path}", flush=True)
-            print(f"  mDNS addresses: {', '.join(addresses)}", flush=True)
-            if arguments.hardware_simulator:
-                print("  Hardware:      use the Hardware tab in the dashboard", flush=True)
             try:
-                https_server.serve()
+                if arguments.mode == "pi":
+                    from wireless.ble_gateway import BluezBleGateway
+
+                    with serving_in_background(
+                        https_server,
+                        host="127.0.0.1",
+                        port=arguments.port,
+                    ):
+                        with BluezBleGateway(
+                            device_id=config.device_id,
+                            upstream_port=arguments.port,
+                        ) as ble_gateway:
+                            def ble_ready() -> None:
+                                _export_requested_qr(arguments, config_path, config)
+                                _print_host_ready(
+                                    arguments,
+                                    config,
+                                    tls_identity,
+                                    database_path,
+                                )
+                                print("  BLE clients:   up to 4", flush=True)
+
+                            ble_gateway.serve(on_ready=ble_ready)
+                else:
+                    _export_requested_qr(arguments, config_path, config)
+                    _print_host_ready(arguments, config, tls_identity, database_path)
+                    print(
+                        f"  API:           https://127.0.0.1:{arguments.port}",
+                        flush=True,
+                    )
+                    if arguments.hardware_simulator:
+                        print(
+                            "  Hardware:      use the Hardware tab in the dashboard",
+                            flush=True,
+                        )
+                    https_server.serve()
             except KeyboardInterrupt:
                 print("Stopping BASS wireless host...", flush=True)
     finally:
         try:
-            if advertiser is not None:
-                advertiser.close()
+            runtime.close()
         finally:
-            try:
-                runtime.close()
-            finally:
-                for shutdown_signal, previous_handler in previous_signal_handlers.items():
-                    signal.signal(shutdown_signal, previous_handler)
+            for shutdown_signal, previous_handler in previous_signal_handlers.items():
+                signal.signal(shutdown_signal, previous_handler)
     return 0
 
 
@@ -348,6 +418,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("BASS wireless host stopped.", file=sys.stderr)
         raise SystemExit(130)
-    except (DeviceConfigError, MdnsError, OSError, RuntimeError, ValueError) as exc:
+    except (DeviceConfigError, OSError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

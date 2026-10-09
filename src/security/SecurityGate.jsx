@@ -10,6 +10,7 @@ import HardwareSimulatorPanel from "../hardware/HardwareSimulatorPanel.jsx";
 import useHardwareSimulator from "../hardware/useHardwareSimulator.js";
 import OperationGrantProvider from "./OperationGrantProvider.jsx";
 import useSecurity from "./useSecurity.js";
+import usePcClient from "../pc-client/usePcClient.js";
 
 const PIN_PATTERN = /^\d{6}$/;
 
@@ -22,6 +23,7 @@ function rememberedAccountKey(account) {
 export default function SecurityGate() {
   const security = useSecurity();
   const simulator = useHardwareSimulator();
+  const pcClient = usePcClient();
   const [anonymousTab, setAnonymousTab] = useState("control");
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
@@ -79,7 +81,11 @@ export default function SecurityGate() {
     event.preventDefault();
     if (submitPendingRef.current) return;
     const displayName = name.trim();
-    if (!security.rememberedAccount && !displayName) {
+    if (
+      !security.rememberedAccount &&
+      !pcClient?.status?.user?.id &&
+      !displayName
+    ) {
       setFormError("Enter your name.");
       return;
     }
@@ -151,6 +157,20 @@ export default function SecurityGate() {
           }
           user={null}
           localControls={simulator.enabled}
+          connectionLabel={
+            pcClient?.status?.connected
+              ? `Pi via Bluetooth · ${pcClient.status.device?.name || "Connected"}`
+              : ""
+          }
+          connectionBusy={pcClient?.busy}
+          onChangeConnection={
+            pcClient
+              ? () =>
+                  void pcClient.disconnect().catch((error) => {
+                    setFormError(error.message);
+                  })
+              : undefined
+          }
         />
         <main className="app-content flex-1 overflow-y-auto overscroll-y-contain px-4 pt-4 sm:px-5 sm:pt-6 md:px-8 md:py-6">
           {activeTab === "hardware" ? (
@@ -160,6 +180,7 @@ export default function SecurityGate() {
               <AuthenticationCard
                 security={security}
                 simulator={simulator}
+                pairedAccount={pcClient?.status?.user || null}
                 name={name}
                 setName={setName}
                 pin={pin}
@@ -193,6 +214,7 @@ function RememberWarning({ message }) {
 function AuthenticationCard({
   security,
   simulator,
+  pairedAccount,
   name,
   setName,
   pin,
@@ -249,20 +271,22 @@ function AuthenticationCard({
                 {security.rememberWarning}
               </div>
             ) : null}
-            {security.rememberedAccount ? (
+            {security.rememberedAccount || pairedAccount ? (
               <div className="rounded-xl border border-white/10 bg-white/5 p-3">
                 <div className="text-xs text-slate-400">Account</div>
                 <div className="mt-1 font-medium text-slate-100">
-                  {security.rememberedAccount.user.name}
+                  {pairedAccount?.name || security.rememberedAccount?.user.name}
                 </div>
-                <button
-                  type="button"
-                  className="mt-2 text-sm text-violet-300 hover:text-violet-200 disabled:opacity-50"
-                  disabled={busy}
-                  onClick={onUseAnotherAccount}
-                >
-                  Use another account
-                </button>
+                {!pairedAccount ? (
+                  <button
+                    type="button"
+                    className="mt-2 text-sm text-violet-300 hover:text-violet-200 disabled:opacity-50"
+                    disabled={busy}
+                    onClick={onUseAnotherAccount}
+                  >
+                    Use another account
+                  </button>
+                ) : null}
               </div>
             ) : (
               <div>
@@ -296,7 +320,7 @@ function AuthenticationCard({
                 maxLength={6}
                 inputMode="numeric"
                 pattern="[0-9]{6}"
-                autoFocus={Boolean(security.rememberedAccount)}
+                autoFocus={Boolean(security.rememberedAccount || pairedAccount)}
                 value={pin}
                 onChange={(event) => setPin(event.target.value)}
                 disabled={busy}

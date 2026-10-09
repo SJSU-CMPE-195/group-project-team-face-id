@@ -121,6 +121,31 @@ BASE_SCHEMA_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS idx_security_grants_device
     ON operation_grants(device_id, expires_at)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS enrollment_requests (
+        generation INTEGER NOT NULL CHECK(generation > 0),
+        device_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action = 'enrollment.start'),
+        request_id TEXT NOT NULL,
+        actor_user_id TEXT NOT NULL,
+        actor_auth_version INTEGER NOT NULL CHECK(actor_auth_version > 0),
+        target_user_id TEXT NOT NULL,
+        target_auth_version INTEGER NOT NULL CHECK(target_auth_version > 0),
+        body_digest BLOB NOT NULL CHECK(length(body_digest) = 32),
+        session_id TEXT NOT NULL UNIQUE,
+        response_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(
+            state IN (
+                'accepted', 'active', 'completed', 'failed', 'cancelled',
+                'interrupted'
+            )
+        ),
+        result_json TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (generation, device_id, action, request_id)
+    )
+    """,
     *COMMISSIONING_SCHEMA_STATEMENTS,
 )
 

@@ -14,6 +14,7 @@ import useSecurity from "./security/useSecurity.js";
 import HardwareSimulatorPanel from "./hardware/HardwareSimulatorPanel.jsx";
 import useHardwareSimulator from "./hardware/useHardwareSimulator.js";
 import { resolveRuntimeCapabilities } from "./utils/actuatorStatus.js";
+import usePcClient from "./pc-client/usePcClient.js";
 
 function cameraLabel(status) {
   const source = String(
@@ -34,6 +35,7 @@ function cameraLabel(status) {
 export default function App({ onHardwareReset }) {
   const { user, logout } = useSecurity();
   const hardware = useHardwareSimulator();
+  const pcClient = usePcClient();
   const state = useAppState();
   const actions = useAppActions(state);
   const mainRef = React.useRef(null);
@@ -100,6 +102,20 @@ export default function App({ onHardwareReset }) {
           user={user}
           onLogout={logout}
           localControls={localControls}
+          connectionLabel={
+            pcClient?.status?.connected
+              ? `Pi via Bluetooth · ${pcClient.status.device?.name || "Connected"}`
+              : ""
+          }
+          connectionBusy={pcClient?.busy}
+          onChangeConnection={
+            pcClient
+              ? () =>
+                  void pcClient.disconnect().catch((error) => {
+                    state.popToast("err", "Disconnect failed", error.message);
+                  })
+              : undefined
+          }
         />
 
         <main ref={mainRef} className="app-content flex-1 overflow-y-auto overscroll-y-contain px-4 pt-4 sm:px-5 sm:pt-6 md:px-8 md:py-6">

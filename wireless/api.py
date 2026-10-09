@@ -13,6 +13,7 @@ from .config import API_PROTOCOL_VERSION, DeviceConfig
 from .local_dashboard import (
     LOCAL_PAIRING_PATH,
     LocalDashboardMiddleware,
+    trusted_dashboard_request,
     trusted_pairing_request,
 )
 from .qr_export import render_pairing_qr
@@ -133,6 +134,8 @@ def secure_wireless_app(
 
     @app.before_request
     def authenticate_wireless_requests():
+        if request.path.startswith("/local/"):
+            local_sessions.require_trusted()
         if request.path == "/health" and request.method == "GET":
             return jsonify({"ok": True, "service": "bass-wireless",
                             "device_id": config.device_id, "protocol_version": API_PROTOCOL_VERSION})
@@ -179,13 +182,19 @@ def secure_wireless_app(
             return None
         protected = request.path.startswith("/api/") or request.path == "/ready"
         if protected:
-            g.local_controls = bool(request.environ.get("bass.local_dashboard"))
+            # A loopback transport peer is not a trusted dashboard listener.
+            g.local_controls = bool(
+                request.environ.get("bass.local_dashboard")
+                and trusted_dashboard_request(request.environ, port)
+            )
             if g.local_controls:
                 actor, _ = local_sessions.authenticate()
             else:
                 actor = security.principal(_credential("bearer"))
             g.principal = actor
-            retry_after = limits.check(request.remote_addr or "", request.path, request.method)
+            retry_after = limits.check(
+                f"device:{actor.device_id}", request.path, request.method,
+            )
             if retry_after:
                 response = jsonify({"ok": False, "error": "too many requests; retry later"})
                 response.status_code = 429
@@ -221,7 +230,7 @@ def secure_wireless_app(
             {
                 "device_id": config.device_id,
                 "protocol_version": API_PROTOCOL_VERSION,
-                "transport": "https",
+                "transport": "ble" if mode == "pi" else "loopback_https",
                 "name": config.name,
                 "capabilities": {
                     "client_camera": False,

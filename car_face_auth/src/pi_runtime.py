@@ -459,29 +459,52 @@ class PiRuntime:
 
     def start_enrollment(
         self,
-        name: str,
+        user_id: str,
         *,
         authorization: Any | None = None,
+        enrollment_reservation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        user = self._resolve_enrollment_user(name)
-        authorization_values = self._bind_enrollment_authorization(
-            authorization,
-            user["id"],
-        )
-        self._require_safety_settings()
-        session = self._new_session(
-            "enroll",
-            {
-                **authorization_values,
-                "name": user["name"],
-                "source": self.camera_source,
-                "state": "capturing",
-                "count": 0,
-                "message": f"{self.camera_label} enrollment starting.",
-            },
-        )
-        self._spawn(session["id"], self._run_enrollment)
-        return self._enroll_view(session)
+        reservation = self._enrollment_reservation(enrollment_reservation)
+        receipt_session = {
+            "id": reservation["session_id"],
+            "request_id": reservation["request_id"],
+        }
+        user = None
+        session = None
+        try:
+            user = self._resolve_enrollment_user(user_id)
+            authorization_values = self._bind_enrollment_authorization(
+                authorization,
+                user_id,
+            )
+            self._require_safety_settings()
+            session = self._new_session(
+                "enroll",
+                {
+                    **authorization_values,
+                    "request_id": reservation["request_id"],
+                    "name": user["name"],
+                    "source": self.camera_source,
+                    "state": "accepted",
+                    "count": 0,
+                    "message": "Enrollment accepted and waiting for the camera.",
+                },
+                session_id=reservation["session_id"],
+            )
+            self._spawn(session["id"], self._run_enrollment)
+            return self._enroll_view(session)
+        except Exception as exc:
+            message = str(exc).strip() or "Enrollment could not start."
+            if session is not None:
+                self._finish(session["id"], "error", message=message)
+                self._release_session(session["id"])
+                return self._enroll_view(session)
+            return self._finalize_unstarted_enrollment(
+                receipt_session,
+                user_id=user_id,
+                user_name=(user or {}).get("name") or user_id,
+                message=message,
+            )
 
     def _user_by_id(self, user_id: str) -> dict[str, Any] | None:
         try:
@@ -500,19 +523,37 @@ class PiRuntime:
         value = user.get("face_access", user.get("faceAccess", 1))
         return bool(value)
 
-    def _resolve_enrollment_user(self, name: str) -> dict[str, Any]:
-        name = (name or "").strip()
-        if not name:
-            raise RuntimeRequestError("name is required", 400)
-        try:
-            users = [row for row in self._db.get_all_users() if (row.get("name") or "").strip().casefold() == name.casefold()]
-        except Exception as exc:
-            raise RuntimeRequestError(f"could not read users: {exc}", 503) from exc
-        if not users:
+    def _resolve_enrollment_user(self, user_id: str) -> dict[str, Any]:
+        if not isinstance(user_id, str) or not user_id:
+            raise RuntimeRequestError("user_id is required", 400)
+        user = self._user_by_id(user_id)
+        if not user:
             raise RuntimeRequestError("user must be created before enrollment", 404)
-        if len(users) != 1:
-            raise RuntimeRequestError("active user name is ambiguous", 409)
-        return users[0]
+        return user
+
+    @staticmethod
+    def _enrollment_reservation(
+        reservation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(reservation, dict) or reservation.get("created") is not True:
+            raise RuntimeRequestError(
+                "only a newly accepted enrollment request can be dispatched",
+                409,
+            )
+        request_id = reservation.get("request_id")
+        session_id = reservation.get("session_id")
+        response = reservation.get("response")
+        if (
+            not isinstance(request_id, str)
+            or not request_id
+            or not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(response, dict)
+            or response.get("request_id") != request_id
+            or response.get("session_id") != session_id
+        ):
+            raise RuntimeRequestError("enrollment reservation is invalid", 503)
+        return reservation
 
     def _bind_enrollment_authorization(
         self,
@@ -622,21 +663,25 @@ class PiRuntime:
     def cancel_device_sessions(self, device_id: str) -> int:
         """Cancel camera work for a revoked device without changing ignition."""
 
+        with self._lock:
+            sessions = [
+                (session["id"], session["kind"])
+                for session in self._sessions.values()
+                if session.get("actor_device_id") == device_id
+                and session["state"] not in self._final_states(session["kind"])
+            ]
         cancelled = 0
-        with self._actuation.synchronized(), self._lock:
-            for session in self._sessions.values():
-                if (
-                    session.get("actor_device_id") == device_id
-                    and session["state"] not in self._final_states(session["kind"])
-                ):
-                    session["cancel_event"].set()
-                    session.update(
-                        state="cancelled",
-                        message="Session authorization was revoked.",
-                        updated_at=self._now_ms(),
-                    )
-                    self._stop_camera_capture_now_locked(session["id"])
-                    cancelled += 1
+        for session_id, kind in sessions:
+            try:
+                result = self._cancel(
+                    session_id,
+                    kind,
+                    message="Session authorization was revoked.",
+                )
+            except RuntimeRequestError:
+                continue
+            if result.get("state") == "cancelled":
+                cancelled += 1
         return cancelled
 
     def enrollment_status(self, session_id: str) -> dict[str, Any]:
@@ -1186,6 +1231,11 @@ class PiRuntime:
         embeddings: list[Any] = []
         timeout = self._bounded_seconds("PI_ENROLL_TIMEOUT_SECONDS", DEFAULT_ENROLL_TIMEOUT)
         try:
+            activation = self._authorization.activate_enrollment(session)
+            if activation.get("activated") is not True:
+                if activation.get("state") != "active":
+                    self._apply_enrollment_projection(session_id, activation)
+                return
             self._safety_settings()
             if not self._session_authorization_is_current(session_id):
                 self._finish(
@@ -1271,6 +1321,7 @@ class PiRuntime:
                         message=f"Enrollment timed out after {timeout} seconds.",
                     )
                 return
+            face_encoding = face_engine.encode_user_embeddings(embeddings)
             with self._authorization.synchronized(), self._actuation.synchronized():
                 if cancel_event.is_set():
                     return
@@ -1301,16 +1352,19 @@ class PiRuntime:
                         message="Enrollment authorization expired before saving.",
                     )
                     return
-                save_result = face_engine.save_user_embedding(name, embeddings)
-                if isinstance(save_result, dict) and not save_result.get("ok"):
-                    raise RuntimeError(save_result.get("error") or "could not save face enrollment")
-                self._finish(
-                    session_id,
-                    "completed",
+                completed_result = self._enrollment_result(
+                    session,
+                    state="completed",
                     count=SAMPLES_NEEDED,
                     recognition_available=True,
                     message=f"Enrollment completed for {name}.",
                 )
+                completion = self._authorization.complete_enrollment(
+                    session,
+                    face_encoding,
+                    completed_result,
+                )
+                self._apply_enrollment_projection(session_id, completion)
         except Exception as exc:
             if not cancel_event.is_set():
                 self._finish(session_id, "error", message=str(exc))
@@ -1697,7 +1751,13 @@ class PiRuntime:
 
     # ── Session bookkeeping ──────────────────────────────────────────────────
 
-    def _new_session(self, kind: str, values: dict[str, Any]) -> dict[str, Any]:
+    def _new_session(
+        self,
+        kind: str,
+        values: dict[str, Any],
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             if self._closed:
                 raise RuntimeRequestError("Pi runtime is shutting down", 503)
@@ -1706,7 +1766,9 @@ class PiRuntime:
             self._prune_sessions()
             if self._active_session_id and self._active_session_id in self._sessions:
                 raise RuntimeBusyError("Pi runtime is busy with another session")
-            session_id = f"{kind}_{uuid.uuid4().hex[:12]}"
+            session_id = session_id or f"{kind}_{uuid.uuid4().hex[:12]}"
+            if session_id in self._sessions:
+                raise RuntimeBusyError("Pi runtime already has this session")
             session = {
                 "id": session_id,
                 "kind": kind,
@@ -1761,7 +1823,19 @@ class PiRuntime:
                 raise RuntimeRequestError(f"unknown {kind} session", 404)
             return self._scan_view(session) if kind == "scan" else self._enroll_view(session)
 
-    def _cancel(self, session_id: str, kind: str) -> dict[str, Any]:
+    def _cancel(
+        self,
+        session_id: str,
+        kind: str,
+        *,
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        if kind == "enroll":
+            return self._cancel_enrollment_session(
+                session_id,
+                message or "Enroll cancelled.",
+            )
+        cancel_message = message or f"{kind.capitalize()} cancelled."
         cancelled = False
         log_user_id = None
         log_actor_user_id = None
@@ -1773,7 +1847,11 @@ class PiRuntime:
                 if session["state"] not in self._final_states(kind):
                     cancelled = True
                     session["cancel_event"].set()
-                    session.update(state="cancelled", message=f"{kind.capitalize()} cancelled.", updated_at=self._now_ms())
+                    session.update(
+                        state="cancelled",
+                        message=cancel_message,
+                        updated_at=self._now_ms(),
+                    )
                     self._stop_camera_capture_now_locked(session_id)
                 log_user_id = session.get("expected_user_id")
                 log_actor_user_id = session.get("user_id")
@@ -1786,10 +1864,56 @@ class PiRuntime:
             self._log(
                 f"{kind}_cancelled",
                 "ok",
-                f"{kind.capitalize()} cancelled",
+                cancel_message,
                 user_id=log_user_id,
                 actor_user_id=log_actor_user_id,
                 actor_kind="user" if log_actor_user_id else "system",
+            )
+        return view
+
+    def _cancel_enrollment_session(
+        self,
+        session_id: str,
+        message: str,
+    ) -> dict[str, Any]:
+        cancelled = False
+        with self._authorization.synchronized(), self._actuation.synchronized():
+            with self._lock:
+                session = self._sessions.get(session_id)
+                if not session or session.get("kind") != "enroll":
+                    raise RuntimeRequestError("unknown enroll session", 404)
+                if session["state"] in self._final_states("enroll"):
+                    return self._enroll_view(session)
+                cancel_result = self._enrollment_result(
+                    session,
+                    state="cancelled",
+                    message=message,
+                )
+            projection = self._authorization.finalize_enrollment(
+                session,
+                "cancelled",
+                cancel_result,
+            )
+            cancelled = projection.get("state") == "cancelled"
+            with self._lock:
+                current = self._sessions.get(session_id)
+                if current is session:
+                    current["cancel_event"].set()
+                    self._stop_camera_capture_now_locked(session_id)
+            self._apply_enrollment_projection(session_id, projection)
+            with self._lock:
+                current = self._sessions.get(session_id)
+                if not current:
+                    raise RuntimeRequestError("unknown enroll session", 404)
+                view = self._enroll_view(current)
+        if cancelled:
+            self._log(
+                "enroll_cancelled",
+                "ok",
+                message,
+                user_id=session.get("expected_user_id"),
+                actor_user_id=session.get("user_id"),
+                actor_kind="user" if session.get("user_id") else "system",
             )
         return view
 
@@ -1803,7 +1927,140 @@ class PiRuntime:
             if session and session["state"] not in {"cancelled", "error", "denied", "granted", "timeout", "completed"}:
                 session.update(updates, updated_at=self._now_ms())
 
+    def _finalize_unstarted_enrollment(
+        self,
+        receipt_session: dict[str, Any],
+        *,
+        user_id: str,
+        user_name: str,
+        message: str,
+    ) -> dict[str, Any]:
+        failed_session = {
+            **receipt_session,
+            "kind": "enroll",
+            "source": self.camera_source,
+            "name": user_name,
+            "expected_user_id": user_id,
+            "state": "error",
+            "count": 0,
+            "message": message,
+        }
+        result = self._enrollment_result(
+            failed_session,
+            state="error",
+            message=message,
+        )
+        try:
+            projection = self._authorization.finalize_enrollment(
+                failed_session,
+                "failed",
+                result,
+            )
+        except AuthorizationRejected:
+            return result
+        stored_result = projection.get("result")
+        return dict(stored_result) if isinstance(stored_result, dict) else result
+
+    def _enrollment_result(
+        self,
+        session: dict[str, Any],
+        *,
+        state: str,
+        **updates: Any,
+    ) -> dict[str, Any]:
+        snapshot = {
+            **session,
+            **updates,
+            "state": state,
+            "updated_at": self._now_ms(),
+        }
+        return self._enroll_view(snapshot)
+
+    def _apply_enrollment_projection(
+        self,
+        session_id: str,
+        projection: dict[str, Any],
+    ) -> None:
+        projected_session_id = projection.get("session_id")
+        if projected_session_id not in {None, session_id}:
+            raise RuntimeError("enrollment receipt returned another session")
+        durable_state = projection.get("state")
+        if durable_state in {"accepted", "active"}:
+            return
+        result = projection.get("result")
+        result = dict(result) if isinstance(result, dict) else {}
+        result_state = result.pop("state", None)
+        runtime_state = (
+            result_state
+            if result_state in self._final_states("enroll")
+            else {
+                "cancelled": "cancelled",
+                "completed": "completed",
+                "failed": "error",
+                "interrupted": "error",
+            }.get(durable_state, "error")
+        )
+        immutable_fields = {
+            "ok",
+            "request_id",
+            "session_id",
+            "source",
+            "user",
+            "samples_needed",
+            "updated_at",
+        }
+        updates = {
+            key: value
+            for key, value in result.items()
+            if key not in immutable_fields
+        }
+        if not updates.get("message"):
+            updates["message"] = (
+                "Enrollment was interrupted before completion."
+                if durable_state == "interrupted"
+                else "Enrollment did not complete."
+            )
+        self._finish(
+            session_id,
+            runtime_state,
+            _receipt_committed=True,
+            **updates,
+        )
+
     def _finish(self, session_id: str, state: str, **updates: Any) -> None:
+        receipt_committed = bool(updates.pop("_receipt_committed", False))
+        with self._lock:
+            receipt_session = self._sessions.get(session_id)
+            receipt_bound = bool(
+                receipt_session
+                and receipt_session.get("kind") == "enroll"
+                and receipt_session.get("request_id")
+            )
+        if receipt_bound and not receipt_committed:
+            if state == "completed":
+                raise RuntimeError(
+                    "enrollment completion requires an atomic receipt commit"
+                )
+            result = self._enrollment_result(
+                receipt_session,
+                state=state,
+                **updates,
+            )
+            durable_state = "cancelled" if state == "cancelled" else "failed"
+            try:
+                projection = self._authorization.finalize_enrollment(
+                    receipt_session,
+                    durable_state,
+                    result,
+                )
+            except AuthorizationRejected as exc:
+                updates["message"] = (
+                    f"{updates.get('message') or state}; receipt update failed: {exc}"
+                )
+                state = "error"
+            else:
+                self._apply_enrollment_projection(session_id, projection)
+                return
         log_detail = updates.get("message", "")
         log_failure = False
         timing = None
@@ -1930,14 +2187,25 @@ class PiRuntime:
                 self._sessions.pop(session_id, None)
 
     def _cancel_all_sessions(self) -> None:
-        client_session_ids = []
         with self._lock:
-            for session in self._sessions.values():
-                if session["state"] not in self._final_states(session["kind"]):
-                    session["cancel_event"].set()
-                    session.update(state="cancelled", message="Session cancelled by lock/reset.", updated_at=self._now_ms())
-                    if session.get("source") == "client_camera":
-                        client_session_ids.append(session["id"])
+            sessions = [
+                (session["id"], session["kind"], session.get("source"))
+                for session in self._sessions.values()
+                if session["state"] not in self._final_states(session["kind"])
+            ]
+        client_session_ids = []
+        for session_id, kind, source in sessions:
+            try:
+                self._cancel(
+                    session_id,
+                    kind,
+                    message="Session cancelled by lock/reset.",
+                )
+            except RuntimeRequestError:
+                continue
+            if source == "client_camera":
+                client_session_ids.append(session_id)
+        with self._lock:
             self._stop_camera_capture_now_locked()
         for session_id in client_session_ids:
             self._release_session(session_id)
@@ -2016,6 +2284,7 @@ class PiRuntime:
     def _enroll_view(self, session: dict[str, Any]) -> dict[str, Any]:
         return {
             "ok": session.get("ok", session.get("state") != "error"),
+            "request_id": session.get("request_id"),
             "session_id": session["id"],
             "state": session["state"],
             "source": session.get("source", self.camera_source),

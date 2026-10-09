@@ -11,7 +11,8 @@ from .security_credentials import LOCAL_CONTROL_ACTIONS
 
 
 _ADMIN_ENDPOINTS = {"api_add_user", "api_delete_user", "api_set_access",
-                    "api_settings", "api_enroll_start", "pairing_invite", "device_list",
+                    "api_settings", "api_enroll_start", "api_enroll_request",
+                    "pairing_invite", "device_list",
                     "device_revoke", "user_pin", "user_role"}
 _ACTIONS = {
     "api_add_user": "user.create", "api_delete_user": "user.delete",
@@ -83,17 +84,21 @@ def authorize_request(security, runtime, db_module):
         action, target = f"scan.{purpose}", actor.user_id
     elif endpoint == "api_enroll_start":
         body = json_object()
-        user_id, name = body.get("user_id"), body.get("name")
-        users = db_module.list_users_for_ui()
-        if user_id is not None:
-            matches = [user for user in users if user["id"] == user_id]
-        else:
-            matches = [user for user in users if isinstance(name, str)
-                       and user["name"].strip().casefold() == name.strip().casefold()]
-        if len(matches) != 1:
-            raise SecurityError("invalid_user", 400, "Select one existing user for enrollment.")
-        g.enrollment_user = matches[0]
-        action, target = "enrollment.start", matches[0]["id"]
+        reservation = security.enrollment.reserve(
+            actor,
+            body,
+            request.headers.get("X-BASS-Operation-Grant", ""),
+        )
+        g.enrollment_reservation = reservation
+        if reservation["created"]:
+            g.enrollment_user = {"id": body["user_id"]}
+        return
+    elif endpoint == "api_enroll_request":
+        g.enrollment_request = security.enrollment.query(
+            actor,
+            (request.view_args or {}).get("request_id"),
+        )
+        return
     if action:
         security.consume_grant(actor, request.headers.get("X-BASS-Operation-Grant", ""),
                                action, target)

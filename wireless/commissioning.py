@@ -298,6 +298,7 @@ class CommissioningStore:
         state = self._require_state(conn)
         next_generation = int(state["generation"]) + 1
         self._clear_product_identities(conn)
+        conn.execute("DELETE FROM enrollment_requests")
         conn.execute("DELETE FROM commissioning_attempts")
         conn.execute("DELETE FROM settings")
         conn.executemany("INSERT INTO settings(key,value) VALUES (?,?)", _DEFAULT_SETTINGS)

@@ -23,7 +23,9 @@ class RequestLimits:
         elif path in {"/api/scan/start", "/api/unlock"}:
             group, maximum = "scan", 10
         elif path == "/api/enroll/start":
-            group, maximum = "enroll", 6
+            # Fresh work consumes a rate-limited one-use grant; receipt replay
+            # must keep returning its immutable acceptance response.
+            return 0
         elif path == "/api/enroll/sample":
             group, maximum = "sample", 120
         elif path.startswith("/api/users") or path == "/api/settings":

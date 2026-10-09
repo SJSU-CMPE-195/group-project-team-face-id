@@ -79,9 +79,10 @@ if $SUDO systemctl is-active --quiet faceid-wireless.service; then
   $SUDO systemctl stop faceid-wireless.service
 fi
 
-echo "[1/6] Installing Raspberry Pi OS packages..."
+echo "[1/6] Installing Raspberry Pi OS camera and BLE packages..."
 $SUDO apt-get update
-$SUDO apt-get install -y curl python3-dev python3-venv python3-picamera2
+$SUDO apt-get install -y \
+  bluez curl python3-dbus python3-dev python3-gi python3-picamera2 python3-venv
 
 echo "[2/6] Preparing the isolated wireless environment..."
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
@@ -157,7 +158,7 @@ if [[ -n "$CONFIG_SOURCE" ]]; then
   if [[ -f "$TLS_SOURCE" && ! -e "$TLS_PATH" ]]; then
     $SUDO install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 600 "$TLS_SOURCE" "$TLS_PATH"
   elif [[ ! -f "$TLS_SOURCE" && ! -e "$TLS_PATH" ]]; then
-    echo "No TLS identity supplied; provisioning a new certificate. Reprint the QR and re-pair phones."
+    echo "No TLS identity supplied; only an unpaired installation may provision a new certificate."
   fi
 fi
 
@@ -177,7 +178,7 @@ run_as_service_user FACEID_DB_PATH="$DB_PATH" BASS_DEVICE_CONFIG="$CONFIG_PATH" 
   "$VENV_DIR/bin/python" "$PROJECT_DIR/bass_wireless.py" --mode pi --migrate-security-only
 secure_state_files
 echo "[4/6] Granting device access..."
-DEVICE_GROUPS="$(for group in dialout video gpio; do if getent group "$group" >/dev/null; then printf '%s,' "$group"; fi; done)"
+DEVICE_GROUPS="$(for group in bluetooth dialout video gpio; do if getent group "$group" >/dev/null; then printf '%s,' "$group"; fi; done)"
 DEVICE_GROUPS="${DEVICE_GROUPS%,}"
 if [[ -n "$DEVICE_GROUPS" ]]; then
   $SUDO usermod -aG "$DEVICE_GROUPS" "$SERVICE_USER"
@@ -207,7 +208,9 @@ $SUDO systemctl enable faceid-wireless.service
 echo "[6/6] Starting the wireless service..."
 $SUDO systemctl restart faceid-wireless.service
 for attempt in {1..30}; do
-  if curl --fail --silent --show-error "http://127.0.0.1:$DASHBOARD_PORT/health" >/dev/null; then
+  if curl --fail --silent --show-error \
+      --referer "http://localhost:$DASHBOARD_PORT/" \
+      "http://127.0.0.1:$DASHBOARD_PORT/health" >/dev/null; then
     break
   fi
   if [[ "$attempt" -eq 30 ]]; then
@@ -220,11 +223,8 @@ done
 
 echo "faceid-wireless: $($SUDO systemctl is-active faceid-wireless.service)"
 echo "Dashboard:      http://localhost:$DASHBOARD_PORT/"
-echo "LAN API:        HTTPS on TCP $SERVICE_PORT"
+echo "BLE API:        opaque TLS tunnel to 127.0.0.1:$SERVICE_PORT"
 echo "Pairing files:  $DB_DIR/pairing"
 echo "Device config:  $CONFIG_PATH"
 echo "TLS identity:   $TLS_PATH (private key; back up with device config)"
 echo "Database:       $DB_PATH"
-if command -v ufw >/dev/null && $SUDO ufw status | grep -q '^Status: active'; then
-  echo "UFW is active; allow TCP $SERVICE_PORT and UDP 5353 from the private LAN if needed."
-fi

@@ -6,7 +6,6 @@ param(
     [int]$Port = 5056,
     [ValidateRange(1, 65535)]
     [int]$DashboardPort = $(if ($env:BASS_DASHBOARD_PORT) { [int]$env:BASS_DASHBOARD_PORT } else { 5057 }),
-    [string[]]$AdvertiseAddress = @(),
     [switch]$HardwareSimulator
 )
 
@@ -34,7 +33,7 @@ $dependencyProbe = @'
 import sys
 from pathlib import Path
 from importlib.metadata import version
-import flask, cv2, insightface, onnxruntime, qrcode, zeroconf, cheroot, OpenSSL
+import flask, cv2, insightface, onnxruntime, qrcode, cheroot, OpenSSL
 
 for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
     requirement = line.strip()
@@ -53,24 +52,13 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-$firewallRules = Get-NetFirewallRule -Group "BASS Wireless" -ErrorAction SilentlyContinue
-if (-not $firewallRules) {
-    $firewallScript = Join-Path $PSScriptRoot "setup-wireless-firewall.ps1"
-    Write-Warning "Private-network firewall rules are not installed."
-    Write-Host "Run PowerShell as Administrator once:"
-    Write-Host "  & '$firewallScript' -Port $Port"
-}
-
 $launcherArguments = @(
     $entrypoint,
     "--mode", $Mode,
-    "--host", "0.0.0.0",
+    "--host", "127.0.0.1",
     "--port", $Port,
     "--dashboard-port", $DashboardPort
 )
-foreach ($address in $AdvertiseAddress) {
-    $launcherArguments += @("--advertise-address", $address)
-}
 if ($HardwareSimulator) {
     $launcherArguments += "--hardware-simulator"
 }

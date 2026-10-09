@@ -5,6 +5,7 @@ import argparse
 import base64
 from dataclasses import replace
 from html import escape
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -29,6 +30,9 @@ def export_activation(config, commissioning, output: Path) -> tuple[Path, Path]:
     image_bytes = render_qr_payload(payload)
     png_path = output / "bass-activation.png"
     html_path = output / "bass-activation.html"
+    json_path = output / "bass-activation.json"
+    card_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    embedded_json = card_json.replace("<", "\\u003c")
     image_data = base64.b64encode(image_bytes).decode("ascii")
     html = f"""<!doctype html>
 <html lang="en"><meta charset="utf-8">
@@ -38,14 +42,17 @@ def export_activation(config, commissioning, output: Path) -> tuple[Path, Path]:
 main{{max-width:34rem;margin:auto}}img{{width:min(90vw,28rem)}}
 @media print{{button{{display:none}}}}</style>
 <main><h1>{escape(config.name)}</h1><h2>Owner activation</h2>
-<p>Scan in BASS Android, then set your name and six-digit PIN.</p>
+<p>Scan in BASS Android, or import this HTML or the JSON file in the BASS PC
+Bluetooth client. Then set your name and six-digit PIN.</p>
 <img src="data:image/png;base64,{image_data}" alt="One-time owner activation QR">
 <p>The first successful activation becomes the super administrator.
 This code cannot activate another owner afterward. Keep it private.</p>
-<button onclick="window.print()">Print</button></main></html>
+<button onclick="window.print()">Print</button></main>
+<script type="application/json" id="bass-card">{embedded_json}</script></html>
 """
     write_private_file(png_path, image_bytes)
     write_private_file(html_path, html.encode("utf-8"))
+    write_private_file(json_path, (card_json + "\n").encode("utf-8"))
     return png_path, html_path
 
 
@@ -134,6 +141,7 @@ def main() -> int:
         png_path, html_path = export_activation(config, commissioning, output)
         print(f"Owner activation QR: {png_path}")
         print(f"Printable QR: {html_path}")
+        print(f"PC activation card: {output / 'bass-activation.json'}")
     return 0
 
 

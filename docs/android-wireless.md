@@ -1,33 +1,40 @@
-# Android wireless operation
+# Android Bluetooth operation
 
-BASS Android connects to a PC or Raspberry Pi on the same local network. Install
-the APK once, open the app, and scan an activation or phone invitation QR. The app remembers the
-pairing and discovers the current address on later launches, then asks only for
-the paired account's PIN. Normal operation
-requires neither USB nor Internet access.
+BASS Android connects to a Raspberry Pi over BLE, carrying pinned TLS and the
+existing HTTPS API inside a per-client GATT tunnel. Scan an activation or phone
+invitation QR once; existing QR v3 identities and encrypted pairings remain
+usable with API v4. Wi-Fi, a router, USB forwarding and Internet are not needed
+for phone operation. The host must remain powered on and within Bluetooth range.
 
-The host must stay powered on. Both devices must use a network that permits
-peer traffic and multicast discovery. Guest Wi-Fi, client isolation, and some
-VPNs can block discovery. The app does not install itself or configure Wi-Fi.
+The app scans only in the foreground. Grant Nearby devices permission on
+Android 12+, or the scanning location permission required by Android 8–11.
+Camera permission is used only for QR scanning. Names, Bluetooth addresses and
+bonds are discovery hints; the saved certificate pin and host UUID authenticate
+the host before any PIN or credential is sent.
 
 ## Windows quick start
 
-1. Connect the PC and phone to the same trusted Wi-Fi.
+1. Windows provides the local development dashboard, a BLE diagnostic, and a
+   [PC Bluetooth client](pc-bluetooth.md) for connecting the dashboard to a Pi
+   without an Android phone. The steps below start the local development host.
+   It does not advertise a BLE host for Android; use a Raspberry Pi for that.
 2. Build the dashboard once with `./node_modules/.bin/vite.cmd build` from the
    repository root after installing the existing frontend dependencies. Rebuild
    after frontend changes. Run `scripts/start-wireless.cmd`. The launcher prepares its Python environment
    when needed, checks dependencies, and starts the host. Initial dependency and
    model downloads need Internet; subsequent launches reuse the downloaded files.
-3. Follow the launcher instructions for Private-network firewall rules if needed.
+3. No inbound LAN firewall rule is needed. Both HTTP listeners bind to loopback.
 4. Keep the host running and open `http://localhost:5057` on the PC. Existing
-   accounts can sign in. New ownership is established from Android using an
-   one-time activation card and a name/PIN; no button is required. Local administrator bootstrap
-   is retired. For the current hardware-free PC, use the
-   [Hardware Simulator tab](#hardware-simulator-and-developer-reset).
+   accounts can sign in. A fresh product must first be activated on the Pi;
+   Android cannot activate a Windows host in this BLE version. Local
+   administrator bootstrap remains retired. A coherent Pi database/identity
+   copy can be used for subsequent PC development.
 5. In **Users**, create the intended user with a six-digit PIN, then select
    **Pair phone** to show that user's five-minute invitation QR.
-6. Install the APK, open BASS, grant camera access, and scan the invitation QR.
-   Enter that user's host PIN. No token, IP or port entry is required.
+6. For a phone connection, deploy the same identity and database to the Pi using
+   the coherent transfer procedure below. Install the matching API v4 APK,
+   grant Bluetooth/camera permissions, scan the Pi's invitation QR and enter
+   that user's PIN. No token, IP or port entry is required.
 
 On Windows, the default identity files are `%USERPROFILE%/.bass/device.json`,
 `device.tls.pem`, and `device.auth.key`; QR exports are `bass-pairing.png` and
@@ -40,9 +47,8 @@ The launcher uses an existing OpenSSL executable to provision the certificate.
 It detects the copy bundled with Git for Windows when `openssl` is not on
 `PATH`; set `BASS_OPENSSL` only when a different existing executable is needed.
 No additional package is required for TLS.
-To install the firewall rules manually, run
-`./scripts/setup-wireless-firewall.ps1 -Port 5056` in an administrator
-PowerShell. Rules allow only Private profiles and local-subnet peers.
+The previous LAN firewall setup script is not part of the BLE workflow. This
+version does not alter or remove existing Windows firewall rules.
 
 Every unlock uses the camera attached to the connected backend. On Windows,
 the backend captures its webcam and runs CPU InsightFace recognition; on Pi,
@@ -53,7 +59,7 @@ PC lock and ignition outputs are simulated and identified as such. A real face
 match is still required before the simulated lock opens. PC success does not
 establish that a physical lock or engine responded. Pi prototype mode sends
 real ESP32 commands; physical motor and lock state remain unconfirmed.
-Android uses the single wireless HTTPS API (port 5056 by default); Vite and the
+Android reaches the HTTPS API through BLE and the Pi's loopback port 5056; Vite and the
 standalone Face API on port 8765 are not required. The old standalone Face API
 is retired and cannot be started.
 
@@ -61,8 +67,8 @@ is retired and cannot be started.
 
 Keep the wireless host running and open `http://localhost:5057` on that PC or Pi.
 This loopback-only listener serves the built dashboard and connects it to its
-own backend automatically. Android uses the separate LAN HTTPS listener on port
-5056. There is no separate Connect button or backend address to configure.
+own backend automatically. Android uses BLE to reach the separate loopback TLS
+listener on port 5056. There is no LAN API, mDNS or automatic Wi-Fi fallback.
 Previously saved browser backend addresses no longer override this connection.
 Saved simulation data remains preserved and is not used for normal controls.
 
@@ -76,8 +82,9 @@ vehicle controls or Settings tab; administrators can start host-camera enrollmen
 enrollment.
 Switching to a different Pi requires scanning that Pi's QR; proximity does not
 change the pairing. The version 3 public QR carries the device identity and
-TLS certificate fingerprint, with no authorization secret. Discovery supplies the current address and
-port, so a Wi-Fi address change does not require printing another QR.
+TLS certificate fingerprint, with no authorization secret. BLE discovery selects
+a candidate; pinned TLS and `/health` confirm its identity. Bluetooth address
+changes do not require printing another QR.
 
 The `/local/wireless/api/*` bridge accepts only trusted requests from a browser
 on the host. The dashboard uses a 15-minute HTTP-only, SameSite=Strict session
@@ -90,7 +97,7 @@ another user does not switch the administrator's remembered account. Browser
 storage contains no credential or PIN, and the saved ID grants no access.
 Unsafe operations require a fresh PIN-authorized grant bound to
 the signed-in user, action, and target. The dashboard and its QR are unavailable
-through the host's LAN address; Android uses its own authenticated HTTPS
+through the host's LAN address; Android uses its own authenticated HTTPS-over-BLE
 credential. The standalone Face API is not needed.
 
 For frontend development, run `npm run dev` and open `http://localhost:5173` on
@@ -105,7 +112,7 @@ the host port; the parameter also defaults from `BASS_DASHBOARD_PORT`.
 
 ## Hardware simulator and developer reset
 
-The PC developer panel uses the existing host database, identity and LAN
+The PC developer panel uses the existing host database, identity and local
 connection. PC mode enables it by default. Start `scripts/start-wireless.cmd`, open the normal
 dashboard at `http://localhost:5057`, and select **Hardware** in its sidebar.
 The controls stay in that dashboard before product login and after product
@@ -115,7 +122,7 @@ PC development mode trusts direct localhost clients. The backend
 silently establishes and renews a separate HttpOnly developer cookie and CSRF
 token when the UI reads hardware status. There is no separate developer login
 or special browser entry. Writes still require the cookie, exact Origin and
-CSRF token. The LAN listener, cross-origin requests and Pi
+CSRF token. The separate TLS listener, cross-origin requests and Pi
 mode cannot use these controls. Run PC mode only on a trusted development
 PC.
 The built dashboard at `http://localhost:5057` is the control surface; Vite does
@@ -138,6 +145,11 @@ separate material and the recovery window, rotates recovery credentials, and
 revokes previous device sessions. Owner transfer is retired; a developer must
 fully reset the product before issuing another owner activation card. Ordinary administrators cannot
 alter the owner's PIN, face, account access or devices.
+
+In this BLE version, activation and phone pairing require the Pi host. The PC
+simulator retains its local controls and activation export, but cannot accept
+an Android connection. Transfer the coherent database/identity set offline to
+the Pi before activating a fresh or reset development product.
 
 Upgrades classify existing populated databases as `legacy`; they do not select
 an owner automatically or delete records. To test first use, explicitly choose
@@ -195,7 +207,8 @@ reset. Use a fresh UUID for a new reset, and retain it for every retry:
 On Windows, use `.venv-wireless/Scripts/python.exe` and the actual Windows
 database/config/output paths. The command prints paths and a request ID, never
 the activation secret. It creates private `bass-activation.png` and printable
-`bass-activation.html` files.
+`bass-activation.html` files, plus `bass-activation.json` for the PC Bluetooth
+client. Newly exported HTML also contains the same card data for PC import.
 
 Reset verifies a coherent database/identity/key backup before schema migration,
 then creates another verified backup before clearing accounts,
@@ -418,7 +431,10 @@ client metadata does not assign identity, administrator status, or permission.
 
 ## API and recovery
 
-LAN wireless `/api/*` requests use HTTPS. Ordinary authenticated operations
+BLE `/api/*` requests use HTTPS on the Pi's loopback TLS listener. Loopback is
+not an authorization credential: port 5056 always uses remote authorization,
+and only the separately validated port 5057 dashboard can use local controls.
+Ordinary authenticated operations
 require the phone's revocable bearer token. `POST /api/pairings` exchanges a
 valid invite and user PIN for that credential; a shared fixed-QR key grants no
 authorization. Sensitive API
@@ -441,8 +457,8 @@ larger than 64 KiB. Client-image enrollment is retired. Oversized input remains
 rejected before a data-changing runtime operation starts.
 
 Authenticated `GET /api/device-info` returns `device_id`, API
-`protocol_version` 3,
-`transport` (`https`), `name`, and `capabilities` (`client_camera`, `device_camera`, `camera_source`,
+`protocol_version` 4,
+`transport` (`ble` on Pi, `loopback_https` on PC), `name`, and `capabilities` (`client_camera`, `device_camera`, `camera_source`,
 `pi_camera`, `simulated_actuators`, `actuator_control_available`,
 `physical_state_confirmed`, `actuator_feedback`, `liveness_available`, and
 `local_controls`). `client_camera` and `client_camera_enrollment` are false.
@@ -469,7 +485,7 @@ Clients cannot submit an authoritative verification result.
 
 `POST /api/scan/start` starts host-camera unlock or same-person ignition
 verification through the local dashboard after a matching operation grant.
-LAN phone credentials cannot request vehicle controls or their operation grants. `POST /api/unlock` is retired
+Phone credentials cannot request vehicle controls or their operation grants. `POST /api/unlock` is retired
 and returns 410. Poll `/api/scan/status` for the result. Client/phone
 verification sources and `/api/scan/sample` uploads are rejected. Legacy
 `pi_camera` request values remain compatible with the backend camera route.
@@ -512,10 +528,11 @@ memory and are cleared when their session ends. A stale frame is unavailable.
 The dashboard polls status metadata and keeps one stream connection per viewed
 session. Its service worker excludes these API requests from offline caching.
 
-Capture stops on leaving a workflow or backgrounding; the app attempts to
-cancel that exact session. It does not replay interrupted control commands.
-Reconnection refreshes identity, role and scoped state before enabling actions.
-Abandoned host-camera enrollment sessions expire on the server.
+Leaving a workflow requests cancellation of its exact session. Disconnecting or
+backgrounding is not proof of cancellation: an accepted enrollment may continue
+on the host. The encrypted pending request is reconciled after reconnect before
+new work is offered. Reconnection verifies identity, role and scoped state;
+it never replays an interrupted mutation or carries an old operation grant.
 
 Failed enrollment or verification keeps the backend's error message in the
 phone's error dialog after capture ends. Camera open/read/stall errors include
@@ -523,6 +540,50 @@ recovery guidance: another app such as Zoom may be using the camera; close apps
 using it, check its connection and permissions, then retry. The host cannot
 identify the owning app. A failed enrollment leaves the person available for
 retry; without a saved face template, their card shows **No face template**.
+
+### API v4 enrollment receipts
+
+`POST /api/enroll/start` requires exactly a canonical UUID v4 `request_id`, the
+existing `user_id`, and `source: "device_camera"`. An accepted request returns
+202 with `request_id`, `session_id` and a relative `status_url`. This is durable
+acceptance, not successful face capture. Query `/api/enroll/requests/<request_id>`
+for receipt `state`, current `session` projection and stored terminal `result`.
+
+The same authorized device and request ID with identical inputs receive the
+same acceptance response without another camera start or grant consumption.
+Different input under the same ID returns 422; another device cannot read it.
+Current authentication and administrator checks still precede receipt replay.
+Receipts survive session cleanup and service restart. A restart marks unfinished
+requests interrupted; it never restarts capture. Face data, audit and completion
+receipt commit atomically. Only explicit product reset removes receipt history.
+
+Update the Android app, dashboard and host together for API v4; old Android
+clients reject the new API. QR/config format remains v3. This requires an
+additive database migration using the offline command in the migration section.
+Do not downgrade to an old enrollment writer while v4 operations are active.
+
+The BLE tunnel accepts one HTTP request at a time per phone, supports four
+independent clients, and transfers JSON with explicit Content-Length. A full
+HTTP response stays authoritative if later CLOSE/CLOSED cleanup fails; the
+transport is then discarded before another request. Partial replies are
+unconfirmed outcomes and are reconciled by receipt, never replayed automatically.
+See the [implementation contract](../bluetooth-transport-plan.md) for exact
+framing, scheduling, timeout and acceptance requirements.
+
+### Windows BLE diagnostic
+
+The optional development-only dependencies are listed in
+`requirements-ble-diagnostic.txt`; this implementation does not install them.
+With those dependencies available, use the public values from the host QR:
+
+```powershell
+python scripts/ble-diagnostic.py --device-id <host-uuid> `
+  --certificate-sha256 <leaf-der-sha256>
+```
+
+This diagnostic reads `/health` through pinned TLS, checks API v4 and the host
+UUID, and closes the tunnel. It does not commission a device or send credentials.
+Pass `--address` when more than one BASS host is discovered.
 
 ## Manual Pixel 7 acceptance
 
@@ -578,6 +639,13 @@ not on `PATH`. The installer does not add an OpenSSL package. The defaults are
 `~/faceid/pairing/` for the exported label. The installed systemd service keeps
 the resolved OpenSSL path so later starts use the same executable.
 
+The BLE host also requires BlueZ, `python3-dbus`, and `python3-gi`, plus a
+powered adapter supporting GATT server and LE advertising. The installer adds
+those Raspberry Pi OS packages and uses the existing system-site-packages
+virtual environment. These packages and the installer were not run on a Pi
+during this implementation. Controller support for four concurrent clients
+still needs physical verification.
+
 To preserve the fixed QR when moving the host, copy `device.json` and its
 companion `device.tls.pem` securely to the transfer directory. If moving the
 existing authorization database, also copy `device.auth.key` and the SQLite
@@ -608,8 +676,8 @@ before explicitly disabling those services. Inspect the installed service with
 
 On the Pi itself, open `http://localhost:5057` using its browser (substitute
 `BASS_DASHBOARD_PORT` if changed). Controls and Users pairing use that running
-service automatically. Android connects separately to the Pi's HTTPS port 5056
-(`BASS_PORT`). Scan the Pi's QR on the same network, then either UI can operate
+service automatically. Android connects over BLE to the Pi's loopback HTTPS port
+5056 (`BASS_PORT`). Scan the Pi's QR within Bluetooth range, then either UI can operate
 the Pi camera. Phone enrollment appears in the Pi dashboard after Refresh.
 There is no second frontend service or Connect action.
 
@@ -722,6 +790,12 @@ BASS_DEVICE_CONFIG=/home/pi/faceid/device.json \
 The Pi migration path has only been exercised with isolated temporary
 databases. It has not migrated, replaced, or restarted a real Pi database, and
 no Pi deployment has been performed.
+
+That earlier migration evidence does not cover the new API v4
+`enrollment_requests` table. Its migration is included in the same command,
+but has not been executed in this BLE implementation session. Back up the
+matching database, config, certificate and auth key together before running it
+as the configured service user.
 
 Each migrated database records the configured `device_id` and the SHA-256
 fingerprint of its TLS certificate. Normal startup checks both before opening

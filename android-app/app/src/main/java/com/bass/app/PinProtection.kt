@@ -1,13 +1,12 @@
 package com.bass.app
 
 import android.content.Context
-import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-/** Holds one remote PIN challenge and releases only its bound verified result. */
+/** Holds one PIN until its bound API job dispatches, then clears it. */
 internal class PinProtection(
     private val context: Context,
     private val scope: CoroutineScope,
@@ -15,19 +14,17 @@ internal class PinProtection(
 ) {
     private var nextId = 0L
     private var prompt: PinPrompt? = null
-    private var verifier: (suspend (CharArray) -> PinVerification)? = null
-    private var pendingAction: ((String) -> Unit)? = null
+    private var pendingAction: (suspend (CharArray) -> Unit)? = null
     private var onCancelled: (() -> Unit)? = null
     private var confirmation: PinConfirmation? = null
-    private var verifiedGrant: PinVerification? = null
+    private var pendingPin: CharArray? = null
     private var work: Job? = null
 
     fun request(
         purpose: PinPurpose,
-        verify: suspend (CharArray) -> PinVerification,
         confirmation: PinConfirmation? = null,
         onCancelled: () -> Unit = {},
-        onVerified: (String) -> Unit,
+        action: suspend (CharArray) -> Unit,
     ) {
         if (prompt != null) {
             confirmation?.pin?.fill(CLEARED_PIN_CHARACTER)
@@ -35,8 +32,7 @@ internal class PinProtection(
             return
         }
         nextId++
-        verifier = verify
-        pendingAction = onVerified
+        pendingAction = action
         this.onCancelled = onCancelled
         this.confirmation = confirmation
         update(PinPrompt(id = nextId, stage = PinStage.VERIFY, purpose = purpose))
@@ -44,11 +40,11 @@ internal class PinProtection(
 
     fun cancel() {
         nextId++
-        verifier = null
         pendingAction = null
+        pendingPin?.fill(CLEARED_PIN_CHARACTER)
+        pendingPin = null
         confirmation?.pin?.fill(CLEARED_PIN_CHARACTER)
         confirmation = null
-        verifiedGrant = null
         onCancelled?.invoke()
         onCancelled = null
         work?.cancel()
@@ -59,8 +55,7 @@ internal class PinProtection(
 
     fun submit(pin: CharArray) {
         val current = prompt
-        val verify = verifier
-        if (current == null || verify == null || current.busy) {
+        if (current == null || pendingAction == null || current.busy) {
             pin.fill(CLEARED_PIN_CHARACTER)
             return
         }
@@ -69,39 +64,47 @@ internal class PinProtection(
             showError(current, context.getString(R.string.pin_invalid))
             return
         }
-
         if (current.stage == PinStage.CONFIRM_NEW_USER) {
             confirmNewUserPin(current, pin)
             return
         }
+        if (confirmation == null) {
+            runAction(current, pin)
+        } else {
+            pendingPin = pin
+            update(
+                current.copy(
+                    stage = PinStage.CONFIRM_NEW_USER,
+                    confirmationName = confirmation?.name,
+                    busy = false,
+                    error = null,
+                    inputRevision = current.inputRevision + 1,
+                )
+            )
+        }
+    }
 
+    private fun runAction(current: PinPrompt, pin: CharArray) {
+        val action = pendingAction ?: run {
+            pin.fill(CLEARED_PIN_CHARACTER)
+            return
+        }
         update(current.copy(busy = true, error = null))
         work =
             scope.launch {
                 try {
-                    val grant = verify(pin)
-                    if (prompt?.id == current.id) {
-                        val expected = confirmation
-                        if (expected == null) {
-                            complete(current.id, grant.value)
-                        } else {
-                            verifiedGrant = grant
-                            update(
-                                current.copy(
-                                    stage = PinStage.CONFIRM_NEW_USER,
-                                    confirmationName = expected.name,
-                                    busy = false,
-                                    inputRevision = current.inputRevision + 1,
-                                )
-                            )
-                        }
-                    }
+                    action(pin)
+                    if (prompt?.id == current.id) complete(current.id)
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
                     if (prompt?.id == current.id) {
+                        pendingPin = null
                         showError(
-                            current,
+                            current.copy(
+                                stage = PinStage.VERIFY,
+                                confirmationName = null,
+                            ),
                             error.message ?: context.getString(R.string.core_operation_failed),
                         )
                     }
@@ -112,29 +115,23 @@ internal class PinProtection(
         work?.invokeOnCompletion { pin.fill(CLEARED_PIN_CHARACTER) }
     }
 
-    private fun complete(id: Long, grant: String) {
+    private fun complete(id: Long) {
         if (prompt?.id != id) return
-        val action = pendingAction
-        val confirmedPin = confirmation?.pin
-        verifier = null
         pendingAction = null
+        pendingPin = null
         onCancelled = null
+        confirmation?.pin?.fill(CLEARED_PIN_CHARACTER)
         confirmation = null
-        verifiedGrant = null
+        work = null
         prompt = null
         publish(null)
-        try {
-            action?.invoke(grant)
-        } finally {
-            confirmedPin?.fill(CLEARED_PIN_CHARACTER)
-        }
     }
 
     private fun confirmNewUserPin(current: PinPrompt, pin: CharArray) {
         val expected = confirmation?.pin
-        val grant = verifiedGrant
+        val adminPin = pendingPin
         when {
-            expected == null || grant == null -> {
+            expected == null || adminPin == null -> {
                 pin.fill(CLEARED_PIN_CHARACTER)
                 cancel()
             }
@@ -142,26 +139,16 @@ internal class PinProtection(
                 pin.fill(CLEARED_PIN_CHARACTER)
                 showError(
                     current,
-                    context.getString(R.string.pin_new_user_mismatch, confirmation?.name.orEmpty()),
-                )
-            }
-            grant.expiresAtElapsedRealtime != null &&
-                SystemClock.elapsedRealtime() >= grant.expiresAtElapsedRealtime -> {
-                pin.fill(CLEARED_PIN_CHARACTER)
-                verifiedGrant = null
-                update(
-                    current.copy(
-                        stage = PinStage.VERIFY,
-                        confirmationName = null,
-                        busy = false,
-                        error = context.getString(R.string.pin_approval_expired),
-                        inputRevision = current.inputRevision + 1,
-                    )
+                    context.getString(
+                        R.string.pin_new_user_mismatch,
+                        confirmation?.name.orEmpty(),
+                    ),
                 )
             }
             else -> {
                 pin.fill(CLEARED_PIN_CHARACTER)
-                complete(current.id, grant.value)
+                pendingPin = null
+                runAction(current, adminPin)
             }
         }
     }
@@ -188,8 +175,3 @@ internal class PinProtection(
 }
 
 internal data class PinConfirmation(val name: String, val pin: CharArray)
-
-internal data class PinVerification(
-    val value: String,
-    val expiresAtElapsedRealtime: Long? = null,
-)

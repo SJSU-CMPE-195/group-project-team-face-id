@@ -5,6 +5,18 @@ import ThemeProvider from "./context/ThemeProvider.jsx";
 import AuthProvider from "./security/AuthProvider.jsx";
 import SecurityGate from "./security/SecurityGate.jsx";
 import HardwareSimulatorProvider from "./hardware/HardwareSimulatorProvider.jsx";
+import PcClientGate from "./pc-client/PcClientGate.jsx";
+import PcClientProvider from "./pc-client/PcClientProvider.jsx";
+
+const pcClientPath = ["/pc-client", "/pc-client/"].includes(
+  window.location.pathname,
+);
+
+const securedDashboard = (
+  <AuthProvider>
+    <SecurityGate />
+  </AuthProvider>
+);
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener(
@@ -22,9 +34,15 @@ createRoot(document.getElementById("root")).render(
   <StrictMode>
     <ThemeProvider>
       <HardwareSimulatorProvider>
-        <AuthProvider>
-          <SecurityGate />
-        </AuthProvider>
+        {pcClientPath ? (
+          <PcClientProvider>
+            <PcClientGate>
+              {securedDashboard}
+            </PcClientGate>
+          </PcClientProvider>
+        ) : (
+          securedDashboard
+        )}
       </HardwareSimulatorProvider>
     </ThemeProvider>
   </StrictMode>

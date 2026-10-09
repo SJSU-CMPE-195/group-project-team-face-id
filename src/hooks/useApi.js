@@ -157,12 +157,21 @@ export default function useApi(baseUrl) {
           method: "POST",
           body: JSON.stringify({ session_id: sessionId }),
         }),
-      piEnrollStart: (payload = {}, grantToken) =>
+      piEnrollStart: (requestId, userId, grantToken) =>
         mutate(
           "/api/enroll/start",
-          { method: "POST", body: JSON.stringify(payload) },
+          {
+            method: "POST",
+            body: JSON.stringify({
+              request_id: requestId,
+              user_id: userId,
+              source: "device_camera",
+            }),
+          },
           grantToken,
         ),
+      piEnrollRequest: (requestId) =>
+        get(`/api/enroll/requests/${encodeURIComponent(requestId)}`),
       piEnrollStatus: (sessionId) =>
         get(`/api/enroll/status?session_id=${encodeURIComponent(sessionId)}`),
       piEnrollCancel: (sessionId) =>

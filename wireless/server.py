@@ -1,4 +1,4 @@
-"""Run one application behind LAN TLS and a separate loopback dashboard."""
+"""Run one application behind TLS and a separate loopback dashboard."""
 
 from __future__ import annotations
 
@@ -42,6 +42,17 @@ _LAN_LIMITS = _ServerLimits(
     handshake_deadline_seconds=5,
     header_deadline_seconds=5,
     body_deadline_seconds=15,
+    shutdown_timeout_seconds=5,
+)
+_BLE_LIMITS = _ServerLimits(
+    threads=4,
+    accepted_connections=4,
+    backlog_connections=8,
+    keep_alive_connections=4,
+    timeout_seconds=60,
+    handshake_deadline_seconds=30,
+    header_deadline_seconds=60,
+    body_deadline_seconds=60,
     shutdown_timeout_seconds=5,
 )
 _DASHBOARD_LIMITS = _ServerLimits(
@@ -336,6 +347,7 @@ def wireless_servers(
     port: int,
     dashboard_port: int,
     tls_identity_path: Path,
+    ble_transport: bool = False,
 ):
     if port == dashboard_port:
         raise ValueError("HTTPS and local dashboard ports must be different.")
@@ -343,7 +355,7 @@ def wireless_servers(
     https_server = _build_server(
         (host, port),
         app,
-        limits=_LAN_LIMITS,
+        limits=_BLE_LIMITS if ble_transport else _LAN_LIMITS,
         tls_identity_path=tls_identity_path,
     )
     dashboard_server = _build_server(
@@ -376,3 +388,49 @@ def wireless_servers(
                 )
                 if dashboard_thread.is_alive():
                     raise RuntimeError("Local dashboard server did not stop.")
+
+
+@contextmanager
+def serving_in_background(
+    server: _BoundedServer,
+    *,
+    host: str,
+    port: int,
+    readiness_timeout_seconds: float = 5,
+):
+    """Start a prepared server and prove its listener is accepting before use."""
+
+    failures: list[BaseException] = []
+
+    def serve() -> None:
+        try:
+            server.serve()
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(
+        target=serve,
+        name="bass-ble-loopback-https",
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + readiness_timeout_seconds
+    while True:
+        if failures or not thread.is_alive():
+            raise RuntimeError("Loopback HTTPS server stopped during startup") from (
+                failures[0] if failures else None
+            )
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Loopback HTTPS listener did not become ready")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        server.stop()
+        thread.join(timeout=_BLE_LIMITS.shutdown_timeout_seconds + 1)
+        if thread.is_alive():
+            raise RuntimeError("Loopback HTTPS server did not stop.")

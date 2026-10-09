@@ -9,6 +9,7 @@ replaces the camera, model, face engine and serial seams.
 from __future__ import annotations
 
 from copy import deepcopy
+import struct
 import threading
 import time
 from typing import Any
@@ -171,6 +172,16 @@ class _SimulatedFaceEngine:
         with self._lock:
             self._saved[name] = deepcopy(embeddings)
         return {"ok": True}
+
+    @staticmethod
+    def encode_user_embeddings(embeddings: list[Any]) -> bytes:
+        """Produce a safe-format placeholder without loading ML dependencies."""
+
+        if not isinstance(embeddings, list) or not 1 <= len(embeddings) <= 10:
+            raise ValueError("embeddings are required")
+        sample = struct.pack("<512f", 1.0, *([0.0] * 511))
+        header = struct.pack("<8sHH", b"BASSF001", len(embeddings), 512)
+        return header + sample * len(embeddings)
 
 
 class SimulatedPiRuntime(PiRuntime):

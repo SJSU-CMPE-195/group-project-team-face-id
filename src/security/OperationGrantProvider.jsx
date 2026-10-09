@@ -3,17 +3,20 @@ import Btn from "../components/Btn.jsx";
 import Input from "../components/Input.jsx";
 import { OperationGrantContext } from "./operationGrantContext.js";
 import useSecurity from "./useSecurity.js";
+import usePcClient from "../pc-client/usePcClient.js";
 
 const API_ROOT = "/local/wireless/api";
 
 export default function OperationGrantProvider({ children }) {
   const { csrfToken, expireSession, user } = useSecurity();
+  const pcClient = usePcClient();
   const pendingRef = useRef(null);
   const accountRoleRef = useRef("");
   const [prompt, setPrompt] = useState(null);
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const remotePi = pcClient?.status?.connected === true;
 
   const finish = useCallback((value) => {
     const pending = pendingRef.current;
@@ -170,7 +173,9 @@ export default function OperationGrantProvider({ children }) {
             <p className="mt-1 text-sm text-slate-400">
               {prompt.confirmingNewPin
                 ? "Re-enter the new PIN before the 30-second approval expires."
-                : `Enter the PIN for your login account (${user.name}). This approval expires after 30 seconds.`}
+                : remotePi
+                  ? `Enter the PIN for your login account (${user.name}). The Pi verifies it when this operation runs. This request expires after 30 seconds.`
+                  : `Enter the PIN for your login account (${user.name}). This approval expires after 30 seconds.`}
             </p>
             <label htmlFor="operation-pin" className="mt-4 block text-sm font-medium text-slate-200">
               {prompt.confirmingNewPin ? "New PIN" : "Login account PIN"}
@@ -197,7 +202,7 @@ export default function OperationGrantProvider({ children }) {
                 Cancel
               </Btn>
               <Btn type="submit" disabled={busy}>
-                {busy ? "Checking…" : "Confirm"}
+                {busy ? (remotePi ? "Preparing…" : "Checking…") : "Confirm"}
               </Btn>
             </div>
           </form>

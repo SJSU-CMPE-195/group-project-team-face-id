@@ -1,7 +1,7 @@
 [Unit]
-Description=BASS authenticated wireless Device API
-After=network-online.target
-Wants=network-online.target
+Description=BASS authenticated BLE Device API
+After=bluetooth.service
+Wants=bluetooth.service
 
 [Service]
 Type=simple
@@ -17,7 +17,7 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 WorkingDirectory="/home/pi/faceid/group-project-team-face-id-main"
 Environment="BASS_RUNTIME_MODE=pi"
-Environment="BASS_HOST=0.0.0.0"
+Environment="BASS_HOST=127.0.0.1"
 Environment="BASS_PORT=5056"
 Environment="BASS_DASHBOARD_PORT=5057"
 Environment="BASS_OPENSSL=/usr/bin/openssl"

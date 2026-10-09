@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef } from "react";
 import { genId } from "../utils/helpers";
 import useSecurity from "../security/useSecurity.js";
 import useOperationGrant from "../security/useOperationGrant.js";
+import usePcClient from "../pc-client/usePcClient.js";
 import { resolveRuntimeCapabilities } from "../utils/actuatorStatus.js";
 
 export default function useAppActions(state) {
   const { user, syncUser, expireSession } = useSecurity();
   const { requestGrant } = useOperationGrant();
+  const pcClient = usePcClient();
   const {
     mode,
     baseUrl,
@@ -31,6 +33,8 @@ export default function useAppActions(state) {
   const refreshRequestRef = useRef(0);
   const refreshRef = useRef(null);
   const interactiveRefreshRef = useRef(false);
+  const pcRefreshActiveRef = useRef(null);
+  const pcRefreshPendingRef = useRef(null);
   const { simulatedActuators } = resolveRuntimeCapabilities({
     mode,
     runtime: status?.runtime,
@@ -100,9 +104,9 @@ export default function useAppActions(state) {
     }, secs * 1000);
   }, [clearSimRelockTimer, mode, popToast, setSim, settings?.autoRelockSeconds]);
 
-  const refresh = async (opts = {}) => {
+  const performRefresh = async (opts = {}) => {
     const silent = !!opts.silent;
-    if (silent && interactiveRefreshRef.current) return null;
+    if (!pcClient && silent && interactiveRefreshRef.current) return null;
     const request = refreshRequestRef.current + 1;
     refreshRequestRef.current = request;
     if (!silent) {
@@ -195,6 +199,47 @@ export default function useAppActions(state) {
       }
     }
   };
+
+  const startPcRefresh = (opts) => {
+    const promise = performRefresh(opts);
+    pcRefreshActiveRef.current = promise;
+    const drain = () => {
+      if (pcRefreshActiveRef.current !== promise) return;
+      pcRefreshActiveRef.current = null;
+      const pending = pcRefreshPendingRef.current;
+      pcRefreshPendingRef.current = null;
+      if (!pending) return;
+      if (!refreshRef.current) {
+        pending.waiters.forEach(({ resolve }) => resolve(null));
+        return;
+      }
+      const next = refreshRef.current(pending.options);
+      next.then(
+        (value) => pending.waiters.forEach(({ resolve }) => resolve(value)),
+        (error) => pending.waiters.forEach(({ reject }) => reject(error)),
+      );
+    };
+    promise.then(drain, drain);
+    return promise;
+  };
+
+  const refresh = (opts = {}) => {
+    if (!pcClient) return performRefresh(opts);
+    if (!pcRefreshActiveRef.current) return startPcRefresh(opts);
+    return new Promise((resolve, reject) => {
+      const silent = !!opts.silent;
+      if (pcRefreshPendingRef.current) {
+        pcRefreshPendingRef.current.options.silent =
+          pcRefreshPendingRef.current.options.silent && silent;
+        pcRefreshPendingRef.current.waiters.push({ resolve, reject });
+        return;
+      }
+      pcRefreshPendingRef.current = {
+        options: { ...opts, silent },
+        waiters: [{ resolve, reject }],
+      };
+    });
+  };
   refreshRef.current = refresh;
 
   useEffect(() => {
@@ -233,6 +278,10 @@ export default function useAppActions(state) {
       refreshRequestRef.current += 1;
       refreshRef.current = null;
       interactiveRefreshRef.current = false;
+      pcRefreshActiveRef.current = null;
+      const pendingRefresh = pcRefreshPendingRef.current;
+      pcRefreshPendingRef.current = null;
+      pendingRefresh?.waiters.forEach(({ resolve }) => resolve(null));
       clearSimRelockTimer();
       clearSimIgnitionStopTimer();
       clearDeviceIgnitionStopCheckTimer();

@@ -114,7 +114,7 @@ def save_user_embedding(name: str, embeddings: list) -> dict:
     if not name:
         return {"ok": False, "error": "name is required"}
     try:
-        blob = encode_embeddings(embeddings)
+        blob = encode_user_embeddings(embeddings)
     except EmbeddingFormatError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -148,6 +148,12 @@ def save_user_embedding(name: str, embeddings: list) -> dict:
         return {"ok": False, "error": "database unavailable"}
 
     return {"ok": True}
+
+
+def encode_user_embeddings(embeddings: list) -> bytes:
+    """Validate and encode samples without writing the bound user or receipt."""
+
+    return encode_embeddings(embeddings)
 
 
 def cosine_similarity(vector_a: np.ndarray, vector_b: np.ndarray) -> float:

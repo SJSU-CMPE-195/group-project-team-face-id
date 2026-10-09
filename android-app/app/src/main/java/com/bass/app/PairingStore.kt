@@ -16,8 +16,124 @@ import org.json.JSONObject
 
 private const val STORAGE_VERSION = 3
 private const val MAX_SAVED_PAIRING_BYTES = 4096
+private const val MAX_PENDING_ENROLLMENT_BYTES = 16_384
+private const val MAX_ENROLLMENT_JOURNAL_BYTES = 65_536
+private const val MAX_ENROLLMENT_JOURNAL_RECORDS = 16
 private val SHA256_PATTERN = Regex("[a-f0-9]{64}")
 private val SECRET_PATTERN = Regex("[A-Za-z0-9_-]{32,512}")
+
+internal data class PendingEnrollment(
+    val requestId: String,
+    val hostDeviceId: String,
+    val userId: String,
+    val ownerDeviceId: String,
+    val ownerUserId: String,
+    val sessionId: String? = null,
+    val state: String = AWAITING_RECEIPT,
+    val receipt: String? = null,
+) {
+    init {
+        requestId.validatedUuid()
+        hostDeviceId.validatedUuid()
+        userId.validatedUuid()
+        ownerDeviceId.validatedUuid()
+        ownerUserId.validatedUuid()
+        sessionId?.validatedEnrollmentSessionId()
+        require(state in STATES) { "Invalid enrollment request state" }
+        require(receipt == null || receipt.length <= MAX_PENDING_ENROLLMENT_BYTES) {
+            "Enrollment receipt is too large"
+        }
+    }
+
+    fun json(): String =
+        JSONObject()
+            .put("version", 1)
+            .put("request_id", requestId)
+            .put("host_device_id", hostDeviceId)
+            .put("user_id", userId)
+            .put("owner_device_id", ownerDeviceId)
+            .put("owner_user_id", ownerUserId)
+            .put("session_id", sessionId)
+            .put("state", state)
+            .put("receipt", receipt)
+            .toString()
+
+    fun withReceipt(value: JSONObject): PendingEnrollment {
+        require(value.getString("request_id") == requestId) {
+            "Enrollment receipt does not match request"
+        }
+        val receiptSessionId = value.getString("session_id").validatedEnrollmentSessionId()
+        require(sessionId == null || sessionId == receiptSessionId) {
+            "Enrollment receipt does not match session"
+        }
+        val receiptState = value.getString("state")
+        require(receiptState in SERVER_STATES) { "Invalid enrollment receipt state" }
+        return copy(
+            sessionId = receiptSessionId,
+            state = receiptState,
+            receipt = value.toString(),
+        )
+    }
+
+    fun withAcceptance(value: JSONObject): PendingEnrollment {
+        require(value.getString("request_id") == requestId) {
+            "Enrollment acceptance does not match request"
+        }
+        val acceptedSessionId = value.getString("session_id").validatedEnrollmentSessionId()
+        require(sessionId == null || sessionId == acceptedSessionId) {
+            "Enrollment acceptance does not match session"
+        }
+        require(
+            value.getString("status_url") ==
+                "/api/enroll/requests/${DeviceApi.encoded(requestId)}"
+        ) { "Enrollment status URL does not match request" }
+        return copy(
+            sessionId = acceptedSessionId,
+            state = "accepted",
+            receipt = value.toString(),
+        )
+    }
+
+    fun belongsTo(pairing: Pairing): Boolean =
+        hostDeviceId == pairing.hostDeviceId &&
+            ownerDeviceId == pairing.identity.deviceId &&
+            ownerUserId == pairing.identity.user.id
+
+    fun sameRequest(other: PendingEnrollment): Boolean =
+        hostDeviceId == other.hostDeviceId &&
+            ownerDeviceId == other.ownerDeviceId &&
+            ownerUserId == other.ownerUserId &&
+            requestId == other.requestId
+
+    val unresolved: Boolean
+        get() = state in setOf(AWAITING_RECEIPT, UNKNOWN, "accepted", "active")
+
+    companion object {
+        const val AWAITING_RECEIPT = "awaiting_receipt"
+        const val UNKNOWN = "unknown"
+        private val SERVER_STATES =
+            setOf("accepted", "active", "completed", "failed", "cancelled", "interrupted")
+        private val STATES = SERVER_STATES + setOf(AWAITING_RECEIPT, UNKNOWN)
+
+        fun parse(raw: String): PendingEnrollment {
+            require(raw.length <= MAX_PENDING_ENROLLMENT_BYTES) {
+                "Invalid pending enrollment"
+            }
+            val json = JSONObject(raw)
+            require(json.getInt("version") == 1) { "Unsupported pending enrollment" }
+            return PendingEnrollment(
+                requestId = json.getString("request_id"),
+                hostDeviceId = json.getString("host_device_id"),
+                userId = json.getString("user_id"),
+                ownerDeviceId = json.getString("owner_device_id"),
+                ownerUserId = json.getString("owner_user_id"),
+                sessionId = json.optString("session_id").takeIf(String::isNotEmpty),
+                state = json.getString("state"),
+                receipt = json.optString("receipt").takeIf(String::isNotEmpty),
+            )
+        }
+    }
+}
 
 data class Pairing(
     val hostDeviceId: String,
@@ -81,11 +197,14 @@ class PairingStore(private val context: Context) {
     private val preferences = context.getSharedPreferences("pairing", Context.MODE_PRIVATE)
     private val mutationLock = Any()
     private var writeScope = 0L
+    private var enrollmentJournalScope = 0L
 
     fun beginWriteScope(): Long = synchronized(mutationLock) { ++writeScope }
 
     fun isWriteScopeCurrent(expectedWriteScope: Long): Boolean =
         synchronized(mutationLock) { writeScope == expectedWriteScope }
+
+    fun enrollmentJournalScope(): Long = synchronized(mutationLock) { enrollmentJournalScope }
 
     internal fun loadPairings(): StoredPairings =
         synchronized(mutationLock) {
@@ -98,6 +217,11 @@ class PairingStore(private val context: Context) {
                 )?.let(PendingCommissioning::parse),
                 pendingTransfer = decryptedText(KEY_TRANSFER_IV, KEY_TRANSFER_DATA)
                     ?.let(PendingTransfer::parse),
+                pendingEnrollments = decryptedText(
+                    KEY_ENROLLMENT_IV,
+                    KEY_ENROLLMENT_DATA,
+                )?.let(::parseEnrollmentJournal).orEmpty(),
+                enrollmentJournalScope = enrollmentJournalScope,
                 exportMaterial = decryptedText(KEY_EXPORT_IV, KEY_EXPORT_DATA)?.let {
                     val json = JSONObject(it)
                     ExportMaterial(json.getString("file_name"), json.getString("content"))
@@ -235,6 +359,55 @@ class PairingStore(private val context: Context) {
             true
         }
 
+    internal fun savePendingEnrollment(
+        pending: PendingEnrollment,
+        expectedJournalScope: Long,
+    ): Boolean =
+        synchronized(mutationLock) {
+            if (enrollmentJournalScope != expectedJournalScope) return@synchronized false
+            val records =
+                parseEnrollmentJournalOrEmpty()
+                    .filterNot(pending::sameRequest)
+                    .plus(pending)
+            require(records.size <= MAX_ENROLLMENT_JOURNAL_RECORDS) {
+                "Too many pending enrollment requests"
+            }
+            val encrypted = encrypted(enrollmentJournalJson(records))
+            check(
+                preferences.edit()
+                    .putString(KEY_ENROLLMENT_IV, encrypted.iv)
+                    .putString(KEY_ENROLLMENT_DATA, encrypted.data)
+                    .commit()
+            ) { context.getString(R.string.core_pairing_save_failed) }
+            true
+        }
+
+    internal fun clearPendingEnrollment(
+        pending: PendingEnrollment,
+        expectedJournalScope: Long,
+    ): Boolean =
+        synchronized(mutationLock) {
+            if (enrollmentJournalScope != expectedJournalScope) return@synchronized false
+            val records = parseEnrollmentJournalOrEmpty()
+            val remaining = records.filterNot(pending::sameRequest)
+            if (remaining.size == records.size) return@synchronized false
+            val editor = preferences.edit()
+            if (remaining.isEmpty()) {
+                editor.remove(KEY_ENROLLMENT_IV).remove(KEY_ENROLLMENT_DATA)
+            } else {
+                val encrypted = encrypted(enrollmentJournalJson(remaining))
+                editor.putString(KEY_ENROLLMENT_IV, encrypted.iv)
+                    .putString(KEY_ENROLLMENT_DATA, encrypted.data)
+            }
+            check(editor.commit()) { context.getString(R.string.core_pairing_clear_failed) }
+            true
+        }
+
+    private fun parseEnrollmentJournalOrEmpty(): List<PendingEnrollment> =
+        decryptedText(KEY_ENROLLMENT_IV, KEY_ENROLLMENT_DATA)
+            ?.let(::parseEnrollmentJournal)
+            .orEmpty()
+
     suspend fun savePendingRecoverably(
         pairing: Pairing,
         expectedWriteScope: Long,
@@ -304,6 +477,7 @@ class PairingStore(private val context: Context) {
     fun clear() {
         synchronized(mutationLock) {
             writeScope++
+            enrollmentJournalScope++
             check(preferences.edit().clear().commit()) {
                 context.getString(R.string.core_pairing_clear_failed)
             }
@@ -338,6 +512,8 @@ class PairingStore(private val context: Context) {
         private const val KEY_EXPORT_DATA = "export_data"
         private const val KEY_TRANSFER_IV = "transfer_iv"
         private const val KEY_TRANSFER_DATA = "transfer_data"
+        private const val KEY_ENROLLMENT_IV = "enrollment_iv"
+        private const val KEY_ENROLLMENT_DATA = "enrollment_data"
         private const val KEYSTORE_ALIAS = "bass-pairing"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val CIPHER_TRANSFORMATION = "AES/GCM/NoPadding"
@@ -352,9 +528,35 @@ internal data class StoredPairings(
     val pending: Pairing?,
     val pendingCommissioning: PendingCommissioning?,
     val pendingTransfer: PendingTransfer?,
+    val pendingEnrollments: List<PendingEnrollment>,
+    val enrollmentJournalScope: Long,
     val exportMaterial: ExportMaterial?,
     val writeScope: Long,
 )
+
+private fun enrollmentJournalJson(records: List<PendingEnrollment>): String {
+    val raw = JSONObject()
+        .put("version", 1)
+        .put("records", org.json.JSONArray(records.map { JSONObject(it.json()) }))
+        .toString()
+    require(raw.length <= MAX_ENROLLMENT_JOURNAL_BYTES) {
+        "Enrollment journal is too large"
+    }
+    return raw
+}
+
+private fun parseEnrollmentJournal(raw: String): List<PendingEnrollment> {
+    require(raw.length <= MAX_ENROLLMENT_JOURNAL_BYTES) { "Invalid enrollment journal" }
+    val json = JSONObject(raw)
+    require(json.getInt("version") == 1) { "Unsupported enrollment journal" }
+    val records = json.getJSONArray("records")
+    require(records.length() <= MAX_ENROLLMENT_JOURNAL_RECORDS) {
+        "Too many pending enrollment requests"
+    }
+    return (0 until records.length()).map { index ->
+        PendingEnrollment.parse(records.getJSONObject(index).toString())
+    }
+}
 
 private fun Pairing.sameCredential(other: Pairing): Boolean =
     hostDeviceId == other.hostDeviceId &&
@@ -365,6 +567,12 @@ private fun Pairing.sameCredential(other: Pairing): Boolean =
 
 internal fun String.validatedUuid(): String {
     require(UUID.fromString(this).toString() == this) { "Invalid identifier" }
+    return this
+}
+
+private fun String.validatedEnrollmentSessionId(): String {
+    require(startsWith("enroll_")) { "Invalid enrollment session identifier" }
+    removePrefix("enroll_").validatedUuid()
     return this
 }
 

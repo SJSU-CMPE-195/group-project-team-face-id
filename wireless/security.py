@@ -40,6 +40,7 @@ from .security_face_policy import (
     validate_face_result,
 )
 from .security_schema import install_security_schema
+from .enrollment_requests import EnrollmentRequestStore
 from .request_receipts import (
     canonical_request_id,
     load_receipt,
@@ -75,6 +76,7 @@ class SecurityStore:
             self._pepper,
             self._pin_iterations,
         )
+        self.enrollment = EnrollmentRequestStore(self)
 
     @contextmanager
     def synchronized(self) -> Iterator[None]:
@@ -1138,6 +1140,30 @@ class SecurityStore:
         action: str,
         target: str | None = None,
     ) -> None:
+        now = self._now()
+        with self._lock, self._get_conn() as conn:
+            self._begin(conn)
+            current = principal_from_row(
+                self._require_principal(conn, principal, now)
+            )
+            self._consume_grant_in_transaction(
+                conn,
+                current,
+                token,
+                action,
+                target,
+                now,
+            )
+
+    def _consume_grant_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        current: Principal,
+        token: str,
+        action: str,
+        target: str | None,
+        now: int,
+    ) -> None:
         try:
             hashed_token = token_hash(token)
         except SecurityError as error:
@@ -1150,57 +1176,51 @@ class SecurityStore:
             ) from None
         action = validate_action(action)
         target = optional_target(target)
-        now = self._now()
-        with self._lock, self._get_conn() as conn:
-            self._begin(conn)
-            current = principal_from_row(
-                self._require_principal(conn, principal, now)
+        if action in ADMIN_ACTIONS and not current.is_admin:
+            raise SecurityError(
+                "admin_required",
+                403,
+                "administrator access required",
             )
-            if action in ADMIN_ACTIONS and not current.is_admin:
-                raise SecurityError(
-                    "admin_required",
-                    403,
-                    "administrator access required",
-                )
-            if action in OWNER_ACTIONS and not current.is_owner:
-                raise SecurityError(
-                    "owner_required",
-                    403,
-                    "only the product owner can perform this operation",
-                )
-            self._require_owner_target_control(conn, current, action, target)
-            grant = conn.execute(
-                "SELECT 1 FROM operation_grants "
-                "WHERE token_hash=? AND device_id=? AND user_id=? "
-                "AND action=? AND target IS ? AND auth_version=? AND expires_at>?",
-                (
-                    hashed_token,
-                    current.device_id,
-                    current.user_id,
-                    action,
-                    target,
-                    current.auth_version,
-                    now,
-                ),
-            ).fetchone()
-            if grant is None:
-                raise SecurityError(
-                    "invalid_operation_grant",
-                    403,
-                    "operation grant is invalid, expired, or already used",
-                )
-            conn.execute(
-                "DELETE FROM operation_grants WHERE token_hash=?",
-                (hashed_token,),
+        if action in OWNER_ACTIONS and not current.is_owner:
+            raise SecurityError(
+                "owner_required",
+                403,
+                "only the product owner can perform this operation",
             )
-            self._audit(
-                conn,
+        self._require_owner_target_control(conn, current, action, target)
+        grant = conn.execute(
+            "SELECT 1 FROM operation_grants "
+            "WHERE token_hash=? AND device_id=? AND user_id=? "
+            "AND action=? AND target IS ? AND auth_version=? AND expires_at>?",
+            (
+                hashed_token,
+                current.device_id,
                 current.user_id,
-                "operation_grant_consumed",
-                "ok",
-                f"{action}:{target or '-'}",
-                actor_user_id=current.user_id,
+                action,
+                target,
+                current.auth_version,
+                now,
+            ),
+        ).fetchone()
+        if grant is None:
+            raise SecurityError(
+                "invalid_operation_grant",
+                403,
+                "operation grant is invalid, expired, or already used",
             )
+        conn.execute(
+            "DELETE FROM operation_grants WHERE token_hash=?",
+            (hashed_token,),
+        )
+        self._audit(
+            conn,
+            current.user_id,
+            "operation_grant_consumed",
+            "ok",
+            f"{action}:{target or '-'}",
+            actor_user_id=current.user_id,
+        )
 
     @staticmethod
     def _begin(conn: sqlite3.Connection) -> None:

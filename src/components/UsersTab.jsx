@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Crown, ShieldCheck } from "lucide-react";
 import Badge from "./Badge";
 import Btn from "./Btn";
@@ -6,26 +6,9 @@ import Card from "./Card";
 import Input from "./Input";
 import PairingInviteCard from "./PairingInviteCard.jsx";
 import Switch from "./Switch";
+import useEnrollment from "../hooks/useEnrollment.js";
 import useOperationGrant from "../security/useOperationGrant.js";
 import useSecurity from "../security/useSecurity.js";
-
-const FINAL_ENROLLMENT_STATES = new Set([
-  "cancelled",
-  "completed",
-  "error",
-  "expired",
-  "timeout",
-]);
-
-function enrollmentState(raw, fallbackName) {
-  return {
-    state: raw?.state || "capturing",
-    userName: raw?.user || fallbackName,
-    count: raw?.count ?? raw?.samples ?? 0,
-    samplesNeeded: raw?.samples_needed ?? raw?.samplesNeeded ?? 10,
-    message: raw?.message || "",
-  };
-}
 
 export default function UsersTab({
   deviceUsers,
@@ -50,10 +33,21 @@ export default function UsersTab({
   const [inviteBusy, setInviteBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [roleBusy, setRoleBusy] = useState("");
-  const [enrollment, setEnrollment] = useState(null);
-  const enrollmentRef = useRef(null);
-  const pollRef = useRef(null);
   const accountRoleRef = useRef("");
+  const {
+    enrollment,
+    startEnrollment,
+    cancelEnrollment,
+    checkEnrollment,
+  } = useEnrollment({
+    api,
+    busy,
+    cameraLabel,
+    currentUser,
+    popToast,
+    requestGrant,
+    setDeviceUsers,
+  });
 
   const users = useMemo(
     () =>
@@ -63,189 +57,16 @@ export default function UsersTab({
     [currentUser.id, currentUser.is_admin, deviceUsers],
   );
 
-  const clearPoll = useCallback(() => {
-    if (!pollRef.current) return;
-    clearTimeout(pollRef.current);
-    pollRef.current = null;
-  }, []);
-
-  useEffect(
-    () => () => {
-      clearPoll();
-      const active = enrollmentRef.current;
-      enrollmentRef.current = null;
-      if (active?.sessionId) {
-        void api.piEnrollCancel(active.sessionId).catch(() => {});
-      }
-    },
-    [api, clearPoll],
-  );
-
   useEffect(() => {
     const accountRole = `${currentUser.id}:${!!currentUser.is_owner}:${!!currentUser.is_admin}`;
     if (accountRoleRef.current && accountRoleRef.current !== accountRole) {
-      clearPoll();
-      const active = enrollmentRef.current;
-      enrollmentRef.current = null;
-      if (active?.sessionId) {
-        void api.piEnrollCancel(active.sessionId).catch(() => {});
-      }
-      setEnrollment(null);
       setInvite(null);
       setPinDrafts({});
       setName("");
       setNewUserPin("");
     }
     accountRoleRef.current = accountRole;
-  }, [api, clearPoll, currentUser, setName]);
-
-  const finishEnrollment = useCallback(
-    async (active, raw) => {
-      if (enrollmentRef.current !== active) return;
-      clearPoll();
-      enrollmentRef.current = null;
-      setEnrollment(null);
-      const result = enrollmentState(raw, active.userName);
-      if (result.state === "completed") {
-        setDeviceUsers((previous) =>
-          previous.map((user) =>
-            user.id === active.userId
-              ? { ...user, faceEnrolled: true }
-              : user,
-          ),
-        );
-        popToast(
-          "ok",
-          "Face enrolled",
-          `${result.userName} was enrolled with ${cameraLabel}.`,
-        );
-      } else if (result.state === "cancelled") {
-        popToast("info", "Cancelled", `${cameraLabel} enrollment stopped.`);
-      } else {
-        popToast(
-          "err",
-          "Enrollment failed",
-          `${result.message || "The host could not complete face enrollment."} Check that ${cameraLabel.toLowerCase()} is connected and not in use, then retry.`,
-        );
-      }
-    },
-    [cameraLabel, clearPoll, popToast, setDeviceUsers],
-  );
-
-  const pollEnrollment = useCallback(
-    async (active) => {
-      if (enrollmentRef.current !== active || active.cancelled) return;
-      try {
-        const raw = await api.piEnrollStatus(active.sessionId);
-        if (enrollmentRef.current !== active || active.cancelled) return;
-        const next = enrollmentState(raw, active.userName);
-        setEnrollment(next);
-        if (FINAL_ENROLLMENT_STATES.has(next.state)) {
-          await finishEnrollment(active, raw);
-        } else {
-          pollRef.current = setTimeout(() => void pollEnrollment(active), 1000);
-        }
-      } catch (error) {
-        if (enrollmentRef.current !== active || active.cancelled) return;
-        await api.piEnrollCancel(active.sessionId).catch(() => {});
-        await finishEnrollment(active, {
-          state: "error",
-          message: error.message,
-        });
-      }
-    },
-    [api, finishEnrollment],
-  );
-
-  async function startEnrollment(user) {
-    if (enrollmentRef.current || busy) return;
-    if (user.is_owner && !currentUser.is_owner) {
-      popToast(
-        "err",
-        "Owner only",
-        "Only the owner can change this face enrollment.",
-      );
-      return;
-    }
-    const active = {
-      userId: user.id,
-      userName: user.name,
-      sessionId: "",
-      cancelled: false,
-    };
-    enrollmentRef.current = active;
-    setEnrollment({
-      state: "authorizing",
-      userName: user.name,
-      count: 0,
-      samplesNeeded: 10,
-    });
-    try {
-      const grant = await requestGrant(
-        "enrollment.start",
-        user.id,
-        `enroll ${user.name} with ${cameraLabel}`,
-      );
-      if (!grant || enrollmentRef.current !== active || active.cancelled) {
-        if (enrollmentRef.current === active) enrollmentRef.current = null;
-        setEnrollment(null);
-        return;
-      }
-      setEnrollment((value) => ({ ...value, state: "starting" }));
-      const started = await api.piEnrollStart(
-        { user_id: user.id, source: "device_camera" },
-        grant,
-      );
-      active.sessionId = started.session_id || started.sessionId || "";
-      if (!active.sessionId) {
-        throw new Error("The host did not return an enrollment session.");
-      }
-      if (enrollmentRef.current !== active || active.cancelled) {
-        await api.piEnrollCancel(active.sessionId).catch(() => {});
-        if (enrollmentRef.current === active) enrollmentRef.current = null;
-        setEnrollment(null);
-        return;
-      }
-      const next = enrollmentState(started, user.name);
-      setEnrollment(next);
-      if (FINAL_ENROLLMENT_STATES.has(next.state)) {
-        await finishEnrollment(active, started);
-      } else {
-        pollRef.current = setTimeout(() => void pollEnrollment(active), 1000);
-      }
-    } catch (error) {
-      if (enrollmentRef.current !== active) return;
-      if (active.sessionId) {
-        await api.piEnrollCancel(active.sessionId).catch(() => {});
-      }
-      await finishEnrollment(active, {
-        state: "error",
-        message: error.message,
-      });
-    }
-  }
-
-  async function cancelEnrollment() {
-    const active = enrollmentRef.current;
-    if (!active || active.cancelled) return;
-    active.cancelled = true;
-    clearPoll();
-    setEnrollment((value) => ({ ...value, state: "cancelling" }));
-    if (!active.sessionId) return;
-    try {
-      const result = await api.piEnrollCancel(active.sessionId);
-      active.cancelled = false;
-      await finishEnrollment(active, {
-        ...result,
-        state: result?.state || "cancelled",
-      });
-    } catch (error) {
-      active.cancelled = false;
-      setEnrollment((value) => ({ ...value, state: "capturing" }));
-      popToast("err", "Cancel failed", error.message);
-      pollRef.current = setTimeout(() => void pollEnrollment(active), 1000);
-    }
-  }
+  }, [currentUser, setName]);
 
   async function createUser() {
     const displayName = name.trim();
@@ -364,7 +185,7 @@ export default function UsersTab({
       popToast(
         "ok",
         "PIN updated",
-        `${user.name}'s paired phones were revoked. Pair them again with the new PIN.`,
+        `${user.name}'s paired devices were revoked. Pair them again with the new PIN.`,
       );
       void api.devices().then(setDevices).catch(() => {});
     } catch (error) {
@@ -375,7 +196,7 @@ export default function UsersTab({
   async function createInvite(user) {
     if (inviteBusy) return;
     if (user.is_owner && !currentUser.is_owner) {
-      popToast("err", "Owner only", "Only the owner can pair this phone.");
+      popToast("err", "Owner only", "Only the owner can pair this device.");
       return;
     }
     setInviteBusy(true);
@@ -391,6 +212,11 @@ export default function UsersTab({
       if (
         typeof result.qr_image !== "string" ||
         !result.qr_image.startsWith("data:image/png;base64,") ||
+        !result.qr_payload ||
+        typeof result.qr_payload !== "object" ||
+        Array.isArray(result.qr_payload) ||
+        result.qr_payload.version !== 3 ||
+        result.qr_payload.purpose !== "pairing_invite" ||
         !Number.isFinite(result.expires_in) ||
         result.expires_in <= 0
       ) {
@@ -400,6 +226,7 @@ export default function UsersTab({
         userId: user.id,
         userName: user.name,
         qrImage: result.qr_image,
+        qrPayload: result.qr_payload,
         expiresAt: requestedAt + result.expires_in * 1000,
       });
     } catch (error) {
@@ -412,7 +239,7 @@ export default function UsersTab({
   async function revokeDevice(device) {
     const ownerDevice = device.is_owner || device.user_is_owner;
     if (ownerDevice && !currentUser.is_owner) {
-      popToast("err", "Owner only", "Only the owner can revoke this phone.");
+      popToast("err", "Owner only", "Only the owner can revoke this device.");
       return;
     }
     if (!confirm(`Revoke ${device.name || "this device"}?`)) return;
@@ -491,7 +318,9 @@ export default function UsersTab({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-slate-100">
-                Enrolling {enrollment.userName}
+                {enrollment.needsCheck
+                  ? `Enrollment recovery for ${enrollment.userName}`
+                  : `Enrolling ${enrollment.userName}`}
               </div>
               <p className="mt-2 text-xs text-slate-400">
                 {cameraLabel} · {enrollment.state}
@@ -501,14 +330,29 @@ export default function UsersTab({
               Samples {enrollment.count} / {enrollment.samplesNeeded}
             </Badge>
           </div>
-          <Btn
-            className="mt-4"
-            variant="secondary"
-            disabled={enrollment.state === "cancelling"}
-            onClick={() => void cancelEnrollment()}
-          >
-            {enrollment.state === "cancelling" ? "Cancelling…" : "Cancel"}
-          </Btn>
+          {enrollment.message ? (
+            <p className="mt-3 text-xs leading-relaxed text-amber-100">
+              {enrollment.message}
+            </p>
+          ) : null}
+          <div className="mt-4 flex flex-wrap gap-2">
+            {enrollment.canCancel ? (
+              <Btn
+                variant="secondary"
+                onClick={() => void cancelEnrollment()}
+              >
+                Cancel
+              </Btn>
+            ) : null}
+            {enrollment.needsCheck ? (
+              <Btn
+                variant="secondary"
+                onClick={() => void checkEnrollment()}
+              >
+                Check status
+              </Btn>
+            ) : null}
+          </div>
         </Card>
       ) : null}
 
@@ -689,7 +533,7 @@ function UserRow({
               disabled={inviteBusy || ownerProtected}
               onClick={onPair}
             >
-              Pair phone
+              Pair device
             </Btn>
             <Btn
               variant="danger"
@@ -713,7 +557,7 @@ function PairedDevices({ devices, currentUser, onRevoke }) {
       </div>
       <div className="mt-3 space-y-2">
         {(devices || []).length === 0 ? (
-          <div className="text-sm text-slate-500">No paired phones.</div>
+          <div className="text-sm text-slate-500">No paired devices.</div>
         ) : (
           devices.map((device) => (
             <div
@@ -722,7 +566,7 @@ function PairedDevices({ devices, currentUser, onRevoke }) {
             >
               <div className="min-w-0">
                 <div className="truncate text-sm text-slate-100">
-                  {device.name || "Mobile device"}
+                  {device.name || "Paired device"}
                 </div>
                 <div className="flex items-center gap-1 text-xs text-slate-500">
                   <span>

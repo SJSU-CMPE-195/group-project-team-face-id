@@ -446,40 +446,33 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
 
     @app.post("/api/enroll/start")
     def api_enroll_start():
-        body = json_object()
-        source = _choice(
-            body.get("source"),
-            "source",
-            {
-                "client_camera",
-                "device_camera",
-                "pc_webcam",
-                "phone_camera",
-                "pi_camera",
-            },
-            default="device_camera",
-        )
-        name = _bounded_string(
-            g.enrollment_user["name"] if g.get("enrollment_user") else body.get("name"),
-            "name",
-            MAX_NAME_CHARS,
-            required=True,
-        )
-        try:
-            if source in {"client_camera", "phone_camera"}:
-                raise RuntimeRequestError(
-                    "face enrollment requires the backend host camera",
-                    409,
-                )
-            authorization = (
-                {"authorization": g.principal}
-                if g.get("principal")
-                else {}
+        reservation = g.get("enrollment_reservation")
+        if reservation is None:
+            return json_error("Authenticated enrollment reservation is required.", 403)
+        if reservation["created"]:
+            runtime_impl.start_enrollment(
+                g.enrollment_user["id"],
+                authorization=g.principal,
+                enrollment_reservation=reservation,
             )
-            result = runtime_impl.start_enrollment(name, **authorization)
-            return jsonify(result)
-        except RuntimeRequestError as exc:
-            return runtime_error(exc)
+        return jsonify(reservation["response"]), 202
+
+    @app.get("/api/enroll/requests/<request_id>")
+    def api_enroll_request(request_id: str):
+        receipt = g.get("enrollment_request")
+        if receipt is None:
+            return json_error("Authenticated enrollment lookup is required.", 403)
+        response = dict(receipt)
+        response["session"] = None
+        if response["state"] in {"accepted", "active"}:
+            try:
+                response["session"] = runtime_impl.enrollment_status(
+                    response["session_id"],
+                )
+            except RuntimeRequestError as exc:
+                if exc.status_code != 404:
+                    raise
+        return jsonify(response)
 
     @app.post("/api/enroll/sample")
     def api_enroll_sample():

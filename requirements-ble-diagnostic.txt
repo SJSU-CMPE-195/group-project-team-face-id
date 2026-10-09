@@ -1,0 +1,2 @@
+# Windows PC Bluetooth client and optional diagnostic; not used by the Pi host.
+bleak==3.0.2

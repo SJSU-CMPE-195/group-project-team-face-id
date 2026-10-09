@@ -32,16 +32,19 @@ internal data class ActiveSession(
     val api: DeviceApi,
     val generation: Long,
     val flow: CaptureFlow,
+    val requestId: String? = null,
 )
 
 internal suspend fun ActiveSession.cancelRemote() =
     withContext(NonCancellable) {
         runCatching {
-            api.json(
-                "/api/$kind/cancel",
-                "POST",
-                JSONObject().put("session_id", id),
-            )
+            api.cancelFirst {
+                json(
+                    "/api/$kind/cancel",
+                    "POST",
+                    JSONObject().put("session_id", id),
+                )
+            }
         }
         Unit
     }
@@ -181,8 +184,19 @@ internal fun BassState.withSessionResult(
     val phase = result.optString("state")
     val message = result.optString("message").takeIf { it.isNotBlank() }
     val terminal =
-        phase in setOf("completed", "granted", "denied", "cancelled", "error", "timeout", "expired")
-    val failed = phase in setOf("denied", "error", "timeout", "expired")
+        phase in
+            setOf(
+                "completed",
+                "granted",
+                "denied",
+                "cancelled",
+                "error",
+                "timeout",
+                "expired",
+                "failed",
+                "interrupted",
+            )
+    val failed = phase in setOf("denied", "error", "timeout", "expired", "failed", "interrupted")
     val window = result.optJSONObject("window")
     return SessionTransition(
         state =
@@ -210,3 +224,11 @@ internal fun BassState.withSessionResult(
         terminal = terminal,
     )
 }
+
+internal fun JSONObject.enrollmentProjection(): JSONObject =
+    optJSONObject("result")
+        ?: optJSONObject("session")
+        ?: JSONObject()
+            .put("session_id", getString("session_id"))
+            .put("request_id", getString("request_id"))
+            .put("state", getString("state"))

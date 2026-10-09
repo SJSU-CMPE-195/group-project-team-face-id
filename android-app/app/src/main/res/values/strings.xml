@@ -24,7 +24,7 @@
     <string name="pair_title">Pair your BASS device</string>
     <string name="pair_permission_denied">Camera permission denied. Allow it in Android Settings to scan a QR code.</string>
     <string name="pair_unauthorized">The account PIN was rejected or the invitation is no longer valid. Check the PIN; if it is correct, scan a new invitation.</string>
-    <string name="pair_offline">Device not found. Check that both devices use the same Wi-Fi and that client isolation is off.</string>
+    <string name="pair_offline">Device not found. Check that the BASS device and Bluetooth are on, then try again.</string>
     <string name="pair_error">Could not connect to this device.</string>
     <string name="pair_scanner_hint">Place the entire QR code inside the frame.</string>
     <string name="pair_camera_preview">Rear camera QR code preview</string>
@@ -96,6 +96,7 @@
     <string name="users_added">Added %1$s</string>
     <string name="users_enroll_progress">Samples %1$d / %2$d</string>
     <string name="session_failed_retry">The operation failed. Try again.</string>
+    <string name="core_enrollment_result_unknown">The enrollment result could not be confirmed. Start a new enrollment only if you want a new request.</string>
     <string name="users_remove_title">Remove %1$s?</string>
     <string name="users_remove_description">This removes the directory entry, face template, and access permission.</string>
     <string name="users_phone_invite">Invite this user\'s phone</string>
@@ -143,13 +144,15 @@
     <string name="pin_submit">Confirm</string>
     <string name="pin_invalid">Enter all 6 digits.</string>
     <string name="pin_new_user_mismatch">PINs do not match. Re-enter the new PIN for %1$s.</string>
-    <string name="pin_approval_expired">Approval expired. Enter your administrator PIN again.</string>
     <plurals name="pin_locked_seconds">
         <item quantity="one">Try again in %1$d second.</item>
         <item quantity="other">Try again in %1$d seconds.</item>
     </plurals>
 
     <string name="error_title">Something went wrong</string>
+    <string name="core_bluetooth_permission_required">Bluetooth permission is required. Allow nearby-device access in Android Settings, then try again.</string>
+    <string name="core_bluetooth_unavailable">Bluetooth is unavailable or turned off.</string>
+    <string name="core_bluetooth_scan_failed">Bluetooth scan failed (%1$d).</string>
     <string name="commissioning_invalid">Enter the required name, credential, and 6-digit PIN.</string>
     <string name="export_failed">Could not clear the saved recovery material.</string>
 </resources>

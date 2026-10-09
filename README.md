@@ -1,10 +1,17 @@
 ## Native Android wireless app
 
-For the native APK, fixed QR pairing, and local Wi-Fi host setup, see
+For the native APK, fixed QR pairing, and Raspberry Pi BLE host setup, see
 [Android wireless operation](docs/android-wireless.md). Every unlock requires
 recognition by the selected backend's camera: PC webcam or Pi camera. Android
 and the React dashboard control that same backend; neither UI chooses a
 different camera for unlocking.
+
+Windows users can connect this dashboard to a Pi without an Android phone.
+Start `scripts/start-pc-client.cmd` and open
+`http://127.0.0.1:5058/pc-client`. See
+[PC Bluetooth setup](docs/pc-bluetooth.md) for dependencies, JSON activation and
+invitation cards, and saved reconnection. The existing port 5057 dashboard
+continues to operate its local development host.
 
 ## Team members
 
@@ -184,14 +191,16 @@ direction/limits/electrical safety, or systemd startup with attached hardware.
 
 Use the native APK for phone operation: see [Android wireless operation](docs/android-wireless.md).
 Scan the host's fixed QR once; Android discovers that host, verifies its pinned
-TLS certificate, and authenticates over HTTPS on port 5056. No USB forwarding,
+TLS certificate, and authenticates over HTTPS carried by BLE to the Pi's loopback
+port 5056. Windows also provides a [PC Bluetooth client](docs/pc-bluetooth.md)
+and a separate local development dashboard. No USB forwarding,
 browser backend address, or separate Connect action is needed for normal use.
 
-The selected Android release candidate is the unsigned BASS 0.4.0 (versionCode
-5) APK. Current artifact hashes and verification results are recorded in the
-[delivery snapshot](docs/android-delivery-status.md). It must be signed before
-installation or distribution; signing and build details are in the Android
-wireless guide.
+This branch implements the API v4 BLE prototype; build its matching Android
+client before using it. The [previous delivery snapshot](docs/android-delivery-status.md)
+records the older HTTPS release candidate and does not validate this BLE build.
+See the [BLE contract and verification status](bluetooth-transport-plan.md) and
+the Android wireless guide for the current build and migration procedure.
 
 The built web dashboard runs only on the host at `http://localhost:5057`. Its PWA
 manifest, icons, and offline shell remain available, but live controls and the
@@ -313,7 +322,8 @@ prevents two processes from competing for the camera or ESP32.
 
 ## Setup — Dashboard (Mac / Windows / Linux)
 
-The React UI only needs Node.js. Run this from your laptop on the same WiFi network as the Pi.
+The React UI only needs Node.js. Run it on the backend host for local development;
+phone access uses the Android BLE client on a Raspberry Pi host.
 
 ### Mac / Linux
 
@@ -344,8 +354,8 @@ Use the [wireless host setup](docs/android-wireless.md) on the PC or Pi:
 1. Build the dashboard and start the wireless backend. Pi deployment must
    include the built `dist/` directory; it is not included by Git.
 2. Open [http://localhost:5057](http://localhost:5057) on the backend machine.
-   Sign in with an existing account, or complete phone-first activation using
-   the Hardware Simulator on the development PC. The dashboard automatically
+   Sign in with an existing account, or complete phone-first activation on the
+   Pi using its one-time activation QR. The dashboard automatically
    uses that service and its camera.
 3. As an administrator, choose **Users → Pair phone** for the intended user.
    The dashboard displays a five-minute invitation QR.
@@ -355,7 +365,8 @@ Use the [wireless host setup](docs/android-wireless.md) on the PC or Pi:
 
 No backend address or Connect action is needed. For local frontend development,
 `http://localhost:5173` uses the same host through Vite's proxy to port 5057.
-The Android app reaches the authenticated LAN API over HTTPS on port 5056.
+The Android app reaches the authenticated API over BLE-carried HTTPS. Port 5056
+binds only to loopback and does not grant local dashboard privileges.
 
 ---
 
@@ -484,7 +495,7 @@ grants:
 
 Normal dashboard operation uses `faceid-wireless.service` and its local page at
 `http://localhost:5057`; see the [wireless Pi handoff](docs/android-wireless.md#pi-handoff).
-Android uses the certificate-pinned HTTPS listener on port 5056.
+Android uses BLE to reach the certificate-pinned loopback HTTPS listener on port 5056.
 
 ### Schema (see `db.py`)
 
@@ -606,7 +617,8 @@ current authenticated host.
 camera/model/ESP32 details. It does not replace an on-Pi hardware acceptance test.
 `pi_device_api.py` only defines the injected route factory. `bass_wireless.py`
 wraps it with per-device authentication and serves it through bounded Cheroot
-11.1.2 workers with pyOpenSSL 26.4.0: Android uses HTTPS port 5056, while the
+11.1.2 workers with pyOpenSSL 26.4.0: Android uses BLE-carried HTTPS to loopback
+port 5056, while the
 session-authenticated dashboard bridge is available only on loopback HTTP port
 5057. See [wireless API and recovery](docs/android-wireless.md#api-and-recovery)
 for its contract. There is no standalone port 5000 listener.

@@ -87,7 +87,7 @@ data class DeviceInfo(
     val id: String,
     val name: String,
     val address: String,
-    val protocolVersion: Int = 3,
+    val protocolVersion: Int = 4,
 )
 
 data class DeviceStatus(

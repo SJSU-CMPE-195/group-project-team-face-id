@@ -15,6 +15,8 @@ class AuthorizationRejected(RuntimeError):
 
 
 class AuthorizationStore(Protocol):
+    enrollment: Any
+
     def still_authorized(self, principal: Any) -> bool: ...
 
     def synchronized(self): ...
@@ -209,6 +211,74 @@ class RuntimeAuthorization:
         if self._store is None:
             return nullcontext()
         return self._store.synchronized()
+
+    def activate_enrollment(self, session: dict[str, Any]) -> dict[str, Any]:
+        return self._call_enrollment(session, "activate")
+
+    def finalize_enrollment(
+        self,
+        session: dict[str, Any],
+        state: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._call_enrollment(
+            session,
+            "finalize",
+            state,
+            result,
+        )
+
+    def complete_enrollment(
+        self,
+        session: dict[str, Any],
+        face_encoding: bytes,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._call_enrollment(
+            session,
+            "complete",
+            face_encoding,
+            result,
+        )
+
+    def _call_enrollment(
+        self,
+        session: dict[str, Any],
+        method_name: str,
+        *args: Any,
+    ) -> dict[str, Any]:
+        store = self._store
+        if store is None:
+            raise AuthorizationRejected(
+                "enrollment receipt storage is unavailable",
+                503,
+            )
+        session_id = session.get("id")
+        request_id = session.get("request_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise AuthorizationRejected("enrollment session is invalid", 503)
+        if not isinstance(request_id, str) or not request_id:
+            raise AuthorizationRejected("enrollment request is invalid", 503)
+        enrollment = getattr(store, "enrollment", None)
+        callback = getattr(enrollment, method_name, None)
+        if not callable(callback):
+            raise AuthorizationRejected(
+                "enrollment receipt storage is unavailable",
+                503,
+            )
+        try:
+            projection = callback(session_id, *args)
+        except Exception as exc:
+            raise self._verification_error(
+                exc,
+                "enrollment receipt could not be updated",
+            ) from exc
+        if not isinstance(projection, dict):
+            raise AuthorizationRejected(
+                "enrollment receipt returned an invalid result",
+                503,
+            )
+        return projection
 
     def check_face_attempt(self, session: dict[str, Any]) -> None:
         """Fail closed when the bound principal cannot attempt face auth."""

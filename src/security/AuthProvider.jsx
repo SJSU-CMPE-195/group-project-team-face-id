@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SecurityContext } from "./securityContext.js";
+import usePcClient from "../pc-client/usePcClient.js";
 
 const SECURITY_ROOT = "/local/security";
 const REMEMBERED_ACCOUNT_KEY = "bass.security.rememberedAccount";
@@ -72,6 +73,7 @@ async function securityRequest(path, options = {}) {
 }
 
 export default function AuthProvider({ children }) {
+  const pcClient = usePcClient();
   const [phase, setPhase] = useState("loading");
   const [user, setUser] = useState(null);
   const [csrfToken, setCsrfToken] = useState("");
@@ -318,12 +320,27 @@ export default function AuthProvider({ children }) {
             "The host identity changed. Sign in with your name and PIN.",
           );
         }
-        const loginTarget = remembered
-          ? { user_id: remembered.user.id }
-          : { name: name.trim() };
+        const loginTarget = pcClient?.status?.user?.id
+          ? { user_id: pcClient.status.user.id }
+          : remembered
+            ? { user_id: remembered.user.id }
+            : { name: name.trim() };
+        let setupHeaders = {};
+        if (pcClient) {
+          const clientStatus = await pcClient.refresh();
+          if (
+            clientStatus?.phase !== "ready" ||
+            typeof clientStatus.csrf_token !== "string" ||
+            !clientStatus.csrf_token
+          ) {
+            throw new Error("Reconnect to the Pi before signing in.");
+          }
+          setupHeaders = { "X-BASS-CSRF": clientStatus.csrf_token };
+        }
         const payload = await securityRequest("/login", {
           method: "POST",
           body: JSON.stringify({ ...loginTarget, pin }),
+          headers: setupHeaders,
           signal: request.signal,
         });
         return acceptSession(payload, generation, hostStatus);
@@ -375,6 +392,7 @@ export default function AuthProvider({ children }) {
       clearRememberedAccount,
       hostStatus,
       loadRememberedAccount,
+      pcClient,
     ],
   );
 
@@ -456,10 +474,11 @@ export default function AuthProvider({ children }) {
         !!nextUser.is_owner !== !!user.is_owner;
       if (!changed) return false;
       setUser(nextUser);
+      rememberAuthenticatedAccount(hostStatus, nextUser);
       setSessionEpoch((value) => value + 1);
       return true;
     },
-    [user],
+    [hostStatus, rememberAuthenticatedAccount, user],
   );
 
   useEffect(() => {

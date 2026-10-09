@@ -1,7 +1,6 @@
 package com.bass.app
 
 import android.app.Application
-import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -13,8 +12,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun text(id: Int): String = getApplication<Application>().getString(id)
@@ -50,8 +51,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var commissioningSubmittedThisForeground = false
     private var session: ActiveSession? = null
     private var refreshing = false
+    private val snapshotMutex = Mutex()
     private var snapshotVersion = 0L
     private var pendingStart: PendingStart? = null
+    private var pendingEnrollment: PendingEnrollment? = null
+    private var pendingEnrollmentJournalScope = 0L
 
     private fun loadSupportedPairings(): StoredPairings {
         val stored = store.loadPairings()
@@ -90,6 +94,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 pendingPairing = stored.pending
                 pendingCommissioning = stored.pendingCommissioning
                 val owner = stored.pending ?: stored.active
+                pendingEnrollment = owner?.let { pairing ->
+                    stored.pendingEnrollments.lastOrNull { it.belongsTo(pairing) }
+                }
+                pendingEnrollmentJournalScope = stored.enrollmentJournalScope
                 if (owner != null) {
                     mutableState.update {
                         it.copy(
@@ -128,6 +136,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun onBluetoothPermissionDenied() {
+        foreground = true
+        mutableState.update {
+            it.copy(
+                phase =
+                    if (pairing == null && pendingPairing == null && pendingCommissioning == null) {
+                        ConnectionPhase.UNPAIRED
+                    } else {
+                        ConnectionPhase.OFFLINE
+                    },
+                busy = false,
+                error = text(R.string.core_bluetooth_permission_required),
+            )
+        }
+    }
+
     fun onBackground() {
         val exchangeWasInterrupted =
             pairingExchangeStarted && pendingPairing == null && pendingCommissioning == null
@@ -144,7 +168,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         reconnectJob?.cancel()
         stopPrompt()
         stopSession()
-        api = null
+        closeApi()
         mutableState.update {
             it.afterBackground(
                 hasPairing = pairing != null || pendingPairing != null || pendingCommissioning != null,
@@ -155,6 +179,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ).copy(inviteMaterial = null)
         }
         clearNewUserDraft()
+    }
+
+    private fun closeApi() {
+        api?.close()
+        api = null
     }
 
     fun selectTab(tab: Tab) {
@@ -178,7 +207,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         generation++
         connectionJob?.cancel()
         reconnectJob?.cancel()
-        api = null
+        closeApi()
         stopPrompt()
         stopSession()
         pendingPairingQr = null
@@ -213,7 +242,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pendingPairingQr = parsed
         pendingPairingInviteToken = invitation?.inviteToken.orEmpty()
         settingsDirty = false
-        api = null
+        closeApi()
         mutableState.value =
             if (parsed.purpose == CommissioningPurpose.DEVICE) {
                 BassState(
@@ -385,8 +414,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             },
                             onExchangeStarted = { pairingExchangeStarted = true },
                         )
-                    if (epoch != generation || !foreground) return@launch
                     val connected = completion.connected
+                    if (epoch != generation || !foreground) {
+                        connected.api.close()
+                        return@launch
+                    }
                     pairing = connected.pairing
                     pendingPairing = null
                     pendingCommissioning = null
@@ -537,7 +569,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         reconnectJob = null
         stopPrompt()
         stopSession()
-        api = null
+        closeApi()
         pairing = null
         sessionLoginVerified = false
         commissioningSubmittedThisForeground = false
@@ -545,6 +577,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pendingPairingInviteToken = ""
         pendingPairing = null
         pendingCommissioning = null
+        pendingEnrollment = null
+        pendingEnrollmentJournalScope = 0L
         settingsDirty = false
         clearNewUserDraft()
         mutableState.value = BassState()
@@ -566,6 +600,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pairing = stored.active
         pendingPairing = stored.pending
         pendingCommissioning = stored.pendingCommissioning
+        pendingEnrollment = (stored.pending ?: stored.active)?.let { owner ->
+            stored.pendingEnrollments.lastOrNull { it.belongsTo(owner) }
+        }
+        pendingEnrollmentJournalScope = stored.enrollmentJournalScope
         mutableState.update {
             it.copy(
                 exportMaterial = stored.exportMaterial,
@@ -588,7 +626,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         reconnectJob?.cancel()
         stopPrompt()
         stopSession()
-        api = null
+        closeApi()
         mutableState.update(BassState::startConnection)
         connectionJob = viewModelScope.launch {
             try {
@@ -598,15 +636,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             mutableState.update { it.copy(phase = ConnectionPhase.CONNECTING) }
                         }
                     }
-                if (epoch != generation) return@launch
+                if (epoch != generation) {
+                    connected.api.close()
+                    return@launch
+                }
                 if (connected.pairing != owner) {
                     val saved =
                         withContext(Dispatchers.IO) {
                             store.save(connected.pairing, writeScope)
                         }
-                    if (!saved) return@launch
+                    if (!saved) {
+                        connected.api.close()
+                        return@launch
+                    }
                 }
-                if (epoch != generation) return@launch
+                if (epoch != generation) {
+                    connected.api.close()
+                    return@launch
+                }
                 pairing = connected.pairing
                 api = connected.api
                 applyConnected(connected)
@@ -634,7 +681,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         reconnectJob?.cancel()
         stopPrompt()
         stopSession()
-        api = null
+        closeApi()
         mutableState.update(BassState::startConnection)
         connectionJob =
             viewModelScope.launch {
@@ -645,9 +692,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 mutableState.update { it.copy(phase = ConnectionPhase.CONNECTING) }
                             }
                         }
-                    if (epoch != generation) return@launch
-                    if (!promotePendingPairing(connected.pairing, writeScope)) return@launch
-                    if (epoch != generation) return@launch
+                    if (epoch != generation) {
+                        connected.api.close()
+                        return@launch
+                    }
+                    if (!promotePendingPairing(connected.pairing, writeScope)) {
+                        connected.api.close()
+                        return@launch
+                    }
+                    if (epoch != generation) {
+                        connected.api.close()
+                        return@launch
+                    }
                     api = connected.api
                     applyConnected(connected)
                     if (sessionLoginVerified) {
@@ -693,27 +749,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         pinProtection.request(
             purpose = PinPurpose.LOGIN,
-            verify = { pin ->
-                try {
-                    PinVerification(
-                        DeviceAuth.sessionLogin(
-                            connected.api,
-                            pin,
-                            connected.pairing.identity,
-                        ).deviceId
-                    )
-                } catch (error: ApiException) {
-                    if (error.errorCode == "invalid_credentials") {
-                        throw IllegalArgumentException(text(R.string.sign_in_invalid_pin))
-                    }
-                    throw error
-                }
-            },
             onCancelled = {
                 if (isCurrentConnection(connected, epoch)) {
                     sessionLoginVerified = false
                     generation++
-                    api = null
+                    closeApi()
                     mutableState.update {
                         it.copy(
                             phase = ConnectionPhase.SIGN_IN_REQUIRED,
@@ -730,8 +770,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             },
-        ) {
-            if (isCurrentConnection(connected, epoch)) {
+        ) { pin ->
+            val identity =
+                try {
+                    DeviceAuth.sessionLogin(
+                        connected.api,
+                        pin,
+                        connected.pairing.identity,
+                    )
+                } catch (error: ApiException) {
+                    if (error.errorCode == "invalid_credentials") {
+                        throw IllegalArgumentException(text(R.string.sign_in_invalid_pin))
+                    }
+                    throw error
+                }
+            if (
+                isCurrentConnection(connected, epoch) &&
+                    identity.deviceId == connected.pairing.identity.deviceId
+            ) {
                 sessionLoginVerified = true
                 onAuthenticated()
             }
@@ -762,6 +818,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     mutableState.update {
                         it.copy(phase = ConnectionPhase.CONNECTED, busy = false)
                     }
+                    recoverPendingEnrollment(connected.api, epoch)
+                    if (!isCurrentConnection(connected, epoch)) return@launch
                     pollConnected(connected.api, epoch)
                 } catch (error: CancellationException) {
                     throw error
@@ -790,6 +848,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
+                    if (error is ApiException && error.statusCode == 429) {
+                        delay(error.retryDelayMillis())
+                        continue
+                    }
                     failConnection(error, epoch)
                     return
                 }
@@ -802,16 +864,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pinProtection.cancel()
         stopSession()
         stopPrompt()
-        api = null
-        val unauthorized = error is ApiException && error.statusCode in setOf(401, 403)
+        closeApi()
+        val unauthorized = error is ApiException && error.statusCode == 401
+        val policyDenied = error is ApiException && error.statusCode == 403
         val identityFailure = error is TlsIdentityException || error is DeviceIdentityException
         val clearProtectedState = unauthorized || identityFailure
-        if (unauthorized || identityFailure) sessionLoginVerified = false
+        sessionLoginVerified = false
         mutableState.update {
             it.copy(
                 phase =
                     when {
                         unauthorized -> ConnectionPhase.UNAUTHORIZED
+                        policyDenied -> ConnectionPhase.ERROR
                         identityFailure -> ConnectionPhase.ERROR
                         else -> ConnectionPhase.OFFLINE
                     },
@@ -828,7 +892,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         if (clearProtectedState) clearNewUserDraft()
-        if (!unauthorized && !identityFailure && foreground) {
+        if (
+            !unauthorized &&
+                !policyDenied &&
+                !identityFailure &&
+                error !is BluetoothPermissionException &&
+                error !is BluetoothUnavailableException &&
+                foreground
+        ) {
             reconnectJob?.cancel()
             reconnectJob = viewModelScope.launch {
                 delay(5000)
@@ -856,7 +927,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 loadSnapshot(client, epoch)
             } catch (error: Exception) {
-                failConnection(error, epoch)
+                if (error is ApiException && error.statusCode == 429) {
+                    mutableState.update { it.copy(error = error.message) }
+                } else {
+                    failConnection(error, epoch)
+                }
             } finally {
                 refreshing = false
             }
@@ -864,58 +939,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun loadSnapshot(client: DeviceApi, epoch: Long) {
-        val snapshot = ++snapshotVersion
-        val savedIdentity = pairing?.identity
-            ?: throw DeviceIdentityException(text(R.string.core_identity_mismatch))
-        val loaded = client.readSnapshot(savedIdentity)
-        if (epoch != generation || snapshot != snapshotVersion) return
-        val previousUser = state.value.identity?.user
-        val roleChanged =
-            previousUser != null &&
-                (previousUser.isAdmin != loaded.identity.user.isAdmin ||
-                    previousUser.isOwner != loaded.identity.user.isOwner)
-        if (roleChanged) {
-            pinProtection.cancel()
-            stopSession()
-            clearNewUserDraft()
+        if (!snapshotMutex.tryLock()) return
+        try {
+            val snapshot = ++snapshotVersion
+            val savedIdentity = pairing?.identity
+                ?: throw DeviceIdentityException(text(R.string.core_identity_mismatch))
+            val loaded = client.readSnapshot(savedIdentity)
+            if (epoch != generation || snapshot != snapshotVersion) return
+            val previousUser = state.value.identity?.user
+            val roleChanged =
+                previousUser != null &&
+                    (previousUser.isAdmin != loaded.identity.user.isAdmin ||
+                        previousUser.isOwner != loaded.identity.user.isOwner)
+            if (roleChanged) {
+                pinProtection.cancel()
+                stopSession()
+                clearNewUserDraft()
+            }
+            mutableState.update { it.withSnapshot(loaded) }
+        } finally {
+            snapshotMutex.unlock()
         }
-        mutableState.update { it.withSnapshot(loaded) }
     }
 
-    private fun command(
+    private suspend fun ExclusiveDeviceApi.command(
         path: String,
         method: String = "POST",
         body: JSONObject? = JSONObject(),
         operationGrant: String? = null,
         after: () -> Unit = {},
     ) {
-        val client = api ?: return
-        if (state.value.busy || state.value.phase != ConnectionPhase.CONNECTED) return
-        val epoch = generation
-        snapshotVersion++
-        mutableState.update { it.copy(busy = true, error = null) }
-        viewModelScope.launch {
-            try {
-                val result = client.json(path, method, body, operationGrant)
-                check(result.optBoolean("ok", true)) {
-                    result.optString("error", text(R.string.core_operation_failed))
-                }
-                if (epoch == generation) {
-                    after()
-                    if (epoch != generation) return@launch
-                    loadSnapshot(client, epoch)
-                }
-            } catch (error: Exception) {
-                if (epoch == generation) {
-                    mutableState.update {
-                        it.copy(error = errorText(error, R.string.core_operation_failed))
-                    }
-                }
-                if (error !is ApiException || error.statusCode == 401) failConnection(error, epoch)
-            } finally {
-                if (epoch == generation) mutableState.update { it.copy(busy = false) }
-            }
+        val result = json(path, method, body, operationGrant)
+        check(result.optBoolean("ok", true)) {
+            result.optString("error", text(R.string.core_operation_failed))
         }
+        after()
     }
 
     fun unlock() {
@@ -924,6 +982,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         requestGrant(
             PinPurpose.UNLOCK,
             OperationRequest(OperationAction.SCAN_UNLOCK, userId),
+            refreshAfter = false,
+            manageBusy = false,
         ) { grant ->
             startDeviceScan("unlock", grant)
         }
@@ -934,6 +994,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         requestGrant(
             PinPurpose.IGNITION,
             OperationRequest(OperationAction.SCAN_IGNITION, userId),
+            refreshAfter = false,
+            manageBusy = false,
         ) { grant ->
             startDeviceScan("ignition", grant)
         }
@@ -944,7 +1006,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         operation: OperationRequest,
         confirmation: PinConfirmation? = null,
         onCancelled: () -> Unit = {},
-        action: (String) -> Unit,
+        beforeGrant: suspend () -> Unit = {},
+        onBeforeMutationFailure: suspend () -> Unit = {},
+        refreshAfter: Boolean = true,
+        manageBusy: Boolean = true,
+        action: suspend ExclusiveDeviceApi.(String) -> Unit,
     ) {
         val client = api
         if (
@@ -965,20 +1031,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val actorIsAdmin = actor?.isAdmin
         val actorIsOwner = actor?.isOwner
         val tab = state.value.selectedTab
+        val apiGeneration = client.generation
+        val operationState = Any()
+        val cleanupClaimed = AtomicBoolean(false)
+        var callerCancelled = false
+        var workStarted = false
+        var mutationStarted = false
         mutableState.update { it.copy(error = null) }
         pinProtection.request(
             purpose = purpose,
-            verify = { pin ->
-                val requestedAt = SystemClock.elapsedRealtime()
-                val grant = DeviceAuth.operationGrant(client, pin, operation)
-                PinVerification(
-                    value = grant.token,
-                    expiresAtElapsedRealtime = requestedAt + grant.expiresIn * 1000L,
-                )
-            },
             confirmation = confirmation,
             onCancelled = onCancelled,
-        ) { grant ->
+        ) { pin ->
             val sameContext =
                 foreground &&
                     generation == epoch &&
@@ -989,7 +1053,104 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     state.value.selectedTab == tab &&
                     (!operation.action.requiresActuatorControl ||
                         state.value.canControlActuators)
-            if (sameContext) action(grant) else onCancelled()
+            check(sameContext) { text(R.string.core_operation_failed) }
+            try {
+                beforeGrant()
+                if (manageBusy) mutableState.update { it.copy(busy = true, error = null) }
+                client.exclusive {
+                    val mayRequestGrant =
+                        synchronized(operationState) {
+                            workStarted = true
+                            !callerCancelled
+                        }
+                    try {
+                        val grantContextCurrent =
+                            mayRequestGrant &&
+                                foreground &&
+                                generation == epoch &&
+                                api === client &&
+                                client.generation == apiGeneration &&
+                                pairing == owner &&
+                                state.value.identity?.user?.id == actorId &&
+                                state.value.identity?.user?.isAdmin == actorIsAdmin &&
+                                state.value.identity?.user?.isOwner == actorIsOwner &&
+                                state.value.selectedTab == tab &&
+                                (!operation.action.requiresActuatorControl ||
+                                    state.value.canControlActuators)
+                        if (!grantContextCurrent) return@exclusive
+                        val body =
+                            JSONObject()
+                                .put("pin", String(pin))
+                                .put("action", operation.action.wireValue)
+                                .put("target_user_id", operation.targetUserId)
+                        val response = json("/api/operation-grants", "POST", body)
+                        val grant = response.getString("grant_token")
+                        require(grant.matches(Regex("[A-Za-z0-9_-]{32,512}"))) {
+                            "Invalid operation grant"
+                        }
+                        val expiresIn = response.getInt("expires_in")
+                        require(expiresIn in 1..30) { "Invalid operation grant lifetime" }
+                        val connectionReusable = client.isReusable
+                        val mutationContextCurrent =
+                            connectionReusable &&
+                                foreground &&
+                                generation == epoch &&
+                                api === client &&
+                                client.generation == apiGeneration &&
+                                pairing == owner &&
+                                state.value.identity?.user?.id == actorId &&
+                                state.value.identity?.user?.isAdmin == actorIsAdmin &&
+                                state.value.identity?.user?.isOwner == actorIsOwner &&
+                                state.value.selectedTab == tab &&
+                                (!operation.action.requiresActuatorControl ||
+                                    state.value.canControlActuators)
+                        val mayMutate =
+                            synchronized(operationState) {
+                                if (callerCancelled || !mutationContextCurrent) {
+                                    false
+                                } else {
+                                    mutationStarted = true
+                                    true
+                                }
+                            }
+                        if (mayMutate) {
+                            action(grant)
+                        } else if (!connectionReusable) {
+                            throw BleLinkUnusableException("BLE connection is not reusable")
+                        }
+                    } finally {
+                        val workerOwnsCleanup =
+                            synchronized(operationState) { !mutationStarted }
+                        if (workerOwnsCleanup && cleanupClaimed.compareAndSet(false, true)) {
+                            withContext(NonCancellable) { onBeforeMutationFailure() }
+                        }
+                    }
+                }
+                if (refreshAfter && epoch == generation) loadSnapshot(client, epoch)
+            } catch (error: CancellationException) {
+                synchronized(operationState) { callerCancelled = true }
+                throw error
+            } catch (error: Exception) {
+                if (
+                    epoch == generation &&
+                        (error is TlsIdentityException ||
+                            error is DeviceIdentityException ||
+                            error is BleLinkUnusableException ||
+                            error is ApiException && error.statusCode == 401)
+                ) {
+                    failConnection(error, epoch)
+                }
+                throw IllegalStateException(errorText(error, R.string.core_operation_failed), error)
+            } finally {
+                val callerOwnsCleanup =
+                    synchronized(operationState) { !workStarted && !mutationStarted }
+                if (callerOwnsCleanup && cleanupClaimed.compareAndSet(false, true)) {
+                    withContext(NonCancellable) { onBeforeMutationFailure() }
+                }
+                if (manageBusy && epoch == generation) {
+                    mutableState.update { it.copy(busy = false) }
+                }
+            }
         }
     }
 
@@ -1134,34 +1295,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         requestGrant(
             PinPurpose.USER_ADMIN,
             OperationRequest(OperationAction.PAIRING_INVITE, userId),
+            refreshAfter = false,
         ) { grant ->
-            val client = api ?: return@requestGrant
-            val epoch = generation
-            mutableState.update { it.copy(busy = true, inviteMaterial = null) }
-            viewModelScope.launch {
-                try {
-                    val response =
-                        client.json(
-                            "/api/pairing-invites",
-                            "POST",
-                            JSONObject().put("user_id", userId),
-                            grant,
-                        )
-                    val material = pairingInviteMaterial(response, target.id, currentPairing)
-                    if (epoch == generation) {
-                        mutableState.update {
-                            it.copy(inviteMaterial = material)
-                        }
-                    }
-                } catch (error: Exception) {
-                    if (epoch == generation) {
-                        mutableState.update {
-                            it.copy(error = errorText(error, R.string.invite_failed))
-                        }
-                    }
-                } finally {
-                    if (epoch == generation) mutableState.update { it.copy(busy = false) }
-                }
+            val response =
+                json(
+                    "/api/pairing-invites",
+                    "POST",
+                    JSONObject().put("user_id", userId),
+                    grant,
+                )
+            val material = pairingInviteMaterial(response, target.id, currentPairing)
+            if (pairing == currentPairing) {
+                mutableState.update { it.copy(inviteMaterial = material) }
             }
         }
     }
@@ -1260,111 +1405,308 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startEnrollment(userId: String) {
         if (state.value.identity?.user?.isAdmin != true) return
+        pendingEnrollment?.takeIf { it.unresolved }?.let {
+            val client = api ?: return
+            val epoch = generation
+            viewModelScope.launch { recoverPendingEnrollment(client, epoch) }
+            return
+        }
         val target = state.value.users.singleOrNull { it.id == userId } ?: return
         if (target.isOwner && state.value.identity?.user?.isOwner != true) return
         if (!state.value.capabilities.deviceCamera) return
+        val owner = state.value.identity ?: return
+        val pending =
+            PendingEnrollment(
+                requestId = DeviceAuth.requestId(),
+                hostDeviceId = pairing?.hostDeviceId ?: return,
+                userId = userId,
+                ownerDeviceId = owner.deviceId,
+                ownerUserId = owner.user.id,
+            )
+        var journalScope = 0L
+        var journalSaved = false
         requestGrant(
             PinPurpose.ENROLL,
             OperationRequest(OperationAction.ENROLLMENT_START, userId),
+            beforeGrant = {
+                withContext(NonCancellable) {
+                    journalScope = store.enrollmentJournalScope()
+                    val saved =
+                        withContext(Dispatchers.IO) {
+                            store.savePendingEnrollment(pending, journalScope)
+                        }
+                    check(saved) { text(R.string.core_pairing_pending_save_failed) }
+                    pendingEnrollment = pending
+                    pendingEnrollmentJournalScope = journalScope
+                    journalSaved = true
+                }
+            },
+            onBeforeMutationFailure = {
+                if (journalSaved) clearEnrollmentJournal(pending, journalScope)
+            },
+            refreshAfter = false,
+            manageBusy = false,
         ) { grant ->
-            startSession(
-                "enroll",
-                CaptureFlow.ENROLL,
-                JSONObject().put("user_id", userId),
-                grant,
-            )
+            startEnrollmentSession(pending, journalScope, grant)
         }
     }
 
-    private fun startDeviceScan(purpose: String, operationGrant: String) {
+    private suspend fun ExclusiveDeviceApi.startEnrollmentSession(
+        pending: PendingEnrollment,
+        journalScope: Long,
+        operationGrant: String,
+    ) {
+        val client = api ?: error(text(R.string.core_offline))
+        val active = prepareSession(CaptureFlow.ENROLL)
+        try {
+            val response =
+                json(
+                    "/api/enroll/start",
+                    "POST",
+                    JSONObject()
+                        .put("request_id", pending.requestId)
+                        .put("user_id", pending.userId)
+                        .put("source", "device_camera"),
+                    operationGrant,
+                    expectedStatus = 202,
+                )
+            val saved = saveEnrollmentAcceptance(pending, response, journalScope)
+            val started =
+                ActiveSession(
+                    id = saved.sessionId ?: error("Enrollment receipt has no session"),
+                    kind = "enroll",
+                    api = client,
+                    generation = active.sessionGeneration,
+                    flow = CaptureFlow.ENROLL,
+                    requestId = saved.requestId,
+                )
+            completeSessionStart(
+                active,
+                started,
+                JSONObject()
+                    .put("request_id", saved.requestId)
+                    .put("session_id", saved.sessionId)
+                    .put("state", saved.state),
+            )
+        } catch (error: Exception) {
+            if (error is ApiException && error.statusCode in setOf(400, 401, 403)) {
+                clearEnrollmentJournal(pending, journalScope)
+            }
+            failSessionStart(active, error)
+            throw error
+        }
+    }
+
+    private suspend fun ExclusiveDeviceApi.startDeviceScan(
+        purpose: String,
+        operationGrant: String,
+    ) {
         if (purpose !in setOf("unlock", "ignition")) return
         if (!state.value.canControlActuators) return
         if (!state.value.capabilities.deviceCamera) return
         val expectedUserId = state.value.identity?.user?.id ?: return
+        val client = api ?: error(text(R.string.core_offline))
         stopPrompt()
-        val body = JSONObject().put("purpose", purpose)
-        body.put("expected_user_id", expectedUserId)
         val flow =
             if (purpose == "ignition") CaptureFlow.VERIFY_IGNITION else CaptureFlow.VERIFY_UNLOCK
-        startSession("scan", flow, body, operationGrant)
+        val active = prepareSession(flow)
+        try {
+            val response =
+                json(
+                    "/api/scan/start",
+                    "POST",
+                    JSONObject()
+                        .put("purpose", purpose)
+                        .put("expected_user_id", expectedUserId)
+                        .put("source", "device_camera"),
+                    operationGrant,
+                )
+            val started =
+                ActiveSession(
+                    response.getString("session_id"),
+                    "scan",
+                    client,
+                    active.sessionGeneration,
+                    flow,
+                )
+            completeSessionStart(active, started, response)
+        } catch (error: Exception) {
+            failSessionStart(active, error)
+            throw error
+        }
     }
 
-    private fun startSession(
-        kind: String,
-        flow: CaptureFlow,
-        body: JSONObject,
-        operationGrant: String,
-    ) {
-        val client = api ?: return
-        if (!foreground || state.value.pinPrompt != null) return
-        if (state.value.busy || state.value.phase != ConnectionPhase.CONNECTED) return
-        if (!state.value.capabilities.deviceCamera) return
+    private fun prepareSession(flow: CaptureFlow): PendingStart {
+        check(foreground && state.value.phase == ConnectionPhase.CONNECTED) {
+            text(R.string.core_offline)
+        }
+        check(state.value.capabilities.deviceCamera) { text(R.string.core_operation_failed) }
         sessionGeneration++
         snapshotVersion++
         val token = sessionGeneration
         val epoch = generation
         val pending = PendingStart(epoch, token)
         pendingStart = pending
-        body.put("source", "device_camera")
         mutableState.update { it.startCapture(flow, CameraSource.DEVICE) }
-        viewModelScope.launch {
-            var created: ActiveSession? = null
-            try {
-                // Keep the start response so a background transition can cancel the exact created
-                // session.
-                val result =
-                    withContext(NonCancellable) {
-                        val response =
-                            client.json(
-                                "/api/$kind/start",
-                                "POST",
-                                body,
-                                operationGrant,
-                            )
-                        created =
-                            ActiveSession(
-                                response.getString("session_id"),
-                                kind,
-                                client,
-                                token,
-                                flow,
-                            )
-                        response
-                    }
-                val started = checkNotNull(created)
-                if (epoch != generation || token != sessionGeneration || !foreground) {
-                    started.cancelRemote()
-                    return@launch
+        return pending
+    }
+
+    private fun completeSessionStart(
+        pending: PendingStart,
+        started: ActiveSession,
+        result: JSONObject,
+    ) {
+        pendingStart = pendingStart.takeUnless { it == pending }
+        if (
+            pending.deviceGeneration != generation ||
+                pending.sessionGeneration != sessionGeneration ||
+                !foreground
+        ) {
+            viewModelScope.launch(NonCancellable) { started.cancelRemote() }
+            return
+        }
+        session = started
+        applySession(result, started)
+        if (session != null) startPolling(started)
+    }
+
+    private fun failSessionStart(pending: PendingStart, error: Exception) {
+        if (pendingStart == pending) pendingStart = null
+        if (pending.sessionGeneration == sessionGeneration) {
+            session = null
+            mutableState.update {
+                it.copy(
+                    busy = false,
+                    captureFlow = CaptureFlow.NONE,
+                    error = errorText(error, R.string.core_operation_failed),
+                )
+            }
+        }
+    }
+
+    private suspend fun saveEnrollmentAcceptance(
+        pending: PendingEnrollment,
+        acceptance: JSONObject,
+        journalScope: Long,
+    ): PendingEnrollment =
+        persistEnrollmentJournal(pending.withAcceptance(acceptance), journalScope)
+
+    private suspend fun saveEnrollmentReceipt(
+        pending: PendingEnrollment,
+        receipt: JSONObject,
+        journalScope: Long,
+    ): PendingEnrollment =
+        persistEnrollmentJournal(pending.withReceipt(receipt), journalScope)
+
+    private suspend fun persistEnrollmentJournal(
+        updated: PendingEnrollment,
+        journalScope: Long,
+    ): PendingEnrollment =
+        withContext(NonCancellable) {
+            val saved =
+                withContext(Dispatchers.IO) {
+                    store.savePendingEnrollment(updated, journalScope)
                 }
-                session = started
-                applySession(result, started)
-                if (session != null) startPolling(started)
-            } catch (error: Exception) {
-                created?.cancelRemote()
-                if (token == sessionGeneration) {
-                    session = null
-                    mutableState.update {
-                        it.copy(
-                            busy = false,
-                            captureFlow = CaptureFlow.NONE,
-                            error = errorText(error, R.string.core_operation_failed),
-                        )
-                    }
-                    if (
-                        error is TlsIdentityException ||
-                            (error is ApiException && error.statusCode == 401)
-                    )
-                        failConnection(error, epoch)
-                    else refresh()
-                }
-            } finally {
-                if (pendingStart == pending) {
-                    pendingStart = null
-                    val cancelledHere =
-                        epoch == generation && state.value.captureFlow == CaptureFlow.NONE
-                    if (cancelledHere) mutableState.update { it.copy(busy = false) }
+            check(saved) { text(R.string.core_pairing_save_failed) }
+            withContext(Dispatchers.Main.immediate) {
+                val currentPairing = pairing
+                if (
+                    currentPairing != null &&
+                        updated.belongsTo(currentPairing) &&
+                        pendingEnrollment?.sameRequest(updated) == true
+                ) {
+                    pendingEnrollment = updated
+                    pendingEnrollmentJournalScope = journalScope
                 }
             }
+            updated
+        }
+
+    private suspend fun clearEnrollmentJournal(requestId: String) {
+        val pending = pendingEnrollment?.takeIf { it.requestId == requestId } ?: return
+        clearEnrollmentJournal(pending, pendingEnrollmentJournalScope)
+    }
+
+    private suspend fun clearEnrollmentJournal(
+        pending: PendingEnrollment,
+        journalScope: Long,
+    ) {
+        val cleared =
+            withContext(NonCancellable + Dispatchers.IO) {
+                store.clearPendingEnrollment(
+                    pending,
+                    journalScope,
+                )
+            }
+        if (cleared && pendingEnrollment?.sameRequest(pending) == true) pendingEnrollment = null
+    }
+
+    private suspend fun recoverPendingEnrollment(client: DeviceApi, epoch: Long) {
+        val pending = pendingEnrollment ?: return
+        val currentPairing = pairing ?: return
+        if (!pending.belongsTo(currentPairing)) return
+        val receipt =
+            try {
+                client.json(
+                    "/api/enroll/requests/${DeviceApi.encoded(pending.requestId)}"
+                )
+            } catch (error: ApiException) {
+                if (error.statusCode != 404) throw error
+                val unknown = pending.copy(state = PendingEnrollment.UNKNOWN)
+                val saved =
+                    withContext(Dispatchers.IO) {
+                        store.savePendingEnrollment(unknown, pendingEnrollmentJournalScope)
+                    }
+                check(saved) { text(R.string.core_pairing_save_failed) }
+                val currentPairing = pairing
+                if (
+                    epoch == generation &&
+                        currentPairing != null &&
+                        unknown.belongsTo(currentPairing) &&
+                        pendingEnrollment?.sameRequest(unknown) == true
+                ) {
+                    pendingEnrollment = unknown
+                    mutableState.update {
+                        it.copy(error = text(R.string.core_enrollment_result_unknown))
+                    }
+                }
+                return
+            }
+        val saved =
+            saveEnrollmentReceipt(
+                pending,
+                receipt,
+                pendingEnrollmentJournalScope,
+            )
+        if (epoch != generation || !foreground || !saved.belongsTo(pairing ?: return)) {
+            return
+        }
+        val projection = receipt.enrollmentProjection()
+        if (saved.state in setOf("accepted", "active")) {
+            sessionGeneration++
+            val active =
+                ActiveSession(
+                    id = checkNotNull(saved.sessionId),
+                    kind = "enroll",
+                    api = client,
+                    generation = sessionGeneration,
+                    flow = CaptureFlow.ENROLL,
+                    requestId = saved.requestId,
+                )
+            session = active
+            mutableState.update { it.startCapture(CaptureFlow.ENROLL, CameraSource.DEVICE) }
+            applySession(projection, active)
+            if (session != null) startPolling(active)
+        } else {
+            val transition =
+                state.value.withSessionResult(
+                    projection,
+                    "enroll",
+                    CaptureFlow.ENROLL,
+                    text(R.string.session_failed_retry),
+                )
+            mutableState.value = transition.state
+            clearEnrollmentJournal(saved.requestId)
         }
     }
 
@@ -1376,10 +1718,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 while (session == active) {
                     delay(700)
                     val result =
-                        active.api.json(
-                            "/api/${active.kind}/status?session_id=${DeviceApi.encoded(active.id)}"
-                        )
-                    if (session == active) applySession(result, active)
+                        try {
+                            if (active.requestId == null) {
+                                active.api.json(
+                                    "/api/${active.kind}/status?session_id=" +
+                                        DeviceApi.encoded(active.id)
+                                )
+                            } else {
+                                val receipt =
+                                    active.api.json(
+                                        "/api/enroll/requests/${DeviceApi.encoded(active.requestId)}"
+                                    )
+                                saveEnrollmentReceipt(
+                                    checkNotNull(pendingEnrollment),
+                                    receipt,
+                                    pendingEnrollmentJournalScope,
+                                )
+                                receipt.enrollmentProjection()
+                            }
+                        } catch (error: ApiException) {
+                            if (error.statusCode != 429) throw error
+                            delay(error.retryDelayMillis())
+                            continue
+                        }
+                    if (session == active) {
+                        applySession(result, active)
+                        if (active.requestId != null && session == null) {
+                            clearEnrollmentJournal(active.requestId)
+                        }
+                    }
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -1455,6 +1822,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (active != null) {
             viewModelScope.launch(NonCancellable) {
                 active.cancelRemote()
+                if (active.requestId != null && foreground) {
+                    recoverPendingEnrollment(active.api, generation)
+                }
             }
         }
         val canRestore =
@@ -1468,6 +1838,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         pinProtection.cancel()
         stopSession()
+        closeApi()
         super.onCleared()
     }
 }
+
+private fun ApiException.retryDelayMillis(): Long =
+    (retryAfterSeconds ?: 1L).coerceIn(1L, 60L) * 1000L

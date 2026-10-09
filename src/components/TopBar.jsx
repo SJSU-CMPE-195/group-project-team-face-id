@@ -1,6 +1,7 @@
 import React from "react";
 import {
   Crown,
+  Bluetooth,
   LogOut,
   Moon,
   RefreshCw,
@@ -31,6 +32,9 @@ export default function TopBar({
   user,
   onLogout,
   localControls,
+  connectionLabel,
+  connectionBusy,
+  onChangeConnection,
 }) {
   const { isDark, toggleTheme } = useTheme();
   const linkLabel = online ? "Host online" : "Host offline";
@@ -115,6 +119,19 @@ export default function TopBar({
       ) : null}
 
       <div className="flex items-center gap-1">
+        {connectionLabel && onChangeConnection ? (
+          <button
+            type="button"
+            disabled={connectionBusy}
+            onClick={onChangeConnection}
+            className="flex h-12 max-w-48 items-center justify-center gap-2 rounded-xl px-3 text-xs font-medium text-violet-200 transition hover:bg-white/[0.06] disabled:opacity-40 md:h-9 md:rounded-lg"
+            title={`${connectionLabel}. Change connection`}
+            aria-label={`${connectionLabel}. Change connection`}
+          >
+            <Bluetooth className="h-4 w-4 shrink-0" strokeWidth={1.75} />
+            <span className="hidden truncate lg:inline">{connectionLabel}</span>
+          </button>
+        ) : null}
         {user?.name ? (
           <span className="hidden max-w-40 items-center gap-1.5 px-2 text-xs text-slate-400 sm:flex">
             <span className="truncate">{user.name}</span>
