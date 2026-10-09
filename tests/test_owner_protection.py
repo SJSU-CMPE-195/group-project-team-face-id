@@ -16,11 +16,20 @@ from wireless.security import SecurityError, SecurityStore
 
 
 class OpenWindow:
-    window = "pairing"
+    def __init__(self):
+        self.window = "pairing"
+        self.powered = True
+        self.maintenance = False
 
     def require_window(self, kind):
         if self.window != kind:
             raise SecurityError("window_required", 409, "window required")
+
+    def require_available(self):
+        if self.maintenance:
+            raise SecurityError("maintenance", 503, "maintenance")
+        if not self.powered:
+            raise SecurityError("powered_off", 503, "powered off")
 
     def close_windows(self):
         self.window = None
@@ -55,9 +64,8 @@ class OwnerProtectionTests(unittest.TestCase):
         )
         self.owner_id = claim["user"]["id"]
         self.owner = self.security.principal(self.owner_token)
-        invited = self.security.create_user(
-            self.owner, "Invited admin", "654321", is_admin=True
-        )
+        invited = self.security.create_user(self.owner, "Invited admin", "654321")
+        self.security.set_role(self.owner, invited["id"], True)
         invite = self.security.issue_invite(self.owner, invited["id"])
         paired = self.security.pair(invite["invite_token"], "654321", "Admin phone")
         self.admin_token = paired["device_token"]
@@ -70,10 +78,13 @@ class OwnerProtectionTests(unittest.TestCase):
         with self.assertRaises(SecurityError) as device:
             self.security.revoke_device(self.admin, self.owner.device_id)
         self.assertEqual(device.exception.code, "owner_required")
+        regular = self.security.create_user(
+            self.admin,
+            "Unauthorized admin",
+            "111111",
+        )
         with self.assertRaises(SecurityError) as role:
-            self.security.create_user(
-                self.admin, "Unauthorized admin", "111111", is_admin=True
-            )
+            self.security.set_role(self.admin, regular["id"], True)
         self.assertEqual(role.exception.code, "owner_required")
         self.assertTrue(self.security.principal(self.owner_token).is_owner)
 
@@ -180,55 +191,39 @@ class OwnerProtectionTests(unittest.TestCase):
             )
         self.assertEqual(changed.exception.code, "request_id_reused")
 
-    def test_transfer_pin_failures_persist_and_lock(self):
-        self.events.window = "pairing"
+    def test_owner_pairing_pin_failures_persist_and_lock(self):
+        invite = self.security.issue_invite(self.owner, self.owner_id)
         with mock.patch("wireless.security.time.time", return_value=1_000):
             for _ in range(4):
                 with self.assertRaises(SecurityError) as wrong:
-                    self.commissioning.start_transfer(
-                        self.owner,
-                        {
-                            "request_id": str(uuid.uuid4()),
-                            "pin": "000000",
-                            "transfer_secret": "5" * 64,
-                        },
+                    self.security.pair(
+                        invite["invite_token"],
+                        "000000",
+                        "Another owner phone",
                     )
                 self.assertEqual(wrong.exception.code, "invalid_credentials")
             with self.assertRaises(SecurityError) as locked:
-                self.commissioning.start_transfer(
-                    self.owner,
-                    {
-                        "request_id": str(uuid.uuid4()),
-                        "pin": "000000",
-                        "transfer_secret": "6" * 64,
-                    },
+                self.security.pair(
+                    invite["invite_token"],
+                    "000000",
+                    "Another owner phone",
                 )
         self.assertEqual(locked.exception.code, "pin_locked")
 
-    def test_pending_transfer_is_invalidated_by_owner_pin_change(self):
-        self.events.window = "pairing"
-        transfer_secret = "7" * 64
-        self.commissioning.start_transfer(
-            self.owner,
-            {
-                "request_id": str(uuid.uuid4()),
-                "pin": "123456",
-                "transfer_secret": transfer_secret,
-            },
-        )
+    def test_owner_pin_change_invalidates_pending_pairing_invite(self):
+        invite = self.security.issue_invite(self.owner, self.owner_id)
         self.security.set_pin(self.owner, self.owner_id, "222222")
-        accept = {
-            "request_id": str(uuid.uuid4()),
-            "transfer_secret": transfer_secret,
-            "name": "Successor",
-            "pin": "333333",
-            "device_name": "Successor phone",
-            "device_token": "8" * 64,
-            "recovery_secret": "9" * 64,
-        }
+
+        with self.assertRaises(SecurityError) as credential:
+            self.security.principal(self.owner_token)
+        self.assertEqual(credential.exception.code, "invalid_device_credential")
         with self.assertRaises(SecurityError) as invalid:
-            self.commissioning.validate_transfer_accept(accept)
-        self.assertEqual(invalid.exception.code, "invalid_transfer")
+            self.security.pair(
+                invite["invite_token"],
+                "222222",
+                "Another owner phone",
+            )
+        self.assertEqual(invalid.exception.code, "invalid_pairing_invite")
 
 
 if __name__ == "__main__":

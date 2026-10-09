@@ -36,16 +36,39 @@ class FakeDb:
     def get_status(self):
         return {"lockState": self.lock_state}
 
-    def set_lock(self, reason):
+    def set_lock(
+        self,
+        reason,
+        *,
+        user_id=None,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         if self.fail_lock:
             raise RuntimeError("lock database failure")
         self.lock_state = "locked"
         self.lock_writes += 1
 
-    def set_unlock(self, reason):
+    def set_unlock(
+        self,
+        reason,
+        *,
+        user_id=None,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.lock_state = "unlocked"
 
-    def log_event(self, stage, result, detail="", user_id=None):
+    def log_event(
+        self,
+        stage,
+        result,
+        detail="",
+        user_id=None,
+        *,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.logs.append((stage, result, detail, user_id))
 
     def record_worker_write(self):

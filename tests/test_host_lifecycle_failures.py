@@ -34,20 +34,22 @@ class FakeCommissioning:
     def __init__(self) -> None:
         self.receipt = None
         self.validate_calls = 0
-        self.accept_calls = 0
+        self.recovery_calls = 0
 
-    def ownership_request_digest(self, kind, body):
-        return request_digest(kind, body)
+    def recovery_request_digest(self, body):
+        return request_digest("recover", body)
 
-    def validate_transfer_accept(self, _body):
+    def validate_recovery(self, _body):
         self.validate_calls += 1
         return {
             "completed": self.receipt is not None,
             "response": self.receipt,
         }
 
-    def accept_transfer(self, body):
-        self.accept_calls += 1
+    def recover(self, body, *, window_verified=False):
+        self.recovery_calls += 1
+        if not window_verified:
+            raise AssertionError("recovery must use its validated maintenance path")
         if self.receipt is None:
             self.receipt = {
                 "ok": True,
@@ -102,40 +104,39 @@ class HostLifecycleFailureTests(unittest.TestCase):
     def setUp(self) -> None:
         self.body = {
             "request_id": "83670353-374d-425a-a42d-8afb737a476e",
-            "transfer_secret": "a" * 64,
-            "name": "Next Owner",
+            "recovery_secret": "a" * 64,
+            "new_recovery_secret": "d" * 64,
             "pin": "123456",
-            "device_name": "New phone",
+            "device_name": "Recovered phone",
             "device_token": "b" * 64,
-            "recovery_secret": "c" * 64,
         }
 
-    def test_exact_retry_resumes_a_committed_transfer_after_reload_failure(self):
+    def test_exact_retry_resumes_committed_recovery_after_reload_failure(self):
         runtime = FakeRuntime()
         runtime.fail_initialize = 1
         lifecycle = lifecycle_with(runtime)
 
         with self.assertRaisesRegex(SecurityError, "startup has not completed"):
-            lifecycle.accept_transfer(dict(self.body))
+            lifecycle.recover_owner(dict(self.body))
 
         self.assertTrue(lifecycle.events.maintenance)
         self.assertEqual(lifecycle._pending_ownership_change,
-                         request_digest("ownership_transfer", self.body))
+                         request_digest("recover", self.body))
         self.assertIsNotNone(lifecycle.commissioning.receipt)
 
-        result = lifecycle.accept_transfer(dict(self.body))
+        result = lifecycle.recover_owner(dict(self.body))
 
         self.assertEqual(result, lifecycle.commissioning.receipt)
         self.assertFalse(lifecycle.events.maintenance)
         self.assertIsNone(lifecycle._pending_ownership_change)
         self.assertEqual(lifecycle.commissioning.validate_calls, 1)
-        self.assertEqual(lifecycle.commissioning.accept_calls, 2)
+        self.assertEqual(lifecycle.commissioning.recovery_calls, 2)
         self.assertEqual(
             runtime.calls,
             [
-                ("quiesce", "ownership_transfer"),
+                ("quiesce", "owner_recovery"),
                 ("initialize", None),
-                ("quiesce", "ownership_transfer"),
+                ("quiesce", "owner_recovery"),
                 ("initialize", None),
                 ("resume", None),
             ],
@@ -147,12 +148,12 @@ class HostLifecycleFailureTests(unittest.TestCase):
         lifecycle = lifecycle_with(runtime)
 
         with self.assertRaisesRegex(SecurityError, "has not stopped"):
-            lifecycle.accept_transfer(dict(self.body))
+            lifecycle.recover_owner(dict(self.body))
 
         self.assertTrue(lifecycle.events.maintenance)
-        self.assertEqual(lifecycle.commissioning.accept_calls, 0)
+        self.assertEqual(lifecycle.commissioning.recovery_calls, 0)
 
-        result = lifecycle.accept_transfer(dict(self.body))
+        result = lifecycle.recover_owner(dict(self.body))
 
         self.assertTrue(result["ok"])
         self.assertFalse(lifecycle.events.maintenance)
@@ -160,8 +161,8 @@ class HostLifecycleFailureTests(unittest.TestCase):
         self.assertEqual(
             [call for call in runtime.calls if call[0] == "quiesce"],
             [
-                ("quiesce", "ownership_transfer"),
-                ("quiesce", "ownership_transfer"),
+                ("quiesce", "owner_recovery"),
+                ("quiesce", "owner_recovery"),
             ],
         )
 
@@ -170,17 +171,17 @@ class HostLifecycleFailureTests(unittest.TestCase):
         runtime.fail_quiesce = 1
         lifecycle = lifecycle_with(runtime)
         with self.assertRaises(SecurityError):
-            lifecycle.accept_transfer(dict(self.body))
-        different = {**self.body, "name": "Attacker"}
+            lifecycle.recover_owner(dict(self.body))
+        different = {**self.body, "device_name": "Attacker phone"}
 
         with self.assertRaises(SecurityError) as rejected:
-            lifecycle.accept_transfer(different)
+            lifecycle.recover_owner(different)
 
         self.assertEqual(rejected.exception.code, "ownership_recovery_required")
         self.assertEqual(lifecycle._pending_ownership_change,
-                         request_digest("ownership_transfer", self.body))
+                         request_digest("recover", self.body))
         self.assertTrue(lifecycle.events.maintenance)
-        self.assertEqual(lifecycle.commissioning.accept_calls, 0)
+        self.assertEqual(lifecycle.commissioning.recovery_calls, 0)
 
     def test_pc_initializes_while_paused_before_runtime_resumes(self):
         runtime = FakeRuntime()

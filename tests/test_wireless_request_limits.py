@@ -24,24 +24,43 @@ class WirelessRequestLimitTests(unittest.TestCase):
             dist_root=root,
             security=self.fixture.security,
         ).test_client()
+        self.origin = "http://localhost:5057"
+        (
+            self.local_headers,
+            self.local_device_token,
+        ) = self.fixture.local_dashboard_session(self.client, self.origin)
 
     def settings_headers(self):
         return self.fixture.headers(self.fixture.grant("settings.update"))
+
+    def local_headers_for(self, action):
+        principal = self.fixture.principal(self.local_device_token)
+        grant = self.fixture.grant(
+            action,
+            principal.user_id if action == "device.lock" else None,
+            token=self.local_device_token,
+        )
+        return {
+            **self.local_headers,
+            "X-BASS-Operation-Grant": grant,
+        }
 
     def test_management_burst_is_rejected_before_another_write_and_recovers(self):
         with patch("wireless.request_limits.time.monotonic", return_value=100):
             for index in range(30):
                 result = self.client.post(
-                    "/api/settings",
+                    "/local/wireless/api/settings",
+                    base_url=self.origin,
                     json={"autoRelockSeconds": index},
-                    headers=self.settings_headers(),
+                    headers=self.local_headers_for("settings.update"),
                 )
                 self.assertEqual(result.status_code, 200)
 
             blocked = self.client.post(
-                "/api/settings",
+                "/local/wireless/api/settings",
+                base_url=self.origin,
                 json={"autoRelockSeconds": 99},
-                headers=self.settings_headers(),
+                headers=self.local_headers_for("settings.update"),
             )
             self.assertEqual(blocked.status_code, 429)
             self.assertIn("Retry-After", blocked.headers)
@@ -49,21 +68,20 @@ class WirelessRequestLimitTests(unittest.TestCase):
                 self.fixture.db.get_settings_for_ui()["autoRelockSeconds"], 29
             )
 
-            lock_grant = self.fixture.grant(
-                "device.lock", self.fixture.principal().user_id
-            )
             lock = self.client.post(
-                "/api/lock",
+                "/local/wireless/api/lock",
+                base_url=self.origin,
                 json={},
-                headers=self.fixture.headers(lock_grant),
+                headers=self.local_headers_for("device.lock"),
             )
             self.assertEqual(lock.status_code, 200)
 
         with patch("wireless.request_limits.time.monotonic", return_value=161):
             allowed = self.client.post(
-                "/api/settings",
+                "/local/wireless/api/settings",
+                base_url=self.origin,
                 json={"autoRelockSeconds": 61},
-                headers=self.settings_headers(),
+                headers=self.local_headers_for("settings.update"),
             )
             self.assertEqual(allowed.status_code, 200)
 

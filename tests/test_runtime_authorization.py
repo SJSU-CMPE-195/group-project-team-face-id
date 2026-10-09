@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 import threading
+import tempfile
 import time
 import unittest
+import uuid
 
-from car_face_auth.src.pi_runtime import PiRuntime, RuntimeRequestError, SAMPLES_NEEDED
+from car_face_auth.src.pi_runtime import PiRuntime, RuntimeRequestError
+from car_face_auth.src.runtime_authorization import AuthorizationRejected
+import db as db_module
 from wireless.security import Principal
 
 
@@ -94,11 +99,27 @@ class FakeDb:
             "lockoutAfter": 5,
         }
 
-    def set_unlock(self, reason):
+    def set_unlock(
+        self,
+        reason,
+        *,
+        user_id=None,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.lock_state = "unlocked"
         self.unlocks.append(reason)
 
-    def log_event(self, stage, result, detail="", user_id=None):
+    def log_event(
+        self,
+        stage,
+        result,
+        detail="",
+        user_id=None,
+        *,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.logs.append((stage, result, detail, user_id))
 
 
@@ -343,61 +364,205 @@ class RuntimeAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(capture.wait_calls, 0)
 
-    def test_non_admin_cannot_start_enrollment(self):
-        with self.assertRaisesRegex(RuntimeRequestError, "administrator") as raised:
-            self.runtime.start_client_enrollment(
-                "Ada",
-                authorization=self.ada,
-            )
-
-        self.assertEqual(raised.exception.status_code, 403)
-        self.assertEqual(self.face_engine.saved, [])
-
-    def test_target_version_change_blocks_enrollment_save(self):
-        started = self.runtime.start_client_enrollment(
-            "Ada",
-            authorization=self.admin,
-        )
-        session = self.runtime._session(started["session_id"])
-        session["embeddings"] = [object() for _ in range(SAMPLES_NEEDED)]
-        session["count"] = SAMPLES_NEEDED
-        self.store.revoke("u1")
-
-        result = self.runtime.finish_client_enrollment(session["id"])
-
-        self.assertEqual(result["state"], "error")
-        self.assertIn("authorization expired", result["message"].lower())
-        self.assertEqual(self.face_engine.saved, [])
-
-    def test_device_revocation_cancels_and_releases_client_session(self):
-        started = self.runtime.start_client_enrollment(
-            "Ada",
-            authorization=self.admin,
-        )
-
-        cancelled = self.runtime.cancel_device_sessions("admin-phone")
-
-        self.assertEqual(cancelled, 1)
-        self.assertEqual(
-            self.runtime.enrollment_status(started["session_id"])["state"],
-            "cancelled",
-        )
-        self.assertIsNone(self.runtime.status()["active_session"])
-        self.assertEqual(self.runtime.commands, [])
-
     def test_completed_result_survives_same_device_version_refresh(self):
-        started = self.runtime.start_client_enrollment(
-            "Admin",
-            authorization=self.admin,
-        )
-        session = self.runtime._session(started["session_id"])
-        session["state"] = "completed"
+        session = {
+            "id": "enroll_completed",
+            "kind": "enroll",
+            "state": "completed",
+            "actor_device_id": self.admin.device_id,
+            "user_id": self.admin.user_id,
+            "auth_version": self.admin.auth_version,
+        }
+        self.runtime._sessions[session["id"]] = session
         self.store.revoke("admin")
         refreshed = replace(self.admin, auth_version=4)
 
         self.runtime.require_session_owner(session["id"], refreshed)
         with self.assertRaises(RuntimeRequestError):
             self.runtime.require_session_owner(session["id"], self.ada)
+
+
+class RuntimeEnrollmentAuthorizationTests(unittest.TestCase):
+    def setUp(self):
+        from security_fixtures import temporary_security
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.fixture = temporary_security(self, root)
+        self.security = self.fixture.security
+        self.admin = self.fixture.principal()
+        with db_module.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO commissioning_state "
+                "(id,ownership,owner_user_id,generation,activation_secret,"
+                "activation_hash,recovery_hash,updated_at) "
+                "VALUES (1,'claimed',?,1,NULL,NULL,?,1)",
+                (self.admin.user_id, b"r" * 32),
+            )
+        self.admin = self.fixture.principal()
+        self.target = self.security.create_user(
+            self.admin,
+            "Ada",
+            "654321",
+        )
+        invite = self.security.issue_invite(self.admin, self.target["id"])
+        paired = self.security.pair(
+            invite["invite_token"],
+            "654321",
+            "Ada phone",
+        )
+        self.member = self.security.principal(paired["device_token"])
+        self.fixture.db.save_settings_from_ui({"liveness": False})
+        self.runtime = AuthorizationRuntime(self.fixture.db, FakeFaceEngine())
+        self.runtime.configure_authorization(self.security)
+        self.addCleanup(self.runtime.close)
+
+    def reserve(self):
+        request_id = str(uuid.uuid4())
+        reservation = self.security.enrollment.reserve(
+            self.admin,
+            {
+                "request_id": request_id,
+                "user_id": self.target["id"],
+                "source": "device_camera",
+            },
+            self.fixture.grant("enrollment.start", self.target["id"]),
+        )
+        return reservation
+
+    def start(self):
+        reservation = self.reserve()
+        started = self.runtime.start_enrollment(
+            self.target["id"],
+            authorization=self.admin,
+            enrollment_reservation=reservation,
+        )
+        session = self.runtime._session(started["session_id"])
+        self.assertIsNotNone(session)
+        return reservation, session
+
+    @staticmethod
+    def completed_result(runtime, session):
+        return runtime._enrollment_result(
+            session,
+            state="completed",
+            count=10,
+            recognition_available=True,
+            message=f"Enrollment completed for {session['name']}.",
+        )
+
+    def face_template(self):
+        with db_module.get_conn() as conn:
+            row = conn.execute(
+                "SELECT face_encoding FROM users WHERE id=?",
+                (self.target["id"],),
+            ).fetchone()
+        return row["face_encoding"]
+
+    def test_non_admin_cannot_start_enrollment(self):
+        reservation = self.reserve()
+
+        result = self.runtime.start_enrollment(
+            self.target["id"],
+            authorization=self.member,
+            enrollment_reservation=reservation,
+        )
+
+        self.assertEqual(result["state"], "error")
+        self.assertIn("administrator", result["message"])
+        self.assertEqual(self.runtime.spawned_sessions, [])
+        self.assertEqual(
+            self.security.enrollment.query(
+                self.admin,
+                reservation["request_id"],
+            )["state"],
+            "failed",
+        )
+        self.assertIsNone(self.face_template())
+
+    def test_target_version_change_blocks_enrollment_save(self):
+        reservation, session = self.start()
+        activation = self.runtime._authorization.activate_enrollment(session)
+        self.assertTrue(activation["activated"])
+        self.security.set_pin(self.admin, self.target["id"], "777777")
+
+        with self.assertRaisesRegex(
+            AuthorizationRejected,
+            "authorization is no longer valid",
+        ) as raised:
+            self.runtime._authorization.complete_enrollment(
+                session,
+                b"face-template",
+                self.completed_result(self.runtime, session),
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        receipt = self.security.enrollment.query(
+            self.admin,
+            reservation["request_id"],
+        )
+        self.assertEqual(receipt["state"], "active")
+        self.assertIsNone(self.face_template())
+        with db_module.get_conn() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM auth_logs "
+                "WHERE stage='enroll_embedding' AND user_id=?",
+                (self.target["id"],),
+            ).fetchone()["count"]
+        self.assertEqual(count, 0)
+
+    def test_device_revocation_cancels_host_session_and_receipt(self):
+        reservation, session = self.start()
+        self.runtime._authorization.activate_enrollment(session)
+        self.security.revoke_device(self.admin, self.admin.device_id)
+
+        cancelled = self.runtime.cancel_device_sessions(self.admin.device_id)
+
+        self.assertEqual(cancelled, 1)
+        self.assertEqual(
+            self.runtime.enrollment_status(session["id"])["state"],
+            "cancelled",
+        )
+        with db_module.get_conn() as conn:
+            state = conn.execute(
+                "SELECT state FROM enrollment_requests WHERE request_id=?",
+                (reservation["request_id"],),
+            ).fetchone()["state"]
+        self.assertEqual(state, "cancelled")
+        self.assertTrue(session["cancel_event"].is_set())
+        self.assertEqual(self.runtime.commands, [])
+
+    def test_completed_receipt_template_and_audit_are_committed_together(self):
+        reservation, session = self.start()
+        self.runtime._authorization.activate_enrollment(session)
+        result = self.completed_result(self.runtime, session)
+
+        completion = self.runtime._authorization.complete_enrollment(
+            session,
+            b"face-template",
+            result,
+        )
+        self.runtime._apply_enrollment_projection(session["id"], completion)
+
+        receipt = self.security.enrollment.query(
+            self.admin,
+            reservation["request_id"],
+        )
+        self.assertEqual(receipt["state"], "completed")
+        self.assertEqual(receipt["result"], result)
+        self.assertEqual(bytes(self.face_template()), b"face-template")
+        self.assertEqual(
+            self.runtime.enrollment_status(session["id"])["state"],
+            "completed",
+        )
+        with db_module.get_conn() as conn:
+            audit = conn.execute(
+                "SELECT user_id,actor_user_id,result FROM auth_logs "
+                "WHERE stage='enroll_embedding' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(
+            (audit["user_id"], audit["actor_user_id"], audit["result"]),
+            (self.target["id"], self.admin.user_id, "ok"),
+        )
 
 
 if __name__ == "__main__":

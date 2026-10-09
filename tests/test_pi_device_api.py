@@ -8,18 +8,22 @@ dependencies.  Flask's in-process test client does not open a network socket.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 import unittest
 from threading import Event
 import tempfile
 import time
+import uuid
 from unittest.mock import patch
 
+from flask import g, request
 from PIL import Image
 
 from pi_device_api import create_app
-from car_face_auth.src.pi_runtime import PiRuntime, RuntimeBusyError, RuntimeRequestError
+from car_face_auth.src.pi_runtime import PiRuntime, RuntimeRequestError
 import db as db_module
 import db_api as real_db_api
+from wireless.security import Principal
 
 
 def tiny_jpeg() -> bytes:
@@ -35,7 +39,13 @@ class FakeDb:
         self.lock_state = "locked"
         self.users = []
         self.logs = []
-        self.settings = {"autoRelockSeconds": 0, "ignitionAutoStopSeconds": 0}
+        self.settings = {
+            "autoRelockSeconds": 0,
+            "ignitionAutoStopSeconds": 0,
+            "liveness": False,
+            "failLockout": False,
+            "lockoutAfter": 5,
+        }
         self.unlock_reasons = []
         self.lock_reasons = []
         self.saved_embeddings = []
@@ -56,11 +66,25 @@ class FakeDb:
     def get_all_face_encodings(self):
         return [user for user in self.users if user.get("has_template")]
 
-    def set_unlock(self, reason="manual_ui"):
+    def set_unlock(
+        self,
+        reason="manual_ui",
+        *,
+        user_id=None,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.lock_state = "unlocked"
         self.unlock_reasons.append(reason)
 
-    def set_lock(self, reason="auto_relock"):
+    def set_lock(
+        self,
+        reason="auto_relock",
+        *,
+        user_id=None,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.lock_state = "locked"
         self.lock_reasons.append(reason)
 
@@ -95,10 +119,28 @@ class FakeDb:
     def get_user_by_id(self, user_id):
         return next((user for user in self.users if user["id"] == user_id), None)
 
-    def log_event(self, stage, result, detail="", user_id=None):
-        self.logs.append({"stage": stage, "result": result, "detail": detail, "user_id": user_id})
+    def log_event(
+        self,
+        stage,
+        result,
+        detail="",
+        user_id=None,
+        *,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
+        self.logs.append(
+            {
+                "stage": stage,
+                "result": result,
+                "detail": detail,
+                "user_id": user_id,
+                "actor_user_id": actor_user_id,
+                "actor_kind": actor_kind,
+            }
+        )
 
-    def list_logs_for_ui(self):
+    def list_logs_for_ui(self, *, principal=None):
         return list(self.logs)
 
     def get_settings_for_ui(self):
@@ -138,6 +180,10 @@ class FakeFaceEngine:
     def save_user_embedding(self, name, embeddings):
         self.persisted = (name, list(embeddings))
         return {"ok": True}
+
+    def encode_user_embeddings(self, embeddings):
+        self.persisted = list(embeddings)
+        return b"encoded-face-template"
 
 
 class HardwareFreePiRuntime(PiRuntime):
@@ -227,14 +273,27 @@ class FakeRuntime:
             "error": None,
         }
 
-    def force_lock(self, reason="manual_ui"):
+    def force_lock(
+        self,
+        reason="manual_ui",
+        *,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.calls.append(("force_lock", reason))
         if self.force_lock_result.get("ok"):
             self.db.lock_state = "locked"
             self.ignition_on = False
         return dict(self.force_lock_result)
 
-    def set_ignition(self, running, reason="manual_ui"):
+    def set_ignition(
+        self,
+        running,
+        reason="manual_ui",
+        *,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.calls.append(("set_ignition", bool(running), reason))
         if running and self.db.lock_state == "locked":
             return {"ok": False, "error": "device is locked"}
@@ -243,11 +302,12 @@ class FakeRuntime:
         self.ignition_on = bool(running)
         return {"ok": True, "ignitionOn": self.ignition_on}
 
-    def _new_session(self, kind, **values):
+    def _new_session(self, kind, *, session_id=None, **values):
         if self.busy:
             raise RuntimeRequestError("Pi camera is busy with another session", 409)
-        session_id = f"{kind}_{self.next_id}"
-        self.next_id += 1
+        if session_id is None:
+            session_id = f"{kind}_{self.next_id}"
+            self.next_id += 1
         session = {
             "ok": True,
             "session_id": session_id,
@@ -258,7 +318,7 @@ class FakeRuntime:
         self.busy = True
         return dict(session)
 
-    def start_scan(self, purpose="unlock", expected_user=None):
+    def start_scan(self, purpose="unlock", expected_user=None, *, authorization=None):
         purpose = (purpose or "unlock").strip().lower()
         if purpose not in ("unlock", "ignition"):
             raise RuntimeRequestError("purpose must be unlock or ignition", 400)
@@ -288,53 +348,33 @@ class FakeRuntime:
         self.busy = False
         return dict(session)
 
-    def start_enrollment(self, name):
-        name = (name or "").strip()
-        if not name:
-            raise RuntimeRequestError("name is required", 400)
+    def start_enrollment(
+        self,
+        user_id,
+        *,
+        authorization=None,
+        enrollment_reservation=None,
+    ):
+        user = self.db.get_user_by_id(user_id)
+        if not user:
+            raise RuntimeRequestError("user must be created before enrollment", 404)
+        if not isinstance(enrollment_reservation, dict):
+            raise RuntimeRequestError(
+                "only a newly accepted enrollment request can be dispatched",
+                409,
+            )
+        session_id = enrollment_reservation.get("session_id")
+        request_id = enrollment_reservation.get("request_id")
         return self._new_session(
             "enroll",
-            user=name,
+            session_id=session_id,
+            request_id=request_id,
+            user=user["name"],
             count=0,
             samples_needed=10,
             source="pi_camera",
             message="Pi camera enrollment starting.",
         )
-
-    def start_client_enrollment(self, name):
-        name = (name or "").strip()
-        if not name:
-            raise RuntimeRequestError("name is required", 400)
-        return self._new_session(
-            "enroll",
-            user=name,
-            count=0,
-            samples_needed=10,
-            source="client_camera",
-            message="Client camera enrollment is ready for samples.",
-        )
-
-    def add_client_enrollment_sample(self, session_id, image_bytes):
-        if not image_bytes:
-            raise RuntimeRequestError("image is required", 400)
-        session = self._session_status(session_id, "enroll")
-        if session.get("source") != "client_camera":
-            raise RuntimeRequestError("session does not accept client camera samples", 409)
-        session["count"] = min(10, session.get("count", 0) + 1)
-        session["face_count"] = 1
-        self.sessions[session_id] = session
-        return dict(session)
-
-    def finish_client_enrollment(self, session_id):
-        session = self._session_status(session_id, "enroll")
-        if session.get("source") != "client_camera":
-            raise RuntimeRequestError("session does not accept client camera finish", 409)
-        if session.get("count", 0) < 10:
-            raise RuntimeRequestError(f"Need 10 samples, have {session.get('count', 0)}", 400)
-        session.update(state="completed", recognition_available=True)
-        self.sessions[session_id] = session
-        self.busy = False
-        return dict(session)
 
     def enrollment_status(self, session_id):
         return self._session_status(session_id, "enroll")
@@ -360,11 +400,57 @@ class PiDeviceApiTests(unittest.TestCase):
         self.runtime = FakeRuntime(self.db)
         self.app = create_app(db_module=self.db, runtime=self.runtime)
         self.app.testing = True
+        self._accepted_enrollment = None
+
+        @self.app.before_request
+        def inject_accepted_enrollment():
+            accepted = self._accepted_enrollment
+            if request.endpoint != "api_enroll_start" or accepted is None:
+                return None
+            g.principal = accepted["principal"]
+            g.enrollment_user = {"id": accepted["user_id"]}
+            g.enrollment_reservation = accepted["reservation"]
+            return None
+
         self.client = self.app.test_client()
 
     def json(self, response):
         self.assertIsNotNone(response.json, response.data)
         return response.get_json()
+
+    def accept_enrollment(self, name="Ada"):
+        user = next(
+            (row for row in self.db.users if row["name"] == name),
+            None,
+        ) or self.db.add_user(name)
+        request_id = str(uuid.uuid4())
+        session_id = f"enroll_{uuid.uuid4()}"
+        response = {
+            "request_id": request_id,
+            "session_id": session_id,
+            "status_url": f"/api/enroll/requests/{request_id}",
+        }
+        self._accepted_enrollment = {
+            "principal": Principal(
+                "admin-phone",
+                "admin",
+                "Admin",
+                True,
+                1,
+            ),
+            "user_id": user["id"],
+            "reservation": {
+                "created": True,
+                "request_id": request_id,
+                "session_id": session_id,
+                "response": response,
+            },
+        }
+        return {
+            "request_id": request_id,
+            "user_id": user["id"],
+            "source": "device_camera",
+        }, response
 
     def test_scan_start_status_and_cancel_lifecycle(self):
         started = self.client.post(
@@ -414,7 +500,7 @@ class PiDeviceApiTests(unittest.TestCase):
         self.assertIn("backend host camera", self.json(sample)["error"])
         self.assertFalse(self.runtime.busy)
 
-    def test_scan_validation_busy_conflict_and_unknown_errors(self):
+    def test_scan_validation_authorization_order_and_unknown_errors(self):
         bad_purpose = self.client.post("/api/scan/start", json={"purpose": "door"})
         self.assertEqual(bad_purpose.status_code, 400)
         self.assertFalse(self.json(bad_purpose)["ok"])
@@ -425,29 +511,38 @@ class PiDeviceApiTests(unittest.TestCase):
 
         started = self.client.post("/api/scan/start", json={"purpose": "unlock"})
         self.assertEqual(started.status_code, 200)
-        conflict = self.client.post("/api/enroll/start", json={"name": "Ada"})
-        self.assertEqual(conflict.status_code, 409)
-        self.assertIn("busy", self.json(conflict)["error"])
+        unauthenticated = self.client.post(
+            "/api/enroll/start",
+            json={
+                "request_id": str(uuid.uuid4()),
+                "user_id": "u1",
+                "source": "device_camera",
+            },
+        )
+        self.assertEqual(unauthenticated.status_code, 403)
+        self.assertIn("reservation", self.json(unauthenticated)["error"])
 
         unknown = self.client.get("/api/scan/status?session_id=scan_missing")
         self.assertEqual(unknown.status_code, 404)
         self.assertFalse(self.json(unknown)["ok"])
 
     def test_enrollment_start_status_and_cancel_lifecycle(self):
-        missing_name = self.client.post("/api/enroll/start", json={})
-        self.assertEqual(missing_name.status_code, 400)
+        unauthenticated = self.client.post("/api/enroll/start", json={})
+        self.assertEqual(unauthenticated.status_code, 403)
 
-        started = self.client.post("/api/enroll/start", json={"name": " Ada "})
-        self.assertEqual(started.status_code, 200)
-        session = self.json(started)
-        self.assertEqual(session["user"], "Ada")
-        self.assertEqual(session["source"], "pi_camera")
-        self.assertEqual(session["count"], 0)
-        session_id = session["session_id"]
+        body, accepted_response = self.accept_enrollment()
+        started = self.client.post("/api/enroll/start", json=body)
+        self.assertEqual(started.status_code, 202)
+        self.assertEqual(self.json(started), accepted_response)
+        session_id = accepted_response["session_id"]
 
         status = self.client.get(f"/api/enroll/status?sessionId={session_id}")
         self.assertEqual(status.status_code, 200)
-        self.assertEqual(self.json(status)["state"], "capturing")
+        session = self.json(status)
+        self.assertEqual(session["state"], "capturing")
+        self.assertEqual(session["source"], "pi_camera")
+        self.assertEqual(session["user"], "Ada")
+        self.assertEqual(session["count"], 0)
 
         cancelled = self.client.post("/api/enroll/cancel", json={"session_id": session_id})
         self.assertEqual(cancelled.status_code, 200)
@@ -456,58 +551,51 @@ class PiDeviceApiTests(unittest.TestCase):
         unknown = self.client.post("/api/enroll/cancel", json={"session_id": "enroll_missing"})
         self.assertEqual(unknown.status_code, 404)
 
-    def test_client_camera_enrollment_upload_and_finish_contract(self):
-        started = self.client.post("/api/enroll/start", json={"name": "Ada", "source": "client_camera"})
-        self.assertEqual(started.status_code, 200)
-        session = self.json(started)
-        self.assertEqual(session["source"], "client_camera")
-        session_id = session["session_id"]
-
-        for expected_count in range(1, 11):
-            sample = self.client.post(
-                "/api/enroll/sample",
-                data={
-                    "session_id": session_id,
-                    "image": (io.BytesIO(tiny_jpeg()), "sample.jpg", "image/jpeg"),
-                },
-                content_type="multipart/form-data",
-            )
-            self.assertEqual(sample.status_code, 200)
-            self.assertEqual(self.json(sample)["count"], expected_count)
-
-        finished = self.client.post("/api/enroll/finish", json={"session_id": session_id})
-        self.assertEqual(finished.status_code, 200)
-        self.assertEqual(self.json(finished)["state"], "completed")
-
-    def test_client_camera_upload_validation(self):
-        started = self.json(self.client.post("/api/enroll/start", json={"name": "Ada", "source": "client_camera"}))
-        session_id = started["session_id"]
-
-        missing = self.client.post(
-            "/api/enroll/sample",
-            data={"session_id": session_id},
-            content_type="multipart/form-data",
-        )
-        self.assertEqual(missing.status_code, 400)
-        wrong_type = self.client.post(
-            "/api/enroll/sample",
-            data={"session_id": session_id, "image": (io.BytesIO(b"text"), "sample.txt", "text/plain")},
-            content_type="multipart/form-data",
-        )
-        self.assertEqual(wrong_type.status_code, 415)
-
-        malformed_jpeg = self.client.post(
+    def test_client_camera_enrollment_endpoints_are_retired(self):
+        sample = self.client.post(
             "/api/enroll/sample",
             data={
-                "session_id": session_id,
-                "image": (io.BytesIO(b"not-a-jpeg"), "sample.jpg", "image/jpeg"),
+                "session_id": "enroll_untrusted",
+                "image": (io.BytesIO(tiny_jpeg()), "sample.jpg", "image/jpeg"),
             },
             content_type="multipart/form-data",
         )
-        self.assertEqual(malformed_jpeg.status_code, 400)
+        finished = self.client.post(
+            "/api/enroll/finish",
+            json={"session_id": "enroll_untrusted"},
+        )
 
-        incomplete = self.client.post("/api/enroll/finish", json={"session_id": session_id})
-        self.assertEqual(incomplete.status_code, 400)
+        for response in (sample, finished):
+            self.assertEqual(response.status_code, 410)
+            self.assertIn("retired", self.json(response)["error"])
+        self.assertEqual(self.runtime.sessions, {})
+
+    def test_client_camera_retirement_precedes_upload_validation(self):
+        payloads = (
+            {},
+            {
+                "session_id": "enroll_untrusted",
+                "image": (io.BytesIO(b"text"), "sample.txt", "text/plain"),
+            },
+            {
+                "session_id": "enroll_untrusted",
+                "image": (
+                    io.BytesIO(b"not-a-jpeg"),
+                    "sample.jpg",
+                    "image/jpeg",
+                ),
+            },
+        )
+        for payload in payloads:
+            response = self.client.post(
+                "/api/enroll/sample",
+                data=payload,
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(response.status_code, 410)
+
+        finished = self.client.post("/api/enroll/finish", json={})
+        self.assertEqual(finished.status_code, 410)
 
     def test_face_status_reports_only_users_with_templates(self):
         self.db.users = [
@@ -536,7 +624,12 @@ class PiDeviceApiTests(unittest.TestCase):
         self.assertEqual(self.json(malformed)["error"], "JSON object required")
 
     def test_access_requires_boolean_and_raw_embeddings_are_not_exposed(self):
-        user = self.json(self.client.post("/api/users", json={"name": "Ada"}))
+        user = self.json(
+            self.client.post(
+                "/api/users",
+                json={"name": "Ada", "pin": "123456"},
+            )
+        )
         invalid = self.client.patch(f"/api/users/{user['id']}/access", json={"allowed": "false"})
         self.assertEqual(invalid.status_code, 400)
         self.assertTrue(self.db.users[0]["faceAccess"])
@@ -648,6 +741,50 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
                 {"granted", "denied", "error", "timeout", "cancelled"},
             )
 
+    def configure_enrollment(self):
+        from security_fixtures import temporary_security
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        fixture = temporary_security(self, root)
+        admin = fixture.principal()
+        with db_module.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO commissioning_state "
+                "(id,ownership,owner_user_id,generation,activation_secret,"
+                "activation_hash,recovery_hash,updated_at) "
+                "VALUES (1,'claimed',?,1,NULL,NULL,?,1)",
+                (admin.user_id, b"r" * 32),
+            )
+        admin = fixture.principal()
+        target = fixture.security.create_user(admin, "Ada", "654321")
+        self.db.users = [
+            {
+                "id": admin.user_id,
+                "name": admin.name,
+                "face_access": 1,
+            },
+            {
+                "id": target["id"],
+                "name": target["name"],
+                "face_access": 1,
+            }
+        ]
+        self.runtime.configure_authorization(fixture.security)
+        return fixture, admin, target
+
+    @staticmethod
+    def reserve_enrollment(fixture, admin, user_id):
+        request_id = str(uuid.uuid4())
+        return fixture.security.enrollment.reserve(
+            admin,
+            {
+                "request_id": request_id,
+                "user_id": user_id,
+                "source": "device_camera",
+            },
+            fixture.grant("enrollment.start", user_id),
+        )
+
     def test_six_of_ten_same_user_matches_grant_unlock(self):
         face_engine = FakeFaceEngine(["Ada"] * 6)
         session, result = self.run_scan(face_engine)
@@ -700,10 +837,16 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
         self.assertNotIn("START", self.runtime.commands)
 
     def test_enrollment_captures_ten_samples_and_persists_them(self):
+        fixture, admin, target = self.configure_enrollment()
+        reservation = self.reserve_enrollment(fixture, admin, target["id"])
         face_engine = FakeFaceEngine([])
         importer = lambda name: face_engine if name == "car_face_auth.src.face_engine" else None
         with patch("car_face_auth.src.pi_runtime.importlib.import_module", side_effect=importer):
-            session = self.runtime.start_enrollment("Ada")
+            session = self.runtime.start_enrollment(
+                target["id"],
+                authorization=admin,
+                enrollment_reservation=reservation,
+            )
             result = wait_for_state(
                 self.runtime,
                 session["session_id"],
@@ -713,37 +856,80 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result["state"], "completed")
         self.assertEqual(result["count"], 10)
-        self.assertIsNotNone(face_engine.persisted)
-        self.assertEqual(face_engine.persisted[0], "Ada")
-        self.assertEqual(len(face_engine.persisted[1]), 10)
+        self.assertEqual(len(face_engine.persisted), 10)
+        receipt = fixture.security.enrollment.query(
+            admin,
+            reservation["request_id"],
+        )
+        self.assertEqual(receipt["state"], "completed")
+        durable_result = dict(receipt["result"])
+        current_result = dict(result)
+        durable_result.pop("updated_at")
+        current_result.pop("updated_at")
+        self.assertEqual(durable_result, current_result)
+        with db_module.get_conn() as conn:
+            user = conn.execute(
+                "SELECT face_encoding FROM users WHERE id=?",
+                (target["id"],),
+            ).fetchone()
+            audit = conn.execute(
+                "SELECT user_id,actor_user_id,result FROM auth_logs "
+                "WHERE stage='enroll_embedding' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(bytes(user["face_encoding"]), b"encoded-face-template")
+        self.assertEqual(
+            (audit["user_id"], audit["actor_user_id"], audit["result"]),
+            (target["id"], admin.user_id, "ok"),
+        )
 
-    def test_client_camera_enrollment_persists_on_pi_without_opening_camera(self):
-        face_engine = FakeFaceEngine([])
-        self.runtime._face_engine = face_engine
-        session = self.runtime.start_client_enrollment("Ada")
-        self.assertEqual(session["source"], "client_camera")
+    def test_enrollment_requires_a_new_accepted_reservation(self):
+        with self.assertRaisesRegex(
+            RuntimeRequestError,
+            "newly accepted enrollment request",
+        ):
+            self.runtime.start_enrollment("u1")
+        with self.assertRaisesRegex(
+            RuntimeRequestError,
+            "newly accepted enrollment request",
+        ):
+            self.runtime.start_enrollment(
+                "u1",
+                enrollment_reservation={"created": False},
+            )
 
-        for expected_count in range(1, 11):
-            status = self.runtime.add_client_enrollment_sample(session["session_id"], b"jpeg")
-            self.assertEqual(status["count"], expected_count)
-
-        result = self.runtime.finish_client_enrollment(session["session_id"])
-        self.assertEqual(result["state"], "completed")
-        self.assertTrue(result["recognition_available"])
-        self.assertEqual(face_engine.persisted[0], "Ada")
-        self.assertEqual(len(face_engine.persisted[1]), 10)
-        self.assertIsNone(self.runtime._camera)
         self.assertIsNone(self.runtime.status()["active_session"])
+        self.assertIsNone(self.runtime._camera)
 
     def test_camera_ownership_rejects_conflict_and_cancel_releases_it(self):
+        fixture, admin, target = self.configure_enrollment()
         self.runtime.capture_gate = Event()
-        face_engine = FakeFaceEngine(["Ada"] * 6)
+        face_engine = FakeFaceEngine([admin.name] * 6)
         importer = lambda name: face_engine if name == "car_face_auth.src.face_engine" else None
         with patch("car_face_auth.src.pi_runtime.importlib.import_module", side_effect=importer):
-            scan = self.runtime.start_scan()
+            scan = self.runtime.start_scan(
+                expected_user=admin.name,
+                authorization=admin,
+            )
             self.assertTrue(self.runtime.capture_started.wait(timeout=1))
-            with self.assertRaises(RuntimeBusyError):
-                self.runtime.start_enrollment("Ada")
+            rejected_reservation = self.reserve_enrollment(
+                fixture,
+                admin,
+                target["id"],
+            )
+            rejected = self.runtime.start_enrollment(
+                target["id"],
+                authorization=admin,
+                enrollment_reservation=rejected_reservation,
+            )
+            self.assertEqual(rejected["state"], "error")
+            self.assertIn("busy", rejected["message"])
+            self.assertEqual(
+                fixture.security.enrollment.query(
+                    admin,
+                    rejected_reservation["request_id"],
+                )["state"],
+                "failed",
+            )
 
             cancelled = self.runtime.cancel_scan(scan["session_id"])
             self.assertEqual(cancelled["state"], "cancelled")
@@ -754,7 +940,12 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
             self.assertIsNone(self.runtime.status()["active_session"])
 
             self.runtime.capture_gate = None
-            enrollment = self.runtime.start_enrollment("Ada")
+            reservation = self.reserve_enrollment(fixture, admin, target["id"])
+            enrollment = self.runtime.start_enrollment(
+                target["id"],
+                authorization=admin,
+                enrollment_reservation=reservation,
+            )
             self.assertTrue(enrollment["session_id"].startswith("enroll_"))
 
     def test_esp_failure_finishes_scan_as_error_not_granted(self):

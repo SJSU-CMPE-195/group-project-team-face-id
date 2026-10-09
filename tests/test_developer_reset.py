@@ -250,7 +250,10 @@ class DeveloperResetTests(unittest.TestCase):
         controller = self.controller(sources=(self.state / "missing",))
         with self.assertRaises(SecurityError):
             controller.execute(str(uuid.uuid4()), "RESET")
-        with self.assertRaisesRegex(RuntimeError, "--hardware-simulator"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"factory-owner-qr\.py reset",
+        ):
             assert_reset_complete(self.config, self.db_path)
 
 

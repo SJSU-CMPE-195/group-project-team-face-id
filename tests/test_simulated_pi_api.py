@@ -16,9 +16,14 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
+from unittest import mock
 
+from flask import g, request
 import db as db_module
 import db_api
+from wireless import security as security_module
+from wireless.security import SecurityStore
 
 
 FINAL_SCAN_STATES = {"granted", "denied", "error", "timeout", "cancelled"}
@@ -97,6 +102,26 @@ class SimulatedPiApiTests(unittest.TestCase):
             self.runtime.close()
         except Exception:
             pass
+
+    def _remove_security_schema(self):
+        with db_module.get_conn() as conn:
+            triggers = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='trigger' AND name LIKE 'trg_security_%'"
+            ).fetchall()
+            for trigger in triggers:
+                conn.execute(f'DROP TRIGGER "{trigger["name"]}"')
+            for table in (
+                "enrollment_requests",
+                "operation_grants",
+                "pairing_invites",
+                "paired_devices",
+                "user_security",
+                "ownership_transfers",
+                "commissioning_attempts",
+                "commissioning_state",
+            ):
+                conn.execute(f'DROP TABLE IF EXISTS "{table}"')
 
     def _json(self, response):
         payload = response.get_json()
@@ -200,10 +225,51 @@ class SimulatedPiApiTests(unittest.TestCase):
         self.assertTrue(self.runtime.status()["ignitionOn"])
 
     def test_enrollment_captures_ten_samples(self):
-        self._add_ada()
+        self.enterContext(mock.patch.object(security_module, "PIN_ITERATIONS", 1_000))
+        security = SecurityStore(db_module.get_conn, b"s" * 32)
+        security.ensure_schema()
+        self.addCleanup(self._remove_security_schema)
+        security.initial_admin("Admin", "123456")
+        with db_module.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO commissioning_state "
+                "(id,ownership,owner_user_id,generation,activation_secret,"
+                "activation_hash,recovery_hash,updated_at) "
+                "VALUES (1,'legacy',NULL,1,NULL,NULL,NULL,?)",
+                (int(time.time()),),
+            )
+        login = security.local_login("Admin", "123456")
+        principal = security.principal(login["device_token"])
+        ada = security.create_user(principal, "Ada", "654321")
+        request_id = str(uuid.uuid4())
+        body = {
+            "request_id": request_id,
+            "user_id": ada["id"],
+            "source": "device_camera",
+        }
+        grant = security.authorize(
+            principal,
+            "123456",
+            "enrollment.start",
+            ada["id"],
+        )
+        reservation = security.enrollment.reserve(
+            principal,
+            body,
+            grant["grant_token"],
+        )
+        self.runtime.configure_authorization(security)
+
+        @self.app.before_request
+        def authorize_enrollment():
+            if request.endpoint == "api_enroll_start":
+                g.principal = principal
+                g.enrollment_user = {"id": ada["id"]}
+                g.enrollment_reservation = reservation
+
         self._configure(frames=[_frame("Ada")])
-        response = self.client.post("/api/enroll/start", json={"name": "Ada"})
-        self.assertEqual(response.status_code, 200, response.get_json())
+        response = self.client.post("/api/enroll/start", json=body)
+        self.assertEqual(response.status_code, 202, response.get_json())
         session = self._json(response)
         result = self._poll(
             f"/api/enroll/status?session_id={session['session_id']}", FINAL_ENROLL_STATES
@@ -212,8 +278,11 @@ class SimulatedPiApiTests(unittest.TestCase):
         self.assertEqual(result["count"], 10)
         self.assertEqual(result["samples_needed"], 10)
         self.assertTrue(result["recognition_available"])
-        saved = self.runtime._simulated_face_engine._saved
-        self.assertEqual(len(saved["Ada"]), 10)
+        receipt = security.enrollment.query(principal, request_id)
+        self.assertEqual(receipt["state"], "completed")
+        self.assertEqual(receipt["result"]["count"], 10)
+        saved = db_api.get_all_face_encodings()
+        self.assertEqual([row["id"] for row in saved], [ada["id"]])
 
     def test_camera_error_finishes_scan_as_error(self):
         self._add_ada()

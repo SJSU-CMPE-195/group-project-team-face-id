@@ -49,6 +49,10 @@ class WirelessAuthorizationTests(unittest.TestCase):
         self.client = self.app.test_client()
         self.origin = "http://localhost:5057"
         self.local_headers = {"Referer": self.origin + "/", "Origin": self.origin}
+        (
+            self.local_session_headers,
+            self.local_device_token,
+        ) = self.fixture.local_dashboard_session(self.client, self.origin)
 
     def mutation(self, path, action, body=None, target=None, method="POST"):
         grant = self.fixture.grant(action, target)
@@ -81,7 +85,27 @@ class WirelessAuthorizationTests(unittest.TestCase):
         headers = {"Authorization": f"Bearer {token}"}
         self.assertEqual(self.client.get("/api/users", headers=headers).json[0]["id"], user["id"])
         self.assertEqual(len(self.client.get("/api/users", headers=headers).json), 1)
-        self.assertEqual(self.client.get("/api/logs", headers=headers).status_code, 403)
+        self.fixture.db.log_event(
+            "regular_scope",
+            "ok",
+            "regular-only detail",
+            user_id=user["id"],
+            actor_user_id=user["id"],
+            actor_kind="user",
+        )
+        self.fixture.db.log_event(
+            "admin_scope",
+            "ok",
+            "admin-only detail",
+            user_id=self.fixture.admin.user_id,
+            actor_user_id=self.fixture.admin.user_id,
+            actor_kind="user",
+        )
+        logs = self.client.get("/api/logs", headers=headers)
+        self.assertEqual(logs.status_code, 200)
+        log_types = {row["type"] for row in logs.json}
+        self.assertIn("regular_scope", log_types)
+        self.assertNotIn("admin_scope", log_types)
         self.assertEqual(self.client.get("/api/settings", headers=headers).status_code, 200)
         self.assertEqual(self.client.post("/api/enroll/start", json={"name": "Regular"},
                                          headers=headers).status_code, 403)
@@ -213,11 +237,47 @@ class WirelessAuthorizationTests(unittest.TestCase):
         self.assertFalse(own.json[0]["is_admin"])
 
     def test_control_grant_accepts_empty_target_and_requires_pin(self):
-        grant = self.client.post("/api/operation-grants", json={
+        body = {
             "pin": self.fixture.pin, "action": "device.lock", "target_user_id": "",
-        }, headers=self.fixture.headers())
+        }
+        remote = self.client.post(
+            "/api/operation-grants",
+            json=body,
+            headers=self.fixture.headers(),
+        )
+        self.assertEqual(remote.status_code, 403, remote.json)
+        self.assertEqual(remote.json["code"], "local_controls_required")
+
+        valid_remote_grant = self.fixture.grant(
+            "device.lock",
+            self.fixture.admin.user_id,
+        )
+        remote_control = self.client.post(
+            "/api/lock",
+            json={},
+            headers=self.fixture.headers(valid_remote_grant),
+        )
+        self.assertEqual(remote_control.status_code, 403, remote_control.json)
+        self.assertEqual(remote_control.json["code"], "local_controls_required")
+        self.assertEqual(self.runtime.calls, [])
+        self.assertEqual(self.runtime.sessions, {})
+
+        grant = self.client.post(
+            "/local/wireless/api/operation-grants",
+            base_url=self.origin,
+            json=body,
+            headers=self.local_session_headers,
+        )
         self.assertEqual(grant.status_code, 200, grant.json)
-        response = self.client.post("/api/lock", json={}, headers=self.fixture.headers(grant.json["grant_token"]))
+        response = self.client.post(
+            "/local/wireless/api/lock",
+            base_url=self.origin,
+            json={},
+            headers={
+                **self.local_session_headers,
+                "X-BASS-Operation-Grant": grant.json["grant_token"],
+            },
+        )
         self.assertEqual(response.status_code, 200, response.json)
 
     def test_create_user_enrollment_grant_is_scoped_single_use_and_expires(self):
@@ -225,14 +285,14 @@ class WirelessAuthorizationTests(unittest.TestCase):
             return self.mutation(
                 "/api/users",
                 "user.create",
-                {"name": name, "pin": "654321", "enroll_face": True},
+                {"name": name, "pin": "654321"},
             )
 
         with mock.patch("wireless.security.time.time", return_value=1_000):
             created = create("Enrollment user")
             self.assertEqual(created.status_code, 201, created.json)
-            token = created.json["enrollment_grant"]
             target = created.json["id"]
+            token = self.fixture.grant("enrollment.start", target)
 
             with self.assertRaises(SecurityError) as wrong_target:
                 self.security.consume_grant(
@@ -254,12 +314,16 @@ class WirelessAuthorizationTests(unittest.TestCase):
 
             expiring = create("Expiring enrollment user")
             self.assertEqual(expiring.status_code, 201, expiring.json)
+            expiring_token = self.fixture.grant(
+                "enrollment.start",
+                expiring.json["id"],
+            )
 
         with mock.patch("wireless.security.time.time", return_value=1_030):
             with self.assertRaises(SecurityError) as expired:
                 self.security.consume_grant(
                     self.fixture.principal(),
-                    expiring.json["enrollment_grant"],
+                    expiring_token,
                     "enrollment.start",
                     expiring.json["id"],
                 )
@@ -273,13 +337,33 @@ class WirelessAuthorizationTests(unittest.TestCase):
         self.assertIsNotNone(self.fixture.db.get_user_by_id(second["id"]))
 
     def test_correct_pin_starts_own_host_scan_without_unlocking(self):
-        response = self.client.post("/api/operation-grants", json={
+        grant_body = {
             "pin": self.fixture.pin, "action": "scan.unlock",
             "target_user_id": self.fixture.admin.user_id,
-        }, headers=self.fixture.headers())
+        }
+        remote = self.client.post(
+            "/api/operation-grants",
+            json=grant_body,
+            headers=self.fixture.headers(),
+        )
+        self.assertEqual(remote.status_code, 403, remote.json)
+
+        response = self.client.post(
+            "/local/wireless/api/operation-grants",
+            base_url=self.origin,
+            json=grant_body,
+            headers=self.local_session_headers,
+        )
         self.assertEqual(response.status_code, 200, response.json)
-        started = self.client.post("/api/scan/start", json={"purpose": "unlock", "expected_user": "Impersonated"},
-                                   headers=self.fixture.headers(response.json["grant_token"]))
+        started = self.client.post(
+            "/local/wireless/api/scan/start",
+            base_url=self.origin,
+            json={"purpose": "unlock", "expected_user": "Impersonated"},
+            headers={
+                **self.local_session_headers,
+                "X-BASS-Operation-Grant": response.json["grant_token"],
+            },
+        )
         self.assertEqual(started.status_code, 200, started.json)
         session = self.runtime.sessions[started.json["session_id"]]
         self.assertEqual(session["expected_user"], self.fixture.admin.name)
@@ -290,9 +374,10 @@ class WirelessAuthorizationTests(unittest.TestCase):
         for purpose in ([], {}, 1, None):
             with self.subTest(purpose=purpose):
                 response = self.client.post(
-                    "/api/scan/start",
+                    "/local/wireless/api/scan/start",
+                    base_url=self.origin,
                     json={"purpose": purpose},
-                    headers=self.fixture.headers(),
+                    headers=self.local_session_headers,
                 )
                 self.assertEqual(response.status_code, 400)
         self.assertEqual(self.runtime.sessions, {})

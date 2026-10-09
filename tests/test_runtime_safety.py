@@ -53,17 +53,40 @@ class FakeDb:
     def get_status(self):
         return {"lockState": self.lock_state}
 
-    def set_lock(self, reason):
+    def set_lock(
+        self,
+        reason,
+        *,
+        user_id=None,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.lock_state = "locked"
         self.lock_writes += 1
 
-    def set_unlock(self, reason):
+    def set_unlock(
+        self,
+        reason,
+        *,
+        user_id=None,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         if self.fail_unlock:
             raise RuntimeError("unlock database failure")
         self.lock_state = "unlocked"
         self.unlock_writes += 1
 
-    def log_event(self, stage, result, detail="", user_id=None):
+    def log_event(
+        self,
+        stage,
+        result,
+        detail="",
+        user_id=None,
+        *,
+        actor_user_id=None,
+        actor_kind="system",
+    ):
         self.logs.append((stage, result, detail, user_id))
 
 
@@ -270,21 +293,32 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertEqual(self.runtime.camera_open_calls, 0)
         self.assertEqual(self.runtime._sessions, {})
 
-    def test_liveness_enabled_blocks_host_and_client_enrollment(self):
+    def test_liveness_enabled_blocks_host_enrollment_before_camera_or_session(self):
         self.db.settings["liveness"] = True
         admin = Principal("admin-phone", "u1", "Ada", True, 1)
+        request_id = "00000000-0000-4000-8000-000000000001"
+        session_id = "enroll_liveness"
+        reservation = {
+            "created": True,
+            "request_id": request_id,
+            "session_id": session_id,
+            "response": {
+                "request_id": request_id,
+                "session_id": session_id,
+            },
+        }
 
-        for start in (
-            self.runtime.start_enrollment,
-            self.runtime.start_client_enrollment,
-        ):
-            with self.assertRaisesRegex(
-                RuntimeRequestError,
-                "presentation-attack detection is unavailable",
-            ) as raised:
-                start("Ada", authorization=admin)
-            self.assertEqual(raised.exception.status_code, 503)
+        result = self.runtime.start_enrollment(
+            "u1",
+            authorization=admin,
+            enrollment_reservation=reservation,
+        )
 
+        self.assertEqual(result["state"], "error")
+        self.assertIn(
+            "presentation-attack detection is unavailable",
+            result["message"],
+        )
         self.assertEqual(self.runtime.camera_open_calls, 0)
         self.assertEqual(self.runtime._sessions, {})
 

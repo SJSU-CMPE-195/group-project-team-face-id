@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import io
 import unittest
-from unittest.mock import patch
-
-from PIL import Image
+import uuid
 
 import pi_device_api
 from pi_device_api import (
@@ -16,21 +14,6 @@ from pi_device_api import (
     create_app,
 )
 from tests.test_pi_device_api import FakeDb, FakeRuntime
-
-
-def jpeg_bytes(width: int = 64, height: int = 64) -> bytes:
-    output = io.BytesIO()
-    Image.new("RGB", (width, height), "white").save(output, format="JPEG")
-    return output.getvalue()
-
-
-def jpeg_with_reported_width(width: int) -> bytes:
-    data = bytearray(jpeg_bytes())
-    marker = data.find(b"\xff\xc0")
-    if marker < 0:
-        raise AssertionError("test JPEG has no baseline SOF marker")
-    data[marker + 7 : marker + 9] = width.to_bytes(2, "big")
-    return bytes(data)
 
 
 class PiDeviceApiLimitTests(unittest.TestCase):
@@ -67,9 +50,9 @@ class PiDeviceApiLimitTests(unittest.TestCase):
 
     def test_json_contract_and_name_are_validated(self):
         cases = (
-            ({"name": 7}, 400),
-            ({"name": "A" * (MAX_NAME_CHARS + 1)}, 400),
-            ({"name": "line\nbreak"}, 400),
+            ({"name": 7, "pin": "123456"}, 400),
+            ({"name": "A" * (MAX_NAME_CHARS + 1), "pin": "123456"}, 400),
+            ({"name": "line\nbreak", "pin": "123456"}, 400),
         )
         for payload, expected_status in cases:
             with self.subTest(payload=payload):
@@ -77,7 +60,10 @@ class PiDeviceApiLimitTests(unittest.TestCase):
                 self.assertEqual(response.status_code, expected_status)
         self.assertEqual(self.db.users, [])
 
-        response = self.client.post("/api/users", json={"name": " 王小明 "})
+        response = self.client.post(
+            "/api/users",
+            json={"name": " 王小明 ", "pin": "123456"},
+        )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(self.db.users[0]["name"], "王小明")
 
@@ -123,60 +109,34 @@ class PiDeviceApiLimitTests(unittest.TestCase):
         self.assertEqual(response.status_code, 410)
         self.assertEqual(self.db.logs, [])
 
-    def test_enrollment_accepts_bounded_jpeg_before_runtime(self):
-        started = self.client.post(
-            "/api/enroll/start",
-            json={"name": "Ada", "source": "client_camera"},
-        ).get_json()
+    def test_enrollment_requires_authenticated_reservation_before_runtime(self):
         response = self.client.post(
-            "/api/enroll/sample",
-            data={
-                "session_id": started["session_id"],
-                "image": (io.BytesIO(jpeg_bytes()), "sample.jpg", "image/jpeg"),
+            "/api/enroll/start",
+            json={
+                "request_id": str(uuid.uuid4()),
+                "user_id": "user-1",
+                "source": "device_camera",
             },
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["count"], 1)
-        response.request.close()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.runtime.calls, [])
 
-    def test_enrollment_rejects_invalid_or_oversized_images_before_runtime(self):
-        started = self.client.post(
-            "/api/enroll/start",
-            json={"name": "Ada", "source": "client_camera"},
-        ).get_json()
-        session_id = started["session_id"]
+    def test_client_camera_enrollment_routes_are_retired_and_still_bounded(self):
+        for path in ("/api/enroll/sample", "/api/enroll/finish"):
+            with self.subTest(path=path):
+                response = self.client.post(path, json={"session_id": "retired"})
+                self.assertEqual(response.status_code, 410)
 
-        cases = (
-            (b"not-jpeg", "image/jpeg", 400),
-            (jpeg_bytes(), "image/png", 415),
-            (jpeg_with_reported_width(4097), "image/jpeg", 413),
+        response = self.client.post(
+            "/api/enroll/sample",
+            content_type="application/octet-stream",
+            environ_overrides={
+                "CONTENT_LENGTH": str(MAX_REQUEST_BYTES + 1),
+                "wsgi.input": io.BytesIO(),
+            },
         )
-        for content, mimetype, expected_status in cases:
-            with self.subTest(mimetype=mimetype, expected_status=expected_status):
-                response = self.client.post(
-                    "/api/enroll/sample",
-                    data={
-                        "session_id": session_id,
-                        "image": (io.BytesIO(content), "sample.jpg", mimetype),
-                    },
-                )
-                self.assertEqual(response.status_code, expected_status)
-                self.assertEqual(self.runtime.sessions[session_id]["count"], 0)
-                response.request.close()
-                response.close()
-
-        with patch.object(pi_device_api, "MAX_CLIENT_IMAGE_BYTES", 128):
-            response = self.client.post(
-                "/api/enroll/sample",
-                data={
-                    "session_id": session_id,
-                    "image": (io.BytesIO(jpeg_bytes()), "sample.jpg", "image/jpeg"),
-                },
-            )
         self.assertEqual(response.status_code, 413)
-        self.assertEqual(self.runtime.sessions[session_id]["count"], 0)
-        response.request.close()
-        response.close()
+        self.assertEqual(self.runtime.calls, [])
 
 
 if __name__ == "__main__":

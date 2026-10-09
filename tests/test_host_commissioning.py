@@ -62,7 +62,7 @@ class HostCommissioningTests(unittest.TestCase):
             security=self.security, commissioning=self.lifecycle.commissioning,
             events=self.lifecycle.events,
             developer_control=self.lifecycle.developer_control,
-            transfer_handler=self.lifecycle.accept_transfer,
+            transfer_handler=None,
             recovery_handler=self.lifecycle.recover_owner,
         )
         self.app = app
@@ -109,7 +109,6 @@ class HostCommissioningTests(unittest.TestCase):
 
     def claim(self):
         body = self.claim_body()
-        self.hold()
         response = self.post("/api/commissioning/claim", body)
         self.assertEqual(response.status_code, 201, response.json)
         return body, response.json
@@ -164,13 +163,15 @@ class HostCommissioningTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertTrue(self.lifecycle.events.snapshot()["powered"])
 
-    def test_first_owner_requires_tls_activation_and_window_and_retry_is_exact(self):
+    def test_first_owner_requires_tls_activation_availability_and_exact_retry(self):
         self.build()
         body = self.claim_body()
         response = self.client.post("/api/commissioning/claim", json=body)
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(self.post("/api/commissioning/claim", body).status_code, 409)
-        self.hold()
+        self.lifecycle.events.set_maintenance(True)
+        unavailable = self.post("/api/commissioning/claim", body)
+        self.assertEqual(unavailable.status_code, 503)
+        self.lifecycle.events.set_maintenance(False)
         bad = {**body, "activation_secret": secrets.token_hex(32)}
         self.assertEqual(self.post("/api/commissioning/claim", bad).status_code, 401)
         claimed = self.post("/api/commissioning/claim", body)
@@ -202,7 +203,6 @@ class HostCommissioningTests(unittest.TestCase):
         self.assertEqual(self.lifecycle.commissioning.status()["ownership"], "unclaimed")
         self.assertEqual(self.client.get("/api/me", base_url=self.https,
             headers={"Authorization": f"Bearer {old['device_token']}"}).status_code, 401)
-        self.hold()
         self.assertEqual(self.post("/api/commissioning/claim", old).status_code, 401)
         newer, newer_result = self.claim()
         replay = self.local_post("reset", reset)
@@ -212,29 +212,37 @@ class HostCommissioningTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/me", base_url=self.https,
             headers={"Authorization": f"Bearer {newer['device_token']}"}).status_code, 200)
 
-    def test_bad_transfer_cannot_pause_product_and_commit_drains_old_work(self):
+    def test_owner_transfer_routes_are_retired_without_side_effects(self):
         self.build()
-        owner, _ = self.claim()
+        owner, claimed = self.claim()
         successor = {**self.claim_body(), "name": "Successor",
                      "transfer_secret": secrets.token_hex(32)}
         successor.pop("activation_secret")
-        invalid = self.post("/api/commissioning/transfer/accept", successor)
-        self.assertEqual(invalid.status_code, 401)
-        self.assertEqual(self.runtime.calls, [])
-        self.hold()
-        transfer = self.post("/api/ownership/transfer", {
+        accepted = self.post("/api/commissioning/transfer/accept", successor)
+        started = self.post("/api/ownership/transfer", {
             "request_id": str(uuid.uuid4()), "pin": owner["pin"],
             "transfer_secret": successor["transfer_secret"],
         }, owner["device_token"])
-        self.assertEqual(transfer.status_code, 201, transfer.json)
-        accepted = self.post("/api/commissioning/transfer/accept", successor)
-        self.assertEqual(accepted.status_code, 201, accepted.json)
-        self.assertEqual(self.runtime.calls, [("quiesce", "ownership_transfer"), ("resume",)])
-        repeated = self.post("/api/commissioning/transfer/accept", successor)
-        self.assertEqual(repeated.json, accepted.json)
-        self.assertEqual(len(self.runtime.calls), 2)
+
+        self.assertEqual(accepted.status_code, 410, accepted.json)
+        self.assertEqual(accepted.json["code"], "route_retired")
+        self.assertEqual(started.status_code, 410, started.json)
+        self.assertEqual(started.json["code"], "route_retired")
+        self.assertEqual(self.runtime.calls, [])
         self.assertFalse(self.lifecycle.events.maintenance)
-        self.assertEqual([user["name"] for user in db_api.get_all_users()], ["Successor"])
+        self.assertEqual(
+            self.lifecycle.commissioning.owner_user_id(),
+            claimed["user"]["id"],
+        )
+        self.assertEqual([user["name"] for user in db_api.get_all_users()], ["Owner"])
+        self.assertEqual(
+            self.client.get(
+                "/api/me",
+                base_url=self.https,
+                headers={"Authorization": f"Bearer {owner['device_token']}"},
+            ).status_code,
+            200,
+        )
 
     def test_backup_failure_keeps_data_and_blocks_normal_restart(self):
         self.build(developer=True)

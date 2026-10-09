@@ -79,6 +79,41 @@ class SecurityFixture:
             headers["X-BASS-Operation-Grant"] = grant
         return headers
 
+    def local_dashboard_session(self, client, origin: str):
+        trusted_headers = {
+            "Origin": origin,
+            "Referer": f"{origin}/",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        captured = {}
+        local_login = self.security.local_login
+
+        def capture_login(*args, **kwargs):
+            result = local_login(*args, **kwargs)
+            captured.update(result)
+            return result
+
+        with mock.patch.object(
+            self.security,
+            "local_login",
+            side_effect=capture_login,
+        ):
+            response = client.post(
+                "/local/security/login",
+                base_url=origin,
+                json={"name": ADMIN_NAME, "pin": self.pin},
+                headers=trusted_headers,
+            )
+        if response.status_code != 200:
+            raise AssertionError(response.get_json())
+        return (
+            {
+                **trusted_headers,
+                "X-BASS-CSRF": response.get_json()["csrf_token"],
+            },
+            captured["device_token"],
+        )
+
 
 def temporary_security(testcase, root: Path) -> SecurityFixture:
     return SecurityFixture(testcase, root)

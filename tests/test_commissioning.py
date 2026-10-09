@@ -26,6 +26,12 @@ class FakeEvents:
         if not self.powered or self.window != kind:
             raise SecurityError("window_required", 409, f"{kind} window is required")
 
+    def require_available(self) -> None:
+        if self.maintenance:
+            raise SecurityError("maintenance", 503, "maintenance")
+        if not self.powered:
+            raise SecurityError("powered_off", 503, "powered off")
+
     def close_windows(self) -> None:
         self.window = None
 
@@ -64,22 +70,29 @@ class CommissioningTests(unittest.TestCase):
 
     def _claim(self):
         body = self._claim_body()
-        self.events.window = "pairing"
         return body, self.store.claim(body)
 
-    def test_claim_requires_secret_and_window_and_replays_exact_result(self):
+    def test_claim_requires_secret_and_available_product_and_replays(self):
         self.assertEqual(self.store.status()["ownership"], "unclaimed")
         body = self._claim_body()
 
-        with self.assertRaises(SecurityError) as no_window:
+        self.events.powered = False
+        with self.assertRaises(SecurityError) as powered_off:
             self.store.claim(body)
-        self.assertEqual(no_window.exception.code, "window_required")
+        self.assertEqual(powered_off.exception.code, "powered_off")
+        self.events.powered = True
 
-        self.events.window = "pairing"
+        self.events.maintenance = True
+        with self.assertRaises(SecurityError) as maintenance:
+            self.store.claim(body)
+        self.assertEqual(maintenance.exception.code, "maintenance")
+        self.events.maintenance = False
+
         with self.assertRaises(SecurityError) as wrong_secret:
             self.store.claim({**body, "activation_secret": self._secret("f")})
         self.assertEqual(wrong_secret.exception.code, "invalid_activation")
 
+        self.events.window = "pairing"
         result = self.store.claim(body)
         self.assertTrue(result["user"]["is_owner"])
         self.assertIsNone(self.store.activation_material())
@@ -108,7 +121,6 @@ class CommissioningTests(unittest.TestCase):
             device_token=self._secret("5"),
             recovery_secret=self._secret("6"),
         )
-        self.events.window = "pairing"
         barrier = threading.Barrier(3)
         outcomes = []
 
@@ -189,44 +201,32 @@ class CommissioningTests(unittest.TestCase):
         self.assertTrue(replay["completed"])
         self.assertEqual(replay["response"], recovered)
 
-    def test_transfer_wipes_old_identities_and_replays(self):
-        claim_body, claimed = self._claim()
+    def test_recovery_preserves_existing_users_and_owner_identity(self):
+        claim_body, claim = self._claim()
         owner = self.security.principal(claim_body["device_token"])
-        transfer_secret = self._secret("b")
-        start_body = {
+        member = self.security.create_user(owner, "Member", "222222")
+        recovery_body = {
             "request_id": str(uuid.uuid4()),
-            "pin": "123456",
-            "transfer_secret": transfer_secret,
-        }
-        self.events.window = "pairing"
-        self.store.start_transfer(owner, start_body)
-
-        accept_body = {
-            "request_id": str(uuid.uuid4()),
-            "transfer_secret": transfer_secret,
-            "name": "New Owner",
-            "pin": "222222",
-            "device_name": "Successor phone",
+            "recovery_secret": claim_body["recovery_secret"],
+            "new_recovery_secret": self._secret("b"),
+            "pin": "654321",
+            "device_name": "Recovered phone",
             "device_token": self._secret("c"),
-            "recovery_secret": self._secret("d"),
         }
-        preflight = self.store.validate_transfer_accept(accept_body)
-        self.assertFalse(preflight["completed"])
-        accepted = self.store.accept_transfer(accept_body)
-        self.assertEqual(accepted["generation"], claimed["generation"] + 1)
-        self.assertEqual(self.store.accept_transfer(accept_body), accepted)
-        self.assertTrue(
-            self.store.validate_transfer_accept(accept_body)["completed"]
-        )
-        with self.assertRaises(SecurityError):
-            self.security.principal(claim_body["device_token"])
-        successor = self.security.principal(accept_body["device_token"])
-        self.assertTrue(successor.is_owner)
+        self.events.window = "recovery"
+        recovered = self.store.recover(recovery_body)
+
+        self.assertEqual(recovered["user"]["id"], claim["user"]["id"])
+        self.assertEqual(recovered["generation"], claim["generation"])
         with db.get_conn() as conn:
             users = conn.execute("SELECT id,name FROM users").fetchall()
-        self.assertEqual([(row["id"], row["name"]) for row in users], [
-            (successor.user_id, "New Owner")
-        ])
+        self.assertEqual(
+            {(row["id"], row["name"]) for row in users},
+            {
+                (claim["user"]["id"], "Owner"),
+                (member["id"], "Member"),
+            },
+        )
 
     def test_reset_product_returns_unclaimed_and_invalidates_old_credential(self):
         claim_body, claimed = self._claim()
