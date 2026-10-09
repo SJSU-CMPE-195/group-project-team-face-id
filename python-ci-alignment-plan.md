@@ -71,11 +71,16 @@ migration, or physical camera/actuator acceptance.
   configuration are unchanged.
 - Targeted existing tests: PASS, 31 security/recovery + 69 API/runtime + 50
   wireless/limits/simulation tests.
-- Full CI unittest command: PASS, 232 tests in 66.240 seconds, no skips.
+- Full CI unittest command after the Linux fixture correction: PASS, 232 tests
+  in 72.521 seconds, no skips.
 - Final `compileall`: PASS. Baseline and final logs are both empty and identical.
 - Combined diff review and `git diff --check`: PASS. Independent reviews found
   no blockers in local-session authority, member log scope, remote control
   rejection, or durable enrollment authorization coverage.
-- GitHub CI for the corrective commit is pending publication. Its result must
-  be checked at that exact commit before reporting remote CI success.
+- GitHub run `38002679632` at `dd37d4a` reduced the Python failure to one Linux
+  environment-isolation error. The host commissioning test patched the SQLite
+  module path but left the entrypoint's `FACEID_DB_PATH` unset, so the process
+  lock tried to create the production `/home/pi/faceid` directory. Its fixture
+  now sets both paths to the same temporary database and restores them afterward.
+  The next corrective commit still requires an exact-commit CI check.
 - Pi/BLE, physical camera/actuator, browser, and deployment acceptance: NOT RUN.
