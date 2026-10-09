@@ -276,6 +276,12 @@ function DeviceScan({ client }) {
         Scan nearby BASS devices, then select the matching Pi. The PC client never
         chooses a discovered device automatically.
       </p>
+      {canForget ? (
+        <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-sm leading-relaxed text-slate-300">
+          Your pairing is saved on this PC. After a connection timeout, scan and
+          reconnect without importing its JSON card again.
+        </div>
+      ) : null}
       {client.status.device ? (
         <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
           <div className="text-xs text-slate-500">Expected Pi</div>
@@ -289,7 +295,11 @@ function DeviceScan({ client }) {
         disabled={client.busy}
         onClick={() => void client.scan().catch(() => {})}
       >
-        {client.busy ? "Scanning…" : "Scan for Pi"}
+        {client.busy
+          ? "Scanning…"
+          : canForget
+            ? "Scan to reconnect"
+            : "Scan for Pi"}
       </Btn>
       {client.devices.length ? (
         <div className="mt-4 space-y-2" aria-label="Discovered BASS devices">
@@ -309,7 +319,9 @@ function DeviceScan({ client }) {
                   Signal {Number.isFinite(device.rssi) ? `${device.rssi} dBm` : "unknown"}
                 </span>
               </span>
-              <span className="text-xs font-semibold text-violet-300">Connect</span>
+              <span className="text-xs font-semibold text-violet-300">
+                {canForget ? "Reconnect" : "Connect"}
+              </span>
             </button>
           ))}
         </div>
@@ -649,7 +661,11 @@ function RecoveryCard({ client }) {
 }
 
 function ClientError({ client, message = "", fallback = "" }) {
-  const visible = message || client.error || fallback;
+  const connectionError =
+    typeof client.status?.connection_error?.message === "string"
+      ? client.status.connection_error.message
+      : "";
+  const visible = message || client.error || connectionError || fallback;
   if (!visible) return null;
   return (
     <div

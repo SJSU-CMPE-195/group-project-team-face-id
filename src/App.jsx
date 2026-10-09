@@ -15,6 +15,7 @@ import HardwareSimulatorPanel from "./hardware/HardwareSimulatorPanel.jsx";
 import useHardwareSimulator from "./hardware/useHardwareSimulator.js";
 import { resolveRuntimeCapabilities } from "./utils/actuatorStatus.js";
 import usePcClient from "./pc-client/usePcClient.js";
+import RemotePiPanel from "./components/RemotePiPanel.jsx";
 
 function cameraLabel(status) {
   const source = String(
@@ -150,6 +151,9 @@ export default function App({ onHardwareReset }) {
                 busy={state.busy}
                 onRefresh={actions.refresh}
               /> : null}
+              {pcClient ? (
+                <RemotePiPanel user={user} setTab={state.setTab} />
+              ) : null}
               <div id="panel-status" className="scroll-mt-6 space-y-4">
                 <Overview status={state.status} />
                 <StatusPanel

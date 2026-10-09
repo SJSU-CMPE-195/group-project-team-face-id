@@ -82,10 +82,29 @@ not decode QR images; obtain a new JSON export instead.
 
 ## Dashboard behavior and recovery
 
-Use the existing user, device, log, and Pi-camera enrollment screens. Role
-checks and fresh operation PINs are enforced on the Pi. Vehicle controls remain
-available only on the Pi's local dashboard. Live camera video is not transported
-over BLE; enrollment progress and results are available as JSON.
+Use the PC for the Android app's remote management tasks. The Status page shows
+the signed-in role and links to Users and Logs. Select Users to enroll a face or
+manage an account; the Pi camera captures enrollment samples.
+
+| Signed-in role | Available operations |
+| --- | --- |
+| Member | View device status, the account's face-enrollment status, and permitted logs. |
+| Administrator | Add users, enroll or replace faces, manage face access, issue pairing invitations, and manage permitted paired devices. Owner-protected records remain restricted. |
+| Owner | Administrator operations, the owner's face enrollment and paired devices, and administrator-role assignment. |
+
+Management actions require a fresh PIN for the signed-in account. Pairing a PC
+does not promote that account to administrator. If Users has no management
+buttons, check the displayed role and ask the owner to review the account's
+permissions. Vehicle controls remain available only on the Pi's local dashboard.
+Live camera video is not transported over BLE; enrollment progress and results
+are available as JSON.
+
+The saved pairing survives closing the client and restarting Windows. If the
+connection drops, scan and reconnect to the saved Pi; a timeout does not require
+another invitation or Forget pairing. Connection errors identify whether the
+failure occurred while connecting Bluetooth, verifying the Pi, or authenticating
+the saved pairing. A completed pairing stays saved if its next connection check
+fails. A confirmed revoked credential requires a new invitation.
 
 Only one API operation runs at a time on this PC connection. A pending PIN
 approval is kept briefly in memory; the bridge requests the real Pi grant

@@ -560,8 +560,8 @@ def _load_bleak() -> tuple[type[Any], type[Any]]:
 
 async def _best_effort_disconnect(client: Any) -> None:
     try:
-        if getattr(client, "is_connected", False):
-            await asyncio.wait_for(client.disconnect(), timeout=CLOSE_TIMEOUT_SECONDS)
+        # Bleak still releases cached GATT objects after WinRT reports disconnected.
+        await asyncio.wait_for(client.disconnect(), timeout=CLOSE_TIMEOUT_SECONDS)
     except (Exception, asyncio.CancelledError):
         pass
 

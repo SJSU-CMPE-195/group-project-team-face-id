@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from contextlib import contextmanager
 from copy import deepcopy
 import ctypes
@@ -23,7 +24,12 @@ from .ble_client import (
     BleRequestQueueFullError,
     DiscoveredDevice,
 )
-from .ble_http import JsonRequest, PinnedIdentity, PinnedIdentityError
+from .ble_http import (
+    CommittedResponse,
+    JsonRequest,
+    PinnedIdentity,
+    PinnedIdentityError,
+)
 from .pc_client_cards import parse_card
 from .pc_client_store import PcClientStore
 
@@ -79,6 +85,7 @@ class PcClientController:
         self._closed = False
         self._client: BleApiClient | None = None
         self._connection_epoch = 0
+        self._connection_error: dict[str, str] | None = None
         self._connected_name = ""
         self._staged_card: dict[str, object] | None = None
         self._candidates: dict[str, DiscoveredDevice] = {}
@@ -148,6 +155,12 @@ class PcClientController:
             pending = deepcopy(self._state["pending_commission"])
             recovery_available = self._state["recovery_card"] is not None
             connected = self._client is not None and self._client.is_reusable
+            if (
+                self._client is not None
+                and not connected
+                and self._connection_error is None
+            ):
+                self._connection_error = self._lost_connection_error()
             dependency_error = self._dependency_error()
             if self._state_error:
                 dependency_error = self._state_error
@@ -199,6 +212,7 @@ class PcClientController:
                 "phase": phase,
                 "configured": paired is not None,
                 "connected": connected,
+                "connection_error": deepcopy(self._connection_error),
                 "dependency": {
                     "ready": dependency_error is None,
                     "error": dependency_error,
@@ -303,6 +317,16 @@ class PcClientController:
     def scan(self) -> dict[str, object]:
         self._require_available()
         with self._transport_lock:
+            with self._state_lock:
+                current_client = self._client
+            if current_client is not None and not current_client.is_reusable:
+                stale_client = self._take_client()
+                self._remember_connection_error()
+                if stale_client is not None:
+                    try:
+                        self._submit(stale_client.close())
+                    except Exception:
+                        pass
             try:
                 discovered = self._submit(BleApiClient.discover())
             except Exception as exc:
@@ -349,12 +373,15 @@ class PcClientController:
                 except Exception:
                     pass
             new_client: BleApiClient | None = None
+            stage = "Bluetooth GATT connection"
             try:
                 new_client = self._submit(BleApiClient.connect(candidate, identity))
+                stage = "Pi host verification"
                 self._submit(new_client.bootstrap())
                 with self._state_lock:
                     paired = deepcopy(self._state["paired"])
                 if isinstance(paired, dict):
+                    stage = "Saved pairing authentication"
                     authenticated = self._submit(
                         new_client.authenticate(str(paired["device_token"]))
                     )
@@ -366,10 +393,13 @@ class PcClientController:
                         self._submit(new_client.close())
                     except Exception:
                         pass
-                raise self._transport_error(exc, "BLE connection failed") from exc
+                error = self._staged_transport_error(exc, stage)
+                self._remember_connection_error(error)
+                raise error from exc
             with self._state_lock:
                 self._client = new_client
                 self._connection_epoch += 1
+                self._connection_error = None
                 self._connected_name = candidate.name
         current = self.status()
         return {
@@ -390,6 +420,7 @@ class PcClientController:
                     pass
             with self._state_lock:
                 self._connection_epoch += 1
+                self._connection_error = None
         return {"ok": True, "phase": self.status()["phase"]}
 
     @_serialized_setup
@@ -475,9 +506,10 @@ class PcClientController:
             try:
                 response = self._submit(client.session_login(validated_pin))
             except Exception as exc:
-                self._drop_unusable_client(client)
-                raise self._transport_error(exc, "Sign-in over BLE failed") from exc
-        self._drop_unusable_client(client)
+                error = self._transport_error(exc, "Sign-in over BLE failed")
+                self._drop_unusable_client(client, error=error)
+                raise error from exc
+        self._drop_after_response(client, response)
         payload = self._response_object(response)
         if response.status == 200:
             self._refresh_paired_user(payload)
@@ -539,12 +571,13 @@ class PcClientController:
                             )
                         )
                 except Exception as exc:
-                    self._drop_unusable_client(client)
-                    raise self._transport_error(
+                    error = self._transport_error(
                         exc,
                         "Pi request over BLE failed",
-                    ) from exc
-        self._drop_unusable_client(client)
+                    )
+                    self._drop_unusable_client(client, error=error)
+                    raise error from exc
+        self._drop_after_response(client, response)
         return response
 
     def recovery_card(self) -> dict[str, object]:
@@ -625,9 +658,10 @@ class PcClientController:
                     )
                 )
         except Exception as exc:
-            self._drop_unusable_client(client)
+            error = self._transport_error(exc, "Commissioning over BLE failed")
+            self._drop_unusable_client(client, error=error)
             raise CommissionOutcomeUnknown() from exc
-        self._drop_unusable_client(client)
+        self._drop_after_response(client, response)
         try:
             payload = self._response_object(response)
         except PcClientError as exc:
@@ -651,6 +685,8 @@ class PcClientController:
         return {
             "ok": True,
             "completed": True,
+            "connected": current["connected"],
+            "connection_error": current["connection_error"],
             "user": current["user"],
             "recovery_download_available": current[
                 "recovery_download_available"
@@ -741,8 +777,17 @@ class PcClientController:
                     )
                 self._validate_authenticated_identity(authenticated, paired)
                 self._refresh_paired_user(authenticated)
-            except Exception:
-                self._drop_unusable_client(client_if_reusable, force=True)
+                self._clear_connection_error()
+            except Exception as exc:
+                error = self._staged_transport_error(
+                    exc,
+                    "Paired credential authentication",
+                )
+                self._drop_unusable_client(
+                    client_if_reusable,
+                    force=True,
+                    error=error,
+                )
 
     @staticmethod
     def _new_commission_body(
@@ -820,6 +865,7 @@ class PcClientController:
         client: BleApiClient,
         *,
         force: bool = False,
+        error: PcClientError | None = None,
     ) -> None:
         if not force and client.is_reusable:
             return
@@ -827,6 +873,10 @@ class PcClientController:
             if self._client is client:
                 self._client = None
                 self._connection_epoch += 1
+                if error is not None:
+                    self._connection_error = self._error_payload(error)
+                elif self._connection_error is None:
+                    self._connection_error = self._lost_connection_error()
                 self._connected_name = ""
         try:
             self._submit(client.close())
@@ -840,8 +890,11 @@ class PcClientController:
         future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
         try:
             return future.result(timeout=CONTROLLER_TIMEOUT_SECONDS)
-        except TimeoutError:
-            future.cancel()
+        except concurrent.futures.TimeoutError:
+            if future.done():
+                return future.result()
+            if not future.cancel() and future.done():
+                return future.result()
             raise PcClientError(
                 "ble_timeout", 504, "The Bluetooth operation timed out."
             ) from None
@@ -1004,10 +1057,71 @@ class PcClientController:
                     return PcClientError(code, exc.response.status, message)
             return PcClientError("pi_request_failed", 502, str(exc))
         if isinstance(exc, TimeoutError):
-            return PcClientError("ble_timeout", 504, fallback)
+            return PcClientError("ble_timeout", 504, str(exc) or fallback)
         if isinstance(exc, BleClientError):
             return PcClientError("ble_transport_error", 502, str(exc))
         return PcClientError("ble_transport_error", 502, fallback)
+
+    @classmethod
+    def _staged_transport_error(
+        cls,
+        exc: Exception,
+        stage: str,
+    ) -> PcClientError:
+        fallback = (
+            "The Bluetooth operation timed out."
+            if isinstance(exc, TimeoutError)
+            else "Bluetooth operation failed."
+        )
+        error = cls._transport_error(exc, fallback)
+        return PcClientError(
+            error.code,
+            error.status,
+            f"{stage} failed: {error}",
+        )
+
+    def _drop_after_response(
+        self,
+        client: BleApiClient,
+        response: CommittedResponse,
+    ) -> None:
+        error = None
+        if not response.transport_reusable:
+            detail = response.teardown_error or "Bluetooth transport teardown failed."
+            error = PcClientError(
+                "ble_transport_error",
+                502,
+                "The Pi response completed, but the Bluetooth connection could "
+                f"not be reused: {detail}",
+            )
+        self._drop_unusable_client(
+            client,
+            force=not response.transport_reusable,
+            error=error,
+        )
+
+    def _remember_connection_error(self, error: PcClientError | None = None) -> None:
+        with self._state_lock:
+            if error is not None:
+                self._connection_error = self._error_payload(error)
+            elif self._connection_error is None:
+                self._connection_error = self._lost_connection_error()
+
+    def _clear_connection_error(self) -> None:
+        with self._state_lock:
+            self._connection_error = None
+
+    @staticmethod
+    def _error_payload(error: PcClientError) -> dict[str, str]:
+        return {"code": error.code, "message": str(error)}
+
+    @staticmethod
+    def _lost_connection_error() -> dict[str, str]:
+        return {
+            "code": "ble_disconnected",
+            "message": "The Bluetooth connection was lost. Scan and reconnect "
+            "to the saved Pi.",
+        }
 
     @classmethod
     def _normalize_state(cls, value: object) -> dict[str, object]:

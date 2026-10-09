@@ -44,7 +44,16 @@ export default function PcClientProvider({ children }) {
     if (typeof payload?.csrf_token === "string") {
       csrfRef.current = payload.csrf_token;
     }
+    const connectionError = payload?.connection_error;
     setStatus(payload);
+    setError(
+      typeof connectionError?.message === "string"
+        ? connectionError.message
+        : "",
+    );
+    setErrorCode(
+      typeof connectionError?.code === "string" ? connectionError.code : "",
+    );
     return payload;
   }, []);
 
@@ -67,31 +76,30 @@ export default function PcClientProvider({ children }) {
 
   const refresh = useCallback(async () => {
     const requestId = ++statusRequestRef.current;
-    const response = await fetch(`${CLIENT_ROOT}/status`, {
-      cache: "no-store",
-      credentials: "same-origin",
-      redirect: "error",
-    });
-    const payload = await parseJsonResponse(response);
-    if (requestId !== statusRequestRef.current) return payload;
-    applyStatus(payload);
-    if (mountedRef.current) {
-      setError("");
-      setErrorCode("");
+    try {
+      const response = await fetch(`${CLIENT_ROOT}/status`, {
+        cache: "no-store",
+        credentials: "same-origin",
+        redirect: "error",
+      });
+      const payload = await parseJsonResponse(response);
+      if (requestId !== statusRequestRef.current) return payload;
+      applyStatus(payload);
+      return payload;
+    } catch (requestError) {
+      if (requestId === statusRequestRef.current && mountedRef.current) {
+        setError(requestError.message);
+        setErrorCode(requestError.code || "");
+      }
+      throw requestError;
     }
-    return payload;
   }, [applyStatus]);
 
   useEffect(() => {
     mountedRef.current = true;
     setLoading(true);
     void refresh()
-      .then(() => {
-        if (mountedRef.current) setError("");
-      })
-      .catch((requestError) => {
-        if (mountedRef.current) setError(requestError.message);
-      })
+      .catch(() => {})
       .finally(() => {
         if (mountedRef.current) setLoading(false);
       });
