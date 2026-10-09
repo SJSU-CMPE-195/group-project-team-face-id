@@ -41,7 +41,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("pc", "pi"), default=default_mode)
     parser.add_argument(
         "--hardware-simulator", action="store_true",
-        help="PC only: enable local developer button, power and reset controls",
+        help="PC only: local developer controls (already enabled by default)",
     )
     parser.add_argument("--host", default=os.environ.get("BASS_HOST", "0.0.0.0"))
     parser.add_argument(
@@ -97,15 +97,18 @@ def _requested_addresses(arguments: argparse.Namespace) -> tuple[str, ...]:
     return tuple(arguments.advertise_address or environment_addresses)
 
 
+def _database_path(mode: str) -> Path:
+    default_path = (
+        REPO_ROOT / ".cache" / "mock_faceid.db"
+        if mode == "pc"
+        else Path("/home/pi/faceid/faceid.db")
+    )
+    return Path(os.environ.get("FACEID_DB_PATH", default_path)).expanduser().resolve()
+
+
 def _prepare_database(mode: str) -> Path:
-    if "FACEID_DB_PATH" not in os.environ:
-        default_path = (
-            REPO_ROOT / ".cache" / "mock_faceid.db"
-            if mode == "pc"
-            else Path("/home/pi/faceid/faceid.db")
-        )
-        os.environ["FACEID_DB_PATH"] = str(default_path.resolve())
-    database_path = Path(os.environ["FACEID_DB_PATH"]).expanduser().resolve()
+    database_path = _database_path(mode)
+    os.environ["FACEID_DB_PATH"] = str(database_path)
     from wireless.developer_reset import protect_private_file, write_private_file
 
     if not database_path.exists():
@@ -142,16 +145,27 @@ def _show_qr(config_path: Path, config, output_dir: Path | None) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
+    if arguments.validate_config or arguments.validate_transfer_config:
+        return _run(arguments)
+    from wireless.host_lock import database_process_lock
+
+    with database_process_lock(_database_path(arguments.mode)):
+        return _run(arguments)
+
+
+def _run(arguments: argparse.Namespace) -> int:
     if arguments.hardware_simulator and arguments.mode != "pc":
         raise ValueError("Hardware simulation requires explicit PC development mode.")
-    if arguments.hardware_simulator and any((
+    offline_command = any((
         arguments.migrate_security_only,
         arguments.rotate_tls_authorization_only,
         arguments.provision_only,
         arguments.validate_config,
         arguments.validate_transfer_config,
-    )):
+    ))
+    if arguments.hardware_simulator and offline_command:
         raise ValueError("Hardware simulation cannot be combined with offline commands.")
+    arguments.hardware_simulator = arguments.mode == "pc" and not offline_command
     offline_security = arguments.migrate_security_only or arguments.rotate_tls_authorization_only
     if offline_security:
         database_argument = os.environ.get("FACEID_DB_PATH")
@@ -172,8 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     config_path = arguments.config.expanduser().resolve()
     from wireless.developer_reset import assert_reset_complete
 
-    if not arguments.hardware_simulator:
-        assert_reset_complete(config_path)
+    assert_reset_complete(config_path)
     config = load_or_create_device_config(config_path)
     tls_identity = load_or_create_tls_identity(config_path, config.device_id)
     config = replace(config, tls_certificate_sha256=tls_identity.certificate_sha256)
@@ -216,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         from wireless.commissioning import CommissioningStore
 
         CommissioningStore(security, config, None).ensure_schema()
+        security.validate_role_state()
         print(f"Authorization state prepared at {database_path}; no device was started.")
         if arguments.rotate_tls_authorization_only:
             print("All device credentials are revoked. Sign in locally and issue new pairing invitations.")
@@ -262,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
             commissioning=lifecycle.commissioning,
             events=lifecycle.events,
             developer_control=lifecycle.developer_control,
-            transfer_handler=lifecycle.accept_transfer,
+            transfer_handler=None,
             recovery_handler=lifecycle.recover_owner,
         )
         requested_addresses = _requested_addresses(arguments)

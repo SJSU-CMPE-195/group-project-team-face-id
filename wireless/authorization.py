@@ -7,21 +7,25 @@ from flask import g, request
 from pi_device_api import json_object
 from .qr_export import render_qr_payload
 from .security import SecurityError
+from .security_credentials import LOCAL_CONTROL_ACTIONS
 
 
-_ADMIN_ENDPOINTS = {"api_logs", "api_add_user", "api_delete_user", "api_set_access",
+_ADMIN_ENDPOINTS = {"api_add_user", "api_delete_user", "api_set_access",
                     "api_settings", "api_enroll_start", "pairing_invite", "device_list",
-                    "device_revoke", "user_pin"}
+                    "device_revoke", "user_pin", "user_role"}
 _ACTIONS = {
     "api_add_user": "user.create", "api_delete_user": "user.delete",
     "api_set_access": "user.access", "api_settings": "settings.update",
     "api_lock": "device.lock", "api_ignition_stop": "ignition.stop",
     "api_full_reset": "device.reset", "pairing_invite": "pairing.invite",
     "device_revoke": "device.revoke", "user_pin": "user.pin",
+    "user_role": "user.role",
+}
+_LOCAL_CONTROL_ENDPOINTS = {
+    "api_scan_start", "api_lock", "api_ignition_stop", "api_full_reset",
 }
 _SESSION_ENDPOINTS = {
     "api_scan_status", "api_scan_cancel", "api_enroll_status", "api_enroll_cancel",
-    "api_enroll_sample", "api_enroll_finish",
 }
 _CAMERA_ENDPOINTS = {"api_camera_frame", "api_camera_stream"}
 
@@ -33,11 +37,23 @@ def authorize_request(security, runtime, db_module):
         raise SecurityError("admin_required", 403, "Administrator permission is required.")
     if endpoint == "api_unlock":
         raise SecurityError("route_retired", 410, "Use a PIN-authorized host camera scan.")
+    if endpoint in {"api_enroll_sample", "api_enroll_finish"}:
+        raise SecurityError(
+            "route_retired",
+            410,
+            "Face enrollment uses the host camera.",
+        )
+    if endpoint in _LOCAL_CONTROL_ENDPOINTS and not getattr(
+        g, "local_controls", False
+    ):
+        raise SecurityError(
+            "local_controls_required",
+            403,
+            "Vehicle controls are available only on the host dashboard.",
+        )
     if endpoint in _SESSION_ENDPOINTS or endpoint in _CAMERA_ENDPOINTS:
         if request.method == "GET":
             body = request.args
-        elif endpoint == "api_enroll_sample":
-            body = request.form
         else:
             body = json_object()
         session_id = body.get("session_id") or body.get("sessionId")
@@ -102,6 +118,15 @@ def register_security_routes(app, security, config):
     @app.post("/api/operation-grants")
     def operation_grant():
         body = json_object()
+        if (
+            body.get("action") in LOCAL_CONTROL_ACTIONS
+            and not getattr(g, "local_controls", False)
+        ):
+            raise SecurityError(
+                "local_controls_required",
+                403,
+                "Vehicle controls are available only on the host dashboard.",
+            )
         return jsonify(security.authorize(g.principal, body.get("pin"), body.get("action"),
                                           body.get("target_user_id")))
 
@@ -137,3 +162,12 @@ def register_security_routes(app, security, config):
     def user_pin(user_id):
         security.set_pin(g.principal, user_id, json_object().get("pin"))
         return jsonify({"ok": True})
+
+    @app.patch("/api/users/<user_id>/role")
+    def user_role(user_id):
+        user = security.set_role(
+            g.principal,
+            user_id,
+            json_object().get("is_admin"),
+        )
+        return jsonify({"user": user})

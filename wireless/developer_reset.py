@@ -53,8 +53,9 @@ def assert_reset_complete(
         raise RuntimeError("developer reset journal is invalid")
     if journal.get("maintenance") or journal.get("active") is not None:
         raise RuntimeError(
-            "A developer reset is incomplete. Restart on this PC with "
-            "--hardware-simulator to recover it before normal operation."
+            "A developer reset is incomplete. Stop the host and resume "
+            "scripts/factory-owner-qr.py reset with the same request ID "
+            "before normal operation."
         )
 
 
@@ -167,6 +168,13 @@ class DeveloperReset:
             )
 
         with self._events.lifecycle_lock, self._lock:
+            active = self._journal.get("active")
+            if active is not None and active.get("request_id") != request_id:
+                raise SecurityError(
+                    "maintenance",
+                    503,
+                    "a developer reset requires recovery before another reset",
+                )
             existing = self._journal["receipts"].get(request_id)
             if existing is not None:
                 return dict(existing)
@@ -174,13 +182,6 @@ class DeveloperReset:
             if database_receipt is not None:
                 return self._recover_database_receipt(
                     request_id, database_receipt
-                )
-            active = self._journal.get("active")
-            if active is not None and active.get("request_id") != request_id:
-                raise SecurityError(
-                    "maintenance",
-                    503,
-                    "a developer reset requires recovery before another reset",
                 )
             if active is None:
                 with self._security.synchronized():
@@ -354,64 +355,13 @@ class DeveloperReset:
     def _create_backup(
         self, source: sqlite3.Connection, request_id: str
     ) -> Path:
-        backup_root = self._state_dir / "backups" / "developer-reset"
-        make_private_directory(backup_root)
-        backup_directory = backup_root / (
-            f"{int(self._clock())}-{request_id}-{secrets.token_hex(4)}"
+        return create_product_backup(
+            source,
+            self._state_dir,
+            self._backup_sources,
+            request_id,
+            clock=self._clock,
         )
-        make_private_directory(backup_directory)
-        database_path = backup_directory / "faceid.db"
-        destination = sqlite3.connect(database_path)
-        try:
-            source.backup(destination)
-            destination.commit()
-        finally:
-            destination.close()
-        _make_private_file(database_path)
-
-        database_entry = self._manifest_entry(database_path)
-        database_entry["source"] = "product_database"
-        copied: list[dict[str, Any]] = [database_entry]
-        for source_path in self._backup_sources:
-            if source_path.is_symlink() or not source_path.is_file():
-                raise RuntimeError(
-                    f"required backup source is unavailable: {source_path}"
-                )
-            destination_path = backup_directory / source_path.name
-            if destination_path.exists():
-                raise RuntimeError(
-                    f"backup source names must be unique: {source_path.name}"
-                )
-            _copy_private_file(source_path, destination_path)
-            entry = self._manifest_entry(destination_path)
-            entry["source"] = str(source_path)
-            copied.append(entry)
-
-        manifest = {
-            "version": 1,
-            "request_id": request_id,
-            "created_at": int(self._clock()),
-            "files": copied,
-        }
-        write_private_file(
-            backup_directory / "manifest.json",
-            (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(
-                "utf-8"
-            ),
-        )
-        return backup_directory
-
-    @staticmethod
-    def _manifest_entry(path: Path) -> dict[str, Any]:
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return {
-            "name": path.name,
-            "sha256": digest.hexdigest(),
-            "size": path.stat().st_size,
-        }
 
     def _current_generation(self) -> int:
         value = self._generation_provider()
@@ -505,6 +455,83 @@ class DeveloperReset:
         if not isinstance(request_id, str) or not isinstance(phase, str):
             return None
         return {"request_id": request_id, "phase": phase}
+
+
+def create_product_backup(
+    source: sqlite3.Connection,
+    state_dir: Path,
+    backup_sources: Iterable[Path],
+    request_id: str,
+    *,
+    clock: Callable[[], float] = time.time,
+) -> Path:
+    """Back up and verify the database and its matching private identities."""
+    backup_root = Path(state_dir) / "backups" / "developer-reset"
+    make_private_directory(backup_root)
+    backup_directory = backup_root / (
+        f"{int(clock())}-{request_id}-{secrets.token_hex(4)}"
+    )
+    make_private_directory(backup_directory)
+    database_path = backup_directory / "faceid.db"
+    destination = sqlite3.connect(database_path)
+    try:
+        source.backup(destination)
+        destination.commit()
+        if destination.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+            raise RuntimeError("The database backup failed its integrity check.")
+    finally:
+        destination.close()
+    _make_private_file(database_path)
+    database_entry = _manifest_entry(database_path)
+    database_entry["source"] = "product_database"
+    copied: list[dict[str, Any]] = [database_entry]
+    for source_path in backup_sources:
+        if source_path.is_symlink() or not source_path.is_file():
+            raise RuntimeError(
+                f"required backup source is unavailable: {source_path}"
+            )
+        destination_path = backup_directory / source_path.name
+        if destination_path.exists():
+            raise RuntimeError(
+                f"backup source names must be unique: {source_path.name}"
+            )
+        _copy_private_file(source_path, destination_path)
+        entry = _manifest_entry(destination_path)
+        if entry != _manifest_entry(source_path):
+            raise RuntimeError(f"backup source changed: {source_path.name}")
+        entry["source"] = str(source_path)
+        copied.append(entry)
+    manifest = {
+        "version": 1,
+        "request_id": request_id,
+        "created_at": int(clock()),
+        "files": copied,
+    }
+    manifest_path = backup_directory / "manifest.json"
+    write_private_file(
+        manifest_path,
+        (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
+    saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if saved != manifest:
+        raise RuntimeError("The backup manifest did not persist correctly.")
+    for entry in saved["files"]:
+        current = _manifest_entry(backup_directory / entry["name"])
+        if any(current[key] != entry[key] for key in current):
+            raise RuntimeError(f"backup verification failed: {entry['name']}")
+    return backup_directory
+
+
+def _manifest_entry(path: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "name": path.name,
+        "sha256": digest.hexdigest(),
+        "size": path.stat().st_size,
+    }
 
 
 def _canonical_uuid(value: str) -> str:

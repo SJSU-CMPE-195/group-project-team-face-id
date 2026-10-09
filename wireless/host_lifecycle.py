@@ -21,6 +21,7 @@ class HostLifecycle:
         )
         self.commissioning = CommissioningStore(security, config, self.events)
         self.commissioning.ensure_schema()
+        security.validate_role_state()
         self.developer_control = None
         self._pending_ownership_change = None
 
@@ -47,13 +48,6 @@ class HostLifecycle:
             port=port,
         )
 
-    def accept_transfer(self, body):
-        return self._complete_ownership_change(
-            "ownership_transfer", body,
-            self.commissioning.validate_transfer_accept,
-            self.commissioning.accept_transfer,
-        )
-
     def recover_owner(self, body):
         return self._complete_ownership_change(
             "owner_recovery", body,
@@ -64,7 +58,7 @@ class HostLifecycle:
     def _complete_ownership_change(self, kind, body, validate, commit):
         """Validate proof, drain old work, commit once, and resume exact retries."""
         with self.events.lifecycle_lock:
-            pending = self.commissioning.ownership_request_digest(kind, body)
+            pending = self.commissioning.recovery_request_digest(body)
             if self._pending_ownership_change is not None:
                 if pending != self._pending_ownership_change:
                     raise SecurityError(

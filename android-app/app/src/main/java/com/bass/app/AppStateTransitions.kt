@@ -9,7 +9,7 @@ internal data class DeviceSnapshot(
     val status: JSONObject,
     val faces: FaceStatus,
     val users: List<User>,
-    val settings: AppSettings,
+    val pairedDevices: List<PairedDevice>,
     val logs: List<LogEntry>,
 )
 
@@ -104,12 +104,13 @@ internal fun BassState.withConnectedDevice(connected: ConnectedDevice): BassStat
             ),
         capabilities =
             Capabilities(
-                clientCamera = json.optBoolean("client_camera"),
                 deviceCamera =
                     json.optBoolean(
                         "device_camera",
                         json.optBoolean("pi_camera"),
                     ),
+                cameraSource = json.optString("camera_source", "unknown"),
+                localControls = json.optBoolean("local_controls", false),
                 simulatedActuator = simulated,
                 livenessAvailable = json.optBoolean("liveness_available"),
                 actuatorControlAvailable =
@@ -136,31 +137,24 @@ internal suspend fun DeviceApi.readSnapshot(
         status = status,
         faces = faces,
         users = array("/api/users").users(faces.enrolledNames),
-        settings = json("/api/settings").settings(),
-        logs = if (identity.user.isAdmin) array("/api/logs").logs() else emptyList(),
+        pairedDevices =
+            if (identity.user.isAdmin) array("/api/devices").devices() else emptyList(),
+        logs = array("/api/logs").logs(),
     )
 }
 
-internal fun BassState.withSnapshot(
-    snapshot: DeviceSnapshot,
-    keepEditedSettings: Boolean,
-): BassState {
+internal fun BassState.withSnapshot(snapshot: DeviceSnapshot): BassState {
     val runtime = snapshot.status.optJSONObject("runtime")
     val owner = runtime?.optString("unlock_owner")?.takeIf { it.isNotBlank() && it != "null" }
     return copy(
         status = snapshot.status.deviceStatus(capabilities),
         users = snapshot.users,
+        pairedDevices = snapshot.pairedDevices,
         faceStatus = snapshot.faces,
         logs = snapshot.logs,
-        settings = if (keepEditedSettings) settings else snapshot.settings,
         unlockOwner = owner,
         identity = snapshot.identity,
-        selectedTab =
-            if (!snapshot.identity.user.isAdmin && selectedTab == Tab.LOGS) {
-                Tab.CONSOLE
-            } else {
-                selectedTab
-            },
+        inviteMaterial = inviteMaterial.takeIf { snapshot.identity.user.isAdmin },
     )
 }
 

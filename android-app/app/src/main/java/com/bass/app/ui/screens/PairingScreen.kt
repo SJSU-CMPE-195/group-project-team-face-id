@@ -102,12 +102,6 @@ fun PairingScreen(
             style = MaterialTheme.typography.displaySmall,
             fontWeight = FontWeight.Black,
         )
-        Text(
-            text = stringResource(R.string.app_tagline),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall,
-            textAlign = TextAlign.Center,
-        )
         Spacer(Modifier.height(28.dp))
 
         BassCard {
@@ -127,19 +121,6 @@ fun PairingScreen(
                         ),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    text =
-                        stringResource(
-                            if (state.phase == ConnectionPhase.SIGN_IN_REQUIRED) {
-                                R.string.sign_in_description
-                            } else {
-                                R.string.pair_description
-                            }
-                        ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                 )
                 StatusChip(
@@ -189,14 +170,8 @@ fun PairingScreen(
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(34.dp))
-                    Text(
-                        text = phaseDescription(state.phase),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                    )
                 }
             } else {
                 val message = when {
@@ -323,9 +298,10 @@ private fun phaseTone(phase: ConnectionPhase): ChipTone = when (phase) {
 
 @Composable
 private fun phaseDescription(phase: ConnectionPhase): String = when (phase) {
-    ConnectionPhase.UNPAIRED -> stringResource(R.string.pair_camera_permission)
-    ConnectionPhase.DISCOVERING -> stringResource(R.string.pair_searching)
-    ConnectionPhase.CONNECTING -> stringResource(R.string.pair_connecting)
+    ConnectionPhase.UNPAIRED,
+    ConnectionPhase.DISCOVERING,
+    ConnectionPhase.CONNECTING,
+    -> ""
     ConnectionPhase.SIGN_IN_REQUIRED -> stringResource(R.string.sign_in_description)
     ConnectionPhase.CONNECTED -> ""
     ConnectionPhase.UNAUTHORIZED -> stringResource(R.string.pair_unauthorized)

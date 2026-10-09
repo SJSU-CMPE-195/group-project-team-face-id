@@ -55,12 +55,15 @@ def init_db():
             );
 
             CREATE TABLE IF NOT EXISTS auth_logs (
-                id       TEXT PRIMARY KEY,
-                user_id  TEXT REFERENCES users(id),
-                stage    TEXT NOT NULL,
-                result   TEXT NOT NULL,
-                detail   TEXT,
-                ts       INTEGER NOT NULL
+                id            TEXT PRIMARY KEY,
+                user_id       TEXT REFERENCES users(id),
+                actor_user_id TEXT REFERENCES users(id),
+                actor_kind    TEXT NOT NULL DEFAULT 'legacy'
+                    CHECK (actor_kind IN ('user', 'system', 'legacy')),
+                stage         TEXT NOT NULL,
+                result        TEXT NOT NULL,
+                detail        TEXT,
+                ts            INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS settings (
@@ -92,6 +95,14 @@ def init_db():
         # existing users and make the access flag explicit for new queries.
         _ensure_column(conn, "users", "active", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(conn, "users", "face_access", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(conn, "auth_logs", "actor_user_id", "TEXT REFERENCES users(id)")
+        _ensure_column(
+            conn,
+            "auth_logs",
+            "actor_kind",
+            "TEXT NOT NULL DEFAULT 'legacy' "
+            "CHECK (actor_kind IN ('user', 'system', 'legacy'))",
+        )
         _ensure_active_name_index(conn)
 
 if __name__ == "__main__":

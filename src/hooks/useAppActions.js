@@ -5,7 +5,7 @@ import useOperationGrant from "../security/useOperationGrant.js";
 import { resolveRuntimeCapabilities } from "../utils/actuatorStatus.js";
 
 export default function useAppActions(state) {
-  const { user } = useSecurity();
+  const { user, syncUser, expireSession } = useSecurity();
   const { requestGrant } = useOperationGrant();
   const {
     mode,
@@ -21,7 +21,6 @@ export default function useAppActions(state) {
     setDeviceUsers,
     setDeviceLogs,
     setDevices,
-    faceApiUrl,
     sim,
     deviceUsers,
     setSimFaceAccessAllowed,
@@ -29,6 +28,9 @@ export default function useAppActions(state) {
   const simRelockTimerRef = useRef(null);
   const simIgnitionStopTimerRef = useRef(null);
   const deviceIgnitionStopCheckTimerRef = useRef(null);
+  const refreshRequestRef = useRef(0);
+  const refreshRef = useRef(null);
+  const interactiveRefreshRef = useRef(false);
   const { simulatedActuators } = resolveRuntimeCapabilities({
     mode,
     runtime: status?.runtime,
@@ -100,41 +102,100 @@ export default function useAppActions(state) {
 
   const refresh = async (opts = {}) => {
     const silent = !!opts.silent;
-    setBusy(true);
+    if (silent && interactiveRefreshRef.current) return null;
+    const request = refreshRequestRef.current + 1;
+    refreshRequestRef.current = request;
+    if (!silent) {
+      interactiveRefreshRef.current = true;
+      setBusy(true);
+    }
     try {
-      const [remoteStatus, deviceInfo] = await Promise.all([
+      const [remoteStatus, deviceInfo, identity] = await Promise.all([
         api.status(),
         api.deviceInfo(),
+        api.me(),
       ]);
+      if (request !== refreshRequestRef.current) return null;
       const refreshedStatus = {
         ...remoteStatus,
-        capabilities: deviceInfo.capabilities,
+        capabilities: {
+          ...(deviceInfo.capabilities || {}),
+          ...(remoteStatus.capabilities || {}),
+        },
       };
       setStatus(refreshedStatus);
       if (mode === "device") {
+        const refreshedUser = identity.user;
+        if (!refreshedUser?.id || refreshedUser.id !== user.id) {
+          setDeviceUsers([]);
+          setDeviceLogs([]);
+          setDevices([]);
+          expireSession("login");
+          return null;
+        }
+        const isAdmin = !!refreshedUser?.is_admin;
+        const localControls =
+          refreshedStatus.capabilities.local_controls === true;
+        const identityChanged =
+          isAdmin !== !!user.is_admin ||
+          !!refreshedUser?.is_owner !== !!user.is_owner;
+        if (identityChanged) {
+          setDeviceUsers([]);
+          setDeviceLogs([]);
+          setDevices([]);
+        }
         const [users, logs, remoteSettings, devices] = await Promise.all([
           api.users(),
-          user.is_admin ? api.logs() : Promise.resolve([]),
-          api.getSettings(),
-          user.is_admin ? api.devices() : Promise.resolve([]),
+          api.logs(),
+          localControls && isAdmin ? api.getSettings() : Promise.resolve(null),
+          isAdmin ? api.devices() : Promise.resolve([]),
         ]);
+        if (request !== refreshRequestRef.current) return null;
         setDeviceUsers(users);
         setDeviceLogs(logs);
         setDevices(devices);
-        setSettings((prev) => ({ ...prev, ...remoteSettings }));
+        if (remoteSettings) {
+          setSettings((prev) => ({ ...prev, ...remoteSettings }));
+        }
+        syncUser(refreshedUser);
       }
       if (!silent) {
         popToast("ok", "Refreshed", mode === "device" ? `Connected to ${baseUrl}` : "Simulation updated");
       }
       return refreshedStatus;
     } catch (e) {
+      if (request !== refreshRequestRef.current) return null;
+      if (e.status === 401 || e.status === 403) {
+        setDeviceUsers([]);
+        setDeviceLogs([]);
+        setDevices([]);
+        if (e.status === 403) {
+          try {
+            const identity = await api.me();
+            if (request !== refreshRequestRef.current) return null;
+            if (!identity.user?.id || identity.user.id !== user.id) {
+              expireSession("login");
+            } else {
+              syncUser(identity.user);
+            }
+          } catch (identityError) {
+            if (identityError.status === 401) expireSession("login");
+          }
+        }
+        if (!silent) popToast("err", "Access changed", "Your current permissions were refreshed.");
+        return null;
+      }
       setStatus((p) => ({ ...p, online: false }));
       if (!silent) popToast("err", "Connection failed", e.message);
       return null;
     } finally {
-      setBusy(false);
+      if (!silent && request === refreshRequestRef.current) {
+        interactiveRefreshRef.current = false;
+        setBusy(false);
+      }
     }
   };
+  refreshRef.current = refresh;
 
   useEffect(() => {
     if (mode === "device" && !(baseUrl || "").trim()) {
@@ -150,8 +211,28 @@ export default function useAppActions(state) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, baseUrl]);
 
+  useEffect(() => {
+    if (mode !== "device") return undefined;
+    const refreshVisibleSession = () => {
+      if (document.visibilityState === "visible") {
+        void refreshRef.current?.({ silent: true });
+      }
+    };
+    const interval = window.setInterval(refreshVisibleSession, 15_000);
+    window.addEventListener("focus", refreshVisibleSession);
+    document.addEventListener("visibilitychange", refreshVisibleSession);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshVisibleSession);
+      document.removeEventListener("visibilitychange", refreshVisibleSession);
+    };
+  }, [mode]);
+
   useEffect(
     () => () => {
+      refreshRequestRef.current += 1;
+      refreshRef.current = null;
+      interactiveRefreshRef.current = false;
       clearSimRelockTimer();
       clearSimIgnitionStopTimer();
       clearDeviceIgnitionStopCheckTimer();
@@ -184,6 +265,10 @@ export default function useAppActions(state) {
   }, [clearSimIgnitionStopTimer, mode, scheduleSimIgnitionStop, settings?.ignitionAutoStopSeconds, sim.ignitionOn]);
 
   const doLock = async () => {
+    if (mode === "device" && status?.capabilities?.local_controls !== true) {
+      popToast("err", "Local control required", "Open the dashboard on the trusted host computer.");
+      return false;
+    }
     setBusy(true);
     try {
       if (mode === "sim") clearSimRelockTimer();
@@ -242,6 +327,10 @@ export default function useAppActions(state) {
   };
 
   const doIgnitionStop = async () => {
+    if (mode === "device" && status?.capabilities?.local_controls !== true) {
+      popToast("err", "Local control required", "Open the dashboard on the trusted host computer.");
+      return false;
+    }
     setBusy(true);
     try {
       const grant = await requestGrant(
@@ -277,6 +366,10 @@ export default function useAppActions(state) {
   };
 
   const doFullReset = async () => {
+    if (mode === "device" && status?.capabilities?.local_controls !== true) {
+      popToast("err", "Local control required", "Open the dashboard on the trusted host computer.");
+      return false;
+    }
     setBusy(true);
     try {
       const grant = await requestGrant("device.reset", "", "full reset");
@@ -322,8 +415,7 @@ export default function useAppActions(state) {
     }
   };
 
-  /** Register user on device/sim without clearing the name field or toasting (for combined face enroll flow). */
-  const addUserToDirectory = async (displayName, pin, isAdmin = false) => {
+  const addUserToDirectory = async (displayName, pin) => {
     const n = displayName.trim();
     if (!n) throw new Error("Name required");
     if (n.length > 100) throw new Error("Display name must be 100 characters or fewer.");
@@ -332,14 +424,14 @@ export default function useAppActions(state) {
       pin,
     });
     if (!grant) return null;
-    const createdUser = await api.addUser(n, pin, isAdmin, grant, true);
-    const { enrollment_grant: _enrollmentGrant, ...user } = createdUser;
+    const result = await api.addUser(n, pin, grant);
+    const createdUser = result.user || result;
     if (mode === "device") {
-      setDeviceUsers((users) => [...users, user]);
+      setDeviceUsers((users) => [...users, createdUser]);
     } else {
       setSim((previous) => ({
         ...previous,
-        users: [...previous.users, user],
+        users: [...previous.users, createdUser],
       }));
     }
     return createdUser;
@@ -350,7 +442,6 @@ export default function useAppActions(state) {
     const list = mode === "device" ? deviceUsers : sim.users;
     const u = list.find((x) => x.id === id);
     const displayName = (u?.name ?? "").trim();
-    const cleanFace = (faceApiUrl || "").trim().replace(/\/$/, "");
 
     setBusy(true);
     try {
@@ -364,29 +455,6 @@ export default function useAppActions(state) {
           ...previous,
           users: previous.users.filter((user) => user.id !== id),
         }));
-      }
-
-      if (mode === "sim" && cleanFace && displayName) {
-        try {
-          const r = await fetch(`${cleanFace}/api/face/remove`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: displayName }),
-          });
-          if (!r.ok) {
-            popToast(
-              "info",
-              "Face template",
-              `Face API returned HTTP ${r.status}. User will still be removed from the list.`,
-            );
-          }
-        } catch (e) {
-          popToast(
-            "info",
-            "Face template",
-            `${e.message || "Face API unreachable"} — user will still be removed from the list.`,
-          );
-        }
       }
 
       if (mode === "sim" && displayName) {
@@ -413,6 +481,10 @@ export default function useAppActions(state) {
   };
 
   const saveSettings = async () => {
+    if (mode === "device" && status?.capabilities?.local_controls !== true) {
+      popToast("err", "Local settings required", "Open the dashboard on the trusted host computer.");
+      return;
+    }
     setBusy(true);
     try {
       const grant = await requestGrant(

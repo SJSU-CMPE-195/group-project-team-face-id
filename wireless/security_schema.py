@@ -159,6 +159,137 @@ USER_TRIGGER_STATEMENTS = (
     END
     """,
     """
+    CREATE TRIGGER IF NOT EXISTS trg_security_limit_regular_admin_insert
+    BEFORE INSERT ON user_security
+    WHEN NEW.is_admin = 1
+      AND EXISTS (
+          SELECT 1 FROM users WHERE id = NEW.user_id AND active = 1
+      )
+      AND EXISTS (
+          SELECT 1 FROM commissioning_state
+          WHERE id = 1 AND ownership = 'claimed'
+            AND NEW.user_id != owner_user_id
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM user_security AS other_security
+          JOIN users AS other_user ON other_user.id = other_security.user_id
+          JOIN commissioning_state AS state ON state.id = 1
+          WHERE other_security.is_admin = 1
+            AND other_user.active = 1
+            AND other_security.user_id != state.owner_user_id
+            AND other_security.user_id != NEW.user_id
+      )
+    BEGIN
+        SELECT RAISE(ABORT, 'only one regular administrator is allowed');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_security_limit_regular_admin_update
+    BEFORE UPDATE OF is_admin ON user_security
+    WHEN OLD.is_admin != NEW.is_admin
+      AND NEW.is_admin = 1
+      AND EXISTS (
+          SELECT 1 FROM users WHERE id = NEW.user_id AND active = 1
+      )
+      AND EXISTS (
+          SELECT 1 FROM commissioning_state
+          WHERE id = 1 AND ownership = 'claimed'
+            AND NEW.user_id != owner_user_id
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM user_security AS other_security
+          JOIN users AS other_user ON other_user.id = other_security.user_id
+          JOIN commissioning_state AS state ON state.id = 1
+          WHERE other_security.is_admin = 1
+            AND other_user.active = 1
+            AND other_security.user_id != state.owner_user_id
+            AND other_security.user_id != NEW.user_id
+      )
+    BEGIN
+        SELECT RAISE(ABORT, 'only one regular administrator is allowed');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_security_limit_regular_admin_activation
+    BEFORE UPDATE OF active ON users
+    WHEN OLD.active != NEW.active
+      AND NEW.active = 1
+      AND EXISTS (
+          SELECT 1 FROM user_security
+          WHERE user_id = NEW.id AND is_admin = 1
+      )
+      AND EXISTS (
+          SELECT 1 FROM commissioning_state
+          WHERE id = 1 AND ownership = 'claimed'
+            AND NEW.id != owner_user_id
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM user_security AS other_security
+          JOIN users AS other_user ON other_user.id = other_security.user_id
+          JOIN commissioning_state AS state ON state.id = 1
+          WHERE other_security.is_admin = 1
+            AND other_user.active = 1
+            AND other_security.user_id != state.owner_user_id
+            AND other_security.user_id != NEW.id
+      )
+    BEGIN
+        SELECT RAISE(ABORT, 'only one regular administrator is allowed');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_security_validate_claimed_role_update
+    BEFORE UPDATE OF ownership, owner_user_id ON commissioning_state
+    WHEN NEW.ownership = 'claimed'
+    BEGIN
+        SELECT CASE WHEN NOT EXISTS (
+            SELECT 1
+            FROM users AS owner_user
+            JOIN user_security AS owner_security
+              ON owner_security.user_id = owner_user.id
+            WHERE owner_user.id = NEW.owner_user_id
+              AND owner_user.active = 1
+              AND owner_security.is_admin = 1
+        ) THEN RAISE(ABORT, 'claimed owner must be an active administrator') END;
+        SELECT CASE WHEN (
+            SELECT COUNT(*)
+            FROM users AS regular_user
+            JOIN user_security AS regular_security
+              ON regular_security.user_id = regular_user.id
+            WHERE regular_user.active = 1
+              AND regular_security.is_admin = 1
+              AND regular_user.id != NEW.owner_user_id
+        ) > 1 THEN RAISE(ABORT, 'only one regular administrator is allowed') END;
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_security_validate_claimed_role_insert
+    BEFORE INSERT ON commissioning_state
+    WHEN NEW.ownership = 'claimed'
+    BEGIN
+        SELECT CASE WHEN NOT EXISTS (
+            SELECT 1
+            FROM users AS owner_user
+            JOIN user_security AS owner_security
+              ON owner_security.user_id = owner_user.id
+            WHERE owner_user.id = NEW.owner_user_id
+              AND owner_user.active = 1
+              AND owner_security.is_admin = 1
+        ) THEN RAISE(ABORT, 'claimed owner must be an active administrator') END;
+        SELECT CASE WHEN (
+            SELECT COUNT(*)
+            FROM users AS regular_user
+            JOIN user_security AS regular_security
+              ON regular_security.user_id = regular_user.id
+            WHERE regular_user.active = 1
+              AND regular_security.is_admin = 1
+              AND regular_user.id != NEW.owner_user_id
+        ) > 1 THEN RAISE(ABORT, 'only one regular administrator is allowed') END;
+    END
+    """,
+    """
     CREATE TRIGGER IF NOT EXISTS trg_security_keep_last_admin_active
     BEFORE UPDATE OF active ON users
     WHEN OLD.active = 1 AND NEW.active = 0
@@ -291,6 +422,11 @@ USER_TRIGGER_STATEMENTS = (
 USER_TRIGGER_NAMES = frozenset(
     {
         "trg_security_user_identity_changed",
+        "trg_security_limit_regular_admin_insert",
+        "trg_security_limit_regular_admin_update",
+        "trg_security_limit_regular_admin_activation",
+        "trg_security_validate_claimed_role_update",
+        "trg_security_validate_claimed_role_insert",
         "trg_security_keep_last_admin_active",
         "trg_security_keep_last_admin_user",
         "trg_security_keep_last_admin_role",

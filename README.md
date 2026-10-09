@@ -23,9 +23,9 @@ different camera for unlocking.
 The Biometric Automobile Security System (B.A.S.S.) is a vehicle access control
 prototype that uses facial recognition for authentication. A Raspberry Pi or PC
 camera performs identity verification against a local database. PC lock and
-ignition behavior is simulated. Real Pi motor and ignition output is currently
-blocked until command acknowledgement and physical-position feedback are
-implemented.
+ignition behavior is simulated. Pi prototype mode sends real motor and ignition
+commands to the ESP32. Serial delivery does not confirm motor movement or
+physical lock position.
 
 This repository contains two main pieces: a **React dashboard** for controlling and monitoring the system (`src/`), and a **Python facial-recognition PoC** that runs on a Raspberry Pi (or a dev PC) inside `car_face_auth/`.
 
@@ -74,28 +74,29 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 For PC webcam operation, also start `scripts/start-wireless.cmd`. The local
 development dashboard connects to this authenticated host by default. Enroll a
-face, then start Unlock from either the dashboard or the paired Android app.
+face, then start Unlock from the local dashboard.
 The PC captures its webcam and unlocks only after a successful match. Its
 actuator output remains simulated. See [host setup](docs/android-wireless.md).
 
 Sign in to the host dashboard as an administrator and keep its Control tab open
-to see the camera view when Android starts a scan. Regular users can preview
-only sessions started on their own device. See [watch a phone-triggered scan](docs/android-wireless.md#watch-a-phone-triggered-scan-on-the-host).
+to see the camera view when Android starts host-camera enrollment. Regular users can preview
+only sessions started on their own device. See [watch phone-triggered enrollment](docs/android-wireless.md#watch-phone-triggered-enrollment-on-the-host).
 
 ### Hardware Simulator tab on the current PC host
 
-Build with `npm run build`, then start the existing launcher with
-`scripts/start-wireless.cmd -HardwareSimulator`. Open the normal dashboard at
+Build with `npm run build`, then start `scripts/start-wireless.cmd`.
+PC mode enables the hardware simulator by default. Open the normal dashboard at
 `http://localhost:5057` and select **Hardware** in its sidebar. Buttons appear
 in the same dashboard before and after product login; other product tabs still
 require sign-in.
 
-Explicit PC development mode trusts direct localhost dashboard clients. A local
+PC development mode trusts direct localhost dashboard clients. A local
 cookie and CSRF token are created and renewed in the background. The operator
 uses no separate login, activation link, or browser window for these controls.
 
 The panel uses the current PC database and phone connection. Hold its button
 for three seconds to open pairing, or ten seconds to open recovery, then release.
+First-owner activation uses the QR, name and PIN without a button window.
 The backend determines the elapsed time and active window. Simulated power off
 closes windows and cancels work while preserving ownership.
 
@@ -105,13 +106,13 @@ exercise first use, choose **Developer reset**, review its scope, and type
 backup before clearing product data. Repeating the same reset request returns
 its original receipt. A failed reset keeps the product in maintenance.
 
-After reset, scan the activation card with the updated Android app, open the
-pairing window, and set the owner's name and PIN. Export recovery material to a
+After reset, scan the activation card with the updated Android app and set the
+owner's name and PIN. No button press is required. Export recovery material to a
 safe location outside the phone. A public device QR grants no access.
 
-Ordinary startup and Pi mode have no developer control routes. The panel works
+Pi mode has no developer control routes. The panel works
 through the actual loopback dashboard with its own background session,
-same-origin checks, and CSRF token. Do not enable development mode on a host
+same-origin checks, and CSRF token. Do not run PC mode on a host
 where local clients are untrusted. It does not implement a Wi-Fi access point
 or GPIO.
 See [operation and recovery](docs/android-wireless.md#hardware-simulator-and-developer-reset).
@@ -198,8 +199,8 @@ pairing QR always require the host connection. A standalone Vite preview or a
 remote static website does not provide the trusted local API bridge. During
 frontend development, Vite on port 5173 proxies that loopback service.
 
-First-owner activation uses the phone, its activation card, and a device pairing
-window. The dashboard signs in with an existing host account; it cannot create
+First-owner activation uses the phone and its one-time activation card.
+Set a name and six-digit PIN; no physical button is required. The dashboard signs in with an existing host account; it cannot create
 the initial owner. After the first successful sign-in with a name and PIN,
 the browser remembers that account and needs only its PIN when the session
 expires. Explicit sign-out clears the account selection. The browser keeps its
@@ -231,7 +232,6 @@ authenticated Device API.
 | **TopBar** | `src/components/TopBar.jsx` | Title strip, refresh, status |
 | **Overview** | `src/components/Overview.jsx` | Backend / device / safety summary |
 | **StatusPanel** | `src/components/StatusPanel.jsx` | Lock state, battery, signal, lock action |
-| **DevicePairingCard** | `src/components/DevicePairingCard.jsx` | The current host's fixed QR for Android pairing |
 | **Tabs** | `src/components/Tabs.jsx` | Tab strip helper where used |
 | **ControlTab** | `src/components/ControlTab.jsx` | Backend-camera unlock and same-person ignition |
 | **UsersTab** | `src/components/UsersTab.jsx` | Backend user list and face enrollment |
@@ -361,27 +361,33 @@ The Android app reaches the authenticated LAN API over HTTPS on port 5056.
 
 ## Enrolling a user
 
-1. Sign in as an administrator and go to the **Users** tab.
-2. Select the backend/device camera as the enrollment source.
-3. For a new user, enter a display name and a new six-digit PIN. For an existing
-   user, enter their exact display name.
-4. Select **Add & enroll face**, then enter your signed-in administrator account's
-   PIN. For a new user, the second prompt confirms the new user's PIN entered in
-   step 3. The account is created only after the PINs match.
-5. Wait for the backend to capture the required samples.
+1. Sign in as an administrator and open **Users**.
+2. Create the account with a display name and six-digit PIN. Approve with your
+   administrator PIN, then confirm the new user's PIN. Creation does not start
+   enrollment; the account shows **Face not enrolled**.
+3. Select that existing account's **Enroll face** action and approve it with a
+   fresh administrator PIN. Look at the Pi camera while it captures samples.
+   The PC development host uses its webcam and is labeled as development.
+4. Wait for completion, or cancel and retry later from the same account.
 
-If camera enrollment fails or is cancelled, the account stays in the user list.
-Retry with the same display name to enroll that account's face. Removal is a
-separate action under **People & Access**.
+Android can start host-camera enrollment and show progress. Phone and browser
+images are not accepted. Failed or cancelled enrollment retains the account
+and any previously saved template. An account without a face may sign in and
+pair a phone, but cannot pass face verification.
 
-To reset a PIN, enter the replacement PIN, approve with your signed-in account's
-PIN, then confirm the replacement PIN. Resetting a PIN signs that user out on
-all devices and invalidates their invitations. Their phones must be paired again.
+Only the super administrator can appoint or replace the single ordinary
+administrator. Ordinary administrators cannot change the owner's account,
+PIN, face, access, or phones. Users see only their own account and logs;
+ordinary administrators see logs excluding owner involvement; the owner sees
+all logs. Historical unattributed logs remain owner-only.
 
-The face embedding is stored in the selected backend's SQLite database and is available to
-the Device API's scan flow.
+Resetting a PIN requires administrator authorization and confirmation of the
+replacement PIN. It revokes that user's phones and invitations; pair again.
 
----
+For a lost owner activation card, see the
+[offline factory QR/reset tool](docs/android-wireless.md#factory-owner-qr-and-full-reset).
+See the [local delivery record](docs/roles-pi-delivery.md) for backup/reset,
+compiler evidence and the pending Pi migration/manual acceptance boundaries.
 
 ## Face verification (dashboard)
 
@@ -389,10 +395,9 @@ the Device API's scan flow.
 2. Start the Unlock face scan and enter the signed-in user's PIN.
 3. Look at the backend's camera: PC webcam or Pi camera. Access requires the
    configured rolling-window match threshold (6 of 10 observations by default).
-4. PC records simulated actuation. On Pi, all lock and ignition outputs remain
-   blocked until the serial protocol has command acknowledgement and physical
-   position feedback. A PIN alone or uploaded browser/phone verification frames
-   cannot grant access.
+4. PC records simulated actuation. Pi sends real ESP32 commands after successful
+   face verification; physical motor and lock state remain unconfirmed. A PIN
+   alone or uploaded browser/phone verification frames cannot grant access.
 
 The current runtime reports that presentation-attack detection is unavailable.
 With the persisted liveness setting enabled by default, verification fails
@@ -400,17 +405,16 @@ closed before camera capture or actuation. An administrator may explicitly
 disable that setting for prototype testing, which reduces security and does not
 establish production, vehicle, or presentation-attack safety.
 
-On Pi, startup, shutdown, manual controls, timers, and scan results cannot send
-motor or ignition commands. The API reports control unavailable and physical
-state unconfirmed. There is no environment-variable bypass. Enrollment and
-administrator data tasks may still operate, subject to the liveness policy.
+Pi prototype mode sends real motor commands through the existing ESP32 serial
+connection. The API reports control available and physical state unconfirmed.
+Enrollment and administrator data tasks remain subject to the liveness policy.
 
 ---
 
 ## Backend connection
 
 The canonical store is **SQLite on the selected backend** (`db.py` / `db_api.py`).
-React and Android read that host's users, settings, and state through the Device
+React and Android read that host's users, scoped logs, and state through the Device
 API (`/api/status`, `/api/users`, ...).
 
 ### On the Pi
@@ -513,12 +517,11 @@ Facial-recognition vehicle access using a Raspberry Pi and camera: real-time det
 - Presentation-attack detection / anti-spoofing (photo/video)
 - Full vehicle integration  
 
-**Present but safety-gated**
+**Prototype motor control**
 
-- The ESP32 serial command protocol and integration code remain in the
-  repository, but the real Pi runtime blocks all motor and ignition output until
-  acknowledgement and position feedback exist. No connected hardware was
-  exercised, so this is not physical or production-safety acceptance.
+- Pi sends ESP32 commands for the stepper door lock and DC ignition motor.
+  A successful serial write records command delivery only. Physical position
+  feedback and vehicle-safety acceptance remain outside this implementation.
 
 ### Prerequisites
 
@@ -575,9 +578,10 @@ current authenticated host.
 | POST | `/api/ignition/stop` | Stop ignition |
 | POST | `/api/full-reset` | Stop ignition and lock the device |
 | GET | `/api/users` | List all users for an administrator or the current user only |
-| POST | `/api/users` | Add a new user; `enroll_face: true` also returns a one-use `enrollment_grant` for that user |
+| POST | `/api/users` | Create a regular account without starting face enrollment |
 | DELETE | `/api/users/<id>` | Remove a user |
 | PATCH | `/api/users/<id>/access` | Enable/disable face access for a user |
+| PATCH | `/api/users/<id>/role` | Replace or revoke the ordinary administrator (owner only) |
 | POST | `/api/users/<id>/pin` | Reset a user PIN (administrator only) |
 | POST | `/api/operation-grants` | Verify current PIN for one action and target |
 | POST | `/api/session-login` | Verify the saved phone account's PIN without granting an operation |
@@ -589,10 +593,10 @@ current authenticated host.
 | GET | `/api/scan/status?session_id=<id>` | Read scan progress/result |
 | POST | `/api/scan/cancel` | Cancel a running backend-camera scan |
 | POST | `/api/scan/sample` | Rejected: client images cannot verify unlock/ignition |
-| POST | `/api/enroll/start` | Start backend-camera or client-camera enrollment |
+| POST | `/api/enroll/start` | Start host-camera enrollment for an existing account |
 | GET | `/api/enroll/status?session_id=<id>` | Read enrollment progress/result |
 | POST | `/api/enroll/cancel` | Cancel a running enrollment |
-| GET | `/api/logs` | Retrieve auth logs (administrator only) |
+| GET | `/api/logs` | Retrieve logs filtered by owner/admin/user permission |
 | GET | `/api/settings` | Get device settings |
 | POST | `/api/settings` | Save device settings |
 | GET | `/health` | Process liveness and runtime details |
@@ -608,9 +612,9 @@ session-authenticated dashboard bridge is available only on loopback HTTP port
 for its contract. There is no standalone port 5000 listener.
 
 The host rejects requests larger than 9 MiB and JSON bodies larger than 64 KiB.
-Client enrollment accepts JPEG only, up to 8 MiB, 4096 pixels on either axis,
-and 4,194,304 total pixels. Oversized input returns 413 before the runtime
-performs enrollment or a data-changing operation. Client requests to
+Client image enrollment is retired: `/api/enroll/sample` and
+`/api/enroll/finish` return 410. Oversized input remains rejected before a
+data-changing operation. Client requests to
 `POST /api/verify-log` return 410 and cannot create an authoritative event.
 
 The fixed QR supplies TLS-pinned onboarding information only. Pairing also
@@ -796,11 +800,13 @@ The retained ESP32 protocol defines these serial commands:
 | `STOP` | Stop ignition (DC motor off; `OFF` is accepted as an alias) |
 | `SPEED X` | Set ignition motor speed, `X` from 0 to 255 |
 
-The current Pi runtime does not send these commands. It reports
-`actuator_control_available: false`, `physical_state_confirmed: false`, and
-`actuator_feedback: "unavailable"`. PC and developer-fixture runtimes may execute
-the same state machine only with `simulated_actuators: true`; their results do
-not describe physical hardware.
+Pi sends these newline-delimited commands over a 115200-baud serial connection.
+It reports `actuator_control_available: true`,
+`physical_state_confirmed: false`, and `actuator_feedback: "unavailable"`.
+Set `ESP32_SERIAL_PORT` to the connected port if automatic detection fails.
+Incomplete writes and serial errors fail the operation; successful writes do
+not establish firmware completion or physical position. PC and developer-fixture
+runtimes retain `simulated_actuators: true` and do not operate physical motors.
 
 ---
 
@@ -810,27 +816,16 @@ not describe physical hardware.
 talks to the ESP32 over USB serial at 115200 baud. This section records the
 intended change so the wiring above has context.
 
-### Why this matters more than a protocol swap
+### Command delivery and physical feedback
 
-The Pi deliberately blocks every physical actuator output today:
+The current Pi prototype sends motor commands over serial after authorization.
+It can report a successful write, but cannot confirm that the motor moved or
+that the lock reached its requested position. CAN remains a planned transport
+change, not a prerequisite for the existing serial controls.
 
-```python
-actuator_control_available = False
-actuator_block_reason = (
-    "Physical actuator output is disabled until command feedback is "
-    "implemented and validated."
-)
-```
-
-Over plain serial the Pi can only know that bytes left the UART — never that the
-lock actually moved. Rather than fire motors blindly, the runtime gates them.
-This gate disables the whole unlock scan flow in the dashboard, not just the motor
-output; enrollment and administrator tasks stay available.
-
-CAN supplies exactly what that gate is waiting for: frames are acknowledged at the
-hardware level, and a status frame returned by the ESP32 reports real lock and
-ignition state. **Completing this migration is what unblocks the motors**, which is
-why it is the critical path for full-system integration.
+Transport acknowledgements alone would not establish physical state. Any future
+status frames must distinguish command receipt from measured lock and ignition
+state; physical confirmation still requires hardware feedback and validation.
 
 ### Proposed frame format
 
@@ -872,7 +867,7 @@ bitrate on both nodes; 500 kbit/s is the automotive norm.
 |---|---|
 | Add `python-can` | `requirements-pi-device-api.txt` |
 | Replace the serial transport with a CAN bus handle | `car_face_auth/src/pi_runtime.py` |
-| Replace the `_send_command` stub with a real send + ACK wait | `car_face_auth/src/pi_runtime.py` |
+| Replace the serial `_send_command` implementation with CAN send + ACK handling | `car_face_auth/src/pi_runtime.py` |
 | Remove USB-descriptor port discovery (`ESP_KEYWORDS`, `_find_esp_port`) | `car_face_auth/src/pi_runtime.py` |
 | Add a receive path for `0x101` status frames | `car_face_auth/src/pi_runtime.py` |
 | Rename `esp32_connected` / `serial_port` status fields to CAN equivalents | `car_face_auth/src/pi_runtime.py`, dashboard status consumers |
@@ -939,22 +934,24 @@ establish production or anti-spoofing safety.
 
 ### A user exists but has no face template
 
-Creating an account and capturing a face are separate steps, and the account
-persists if capture fails. Re-enrol by entering that user's **exact display name**
-in **Users → Display Name**, leaving the PIN box empty, and selecting **Add &
-enroll face**. An existing name is matched case-insensitively and reused rather
-than duplicated. The PIN field is required only when creating a new account.
+Creating an account and capturing a face are separate steps. In **Users**, select
+the existing account's face-enrollment action and authorize with an administrator
+PIN. The host camera captures the face. Cancellation or failure retains the
+account and any previously enrolled template.
 
 ### "Start face unlock" is greyed out
 
-`canStartScan` requires `actuatorControlAvailable`, which is `false` on the Pi by
-design. See the CAN migration section above. There is no environment-variable
-bypass.
+Use the dashboard on the host itself: phones expose status and management, while
+vehicle controls require the trusted local dashboard. Check the connection,
+camera availability, active scan and displayed runtime errors. Pi prototype
+mode supports serial controls; liveness requirements still apply.
 
 ### `STOP, LOCK command was not sent` at startup
 
-The same actuator gate, reported at boot. It is not a serial fault, a wiring
-problem or an ESP32 failure.
+The runtime could not send one or both startup safety commands. Check the ESP32
+connection, serial device permissions and configured `ESP32_SERIAL_PORT`, then
+read the accompanying serial error. A successful retry confirms command delivery
+only; inspect the hardware to confirm its state.
 
 ### The dashboard shows stale UI
 

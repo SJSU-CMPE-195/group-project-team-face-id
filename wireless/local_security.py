@@ -77,8 +77,8 @@ class LocalSessions:
             self.require_trusted()
             raise SecurityError(
                 "phone_claim_required", 410,
-                "Scan the activation card on your phone and hold the device button "
-                "for three seconds to claim this device.",
+                "Scan the activation card on your phone and set your name and PIN "
+                "to claim this device.",
             )
 
         @app.post("/local/security/login")

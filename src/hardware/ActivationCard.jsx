@@ -8,11 +8,10 @@ export default function ActivationCard({ card, busy, disabled, onReveal }) {
     <Card>
       <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
         <QrCode className="h-4 w-4 text-emerald-300" />
-        Activation cards
+        QR codes
       </div>
       <p className="mt-2 text-xs leading-relaxed text-slate-400">
-        Public device identity and the one-time activation credential are
-        separate. Reveal them only when you are ready to scan with the phone.
+        Reveal the one-time activation QR only when ready to scan it with the phone.
       </p>
       <Btn
         className="mt-4 w-full"
@@ -20,7 +19,7 @@ export default function ActivationCard({ card, busy, disabled, onReveal }) {
         disabled={busy || disabled}
         onClick={onReveal}
       >
-        {busy ? "Loading…" : card ? "Refresh cards" : "Reveal activation cards"}
+        {busy ? "Loading…" : card ? "Refresh QR codes" : "Reveal QR codes"}
       </Btn>
       {card ? <ActivationCodes card={card} /> : null}
     </Card>
@@ -44,8 +43,7 @@ function ActivationCodes({ card }) {
         />
       ) : (
         <div className="rounded-xl border border-white/[0.06] bg-dna-bg p-3 text-xs text-slate-400">
-          The one-time activation credential is no longer available after the
-          device is claimed.
+          Activation QR unavailable after the device is claimed.
         </div>
       )}
     </div>

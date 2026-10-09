@@ -455,10 +455,7 @@ class PiRuntime:
         return self._get_view(session_id, "scan")
 
     def cancel_scan(self, session_id: str) -> dict[str, Any]:
-        result = self._cancel(session_id, "scan")
-        if result.get("source") == "client_camera":
-            self._release_session(session_id)
-        return result
+        return self._cancel(session_id, "scan")
 
     def start_enrollment(
         self,
@@ -485,167 +482,6 @@ class PiRuntime:
         )
         self._spawn(session["id"], self._run_enrollment)
         return self._enroll_view(session)
-
-    def start_client_enrollment(
-        self,
-        name: str,
-        *,
-        authorization: Any | None = None,
-    ) -> dict[str, Any]:
-        """Start an enrollment whose JPEG samples are uploaded by a client."""
-
-        user = self._resolve_enrollment_user(name)
-        authorization_values = self._bind_enrollment_authorization(
-            authorization,
-            user["id"],
-        )
-        self._require_safety_settings()
-        timeout = self._bounded_seconds("PI_ENROLL_TIMEOUT_SECONDS", DEFAULT_ENROLL_TIMEOUT)
-        session = self._new_session(
-            "enroll",
-            {
-                **authorization_values,
-                "name": user["name"],
-                "source": "client_camera",
-                "state": "capturing",
-                "count": 0,
-                "deadline": time.monotonic() + timeout,
-                "embeddings": [],
-                "face_count": 0,
-                "message": "Client camera enrollment is ready for samples.",
-            },
-        )
-        timer = threading.Timer(timeout, self._expire_client_enrollment, args=(session["id"],))
-        timer.daemon = True
-        with self._lock:
-            session["timeout_timer"] = timer
-            view = self._enroll_view(session)
-        timer.start()
-        return view
-
-    def add_client_enrollment_sample(self, session_id: str, image_bytes: bytes) -> dict[str, Any]:
-        """Decode one client JPEG on the Pi and accept exactly one face."""
-
-        if not image_bytes:
-            raise RuntimeRequestError("image is required", 400)
-        with self._lock:
-            session = self._sessions.get(session_id)
-            if not session or session.get("kind") != "enroll":
-                raise RuntimeRequestError("unknown enroll session", 404)
-            if session.get("source") != "client_camera":
-                raise RuntimeRequestError("session does not accept client camera samples", 409)
-            if session.get("state") != "capturing":
-                raise RuntimeRequestError("enrollment session is not capturing", 409)
-            if time.monotonic() >= session["deadline"]:
-                self._expire_client_enrollment(session_id)
-                raise RuntimeRequestError("enrollment session timed out", 409)
-            if session["cancel_event"].is_set():
-                raise RuntimeRequestError("enrollment session was cancelled", 409)
-            if len(session.get("embeddings", [])) >= SAMPLES_NEEDED:
-                return self._enroll_view(session)
-
-        try:
-            face_engine = self._get_face_engine()
-            model = self._ensure_model()
-            frame = face_engine.decode_image_bytes(image_bytes)
-            if frame is None:
-                raise RuntimeRequestError("image could not be decoded", 400)
-            with self._inference_lock:
-                embedding, face_count = face_engine.extract_single_face_embedding(model, frame)
-        except RuntimeRequestError:
-            raise
-        except Exception as exc:
-            raise RuntimeRequestError(f"face sample could not be processed: {exc}", 503) from exc
-
-        with self._lock:
-            session = self._sessions.get(session_id)
-            if not session or session.get("kind") != "enroll":
-                raise RuntimeRequestError("unknown enroll session", 404)
-            if session.get("source") != "client_camera" or session.get("state") != "capturing":
-                raise RuntimeRequestError("enrollment session is not capturing", 409)
-            if time.monotonic() >= session["deadline"]:
-                self._expire_client_enrollment(session_id)
-                raise RuntimeRequestError("enrollment session timed out", 409)
-            session["face_count"] = int(face_count or 0)
-            if embedding is not None and len(session["embeddings"]) < SAMPLES_NEEDED:
-                session["embeddings"].append(embedding)
-                session["count"] = len(session["embeddings"])
-                session["message"] = f"Captured {session['count']}/{SAMPLES_NEEDED} client face samples."
-            elif face_count == 0:
-                session["message"] = "No face detected."
-            else:
-                session["message"] = "Multiple faces detected; show one face."
-            session["updated_at"] = self._now_ms()
-            return self._enroll_view(session)
-
-    def finish_client_enrollment(self, session_id: str) -> dict[str, Any]:
-        """Persist an uploaded enrollment into the Pi's canonical SQLite DB."""
-
-        # Serialize persistence with cancel, timeout, reset, and duplicate finish.
-        with self._authorization.synchronized(), self._actuation.synchronized(), self._lock:
-            session = self._sessions.get(session_id)
-            if not session or session.get("kind") != "enroll":
-                raise RuntimeRequestError("unknown enroll session", 404)
-            if session.get("source") != "client_camera":
-                raise RuntimeRequestError("session does not accept client camera finish", 409)
-            if session.get("state") == "completed":
-                return self._enroll_view(session)
-            if session.get("state") != "capturing":
-                raise RuntimeRequestError("enrollment session is not capturing", 409)
-            if self._closed or session["cancel_event"].is_set():
-                raise RuntimeRequestError("enrollment session was cancelled", 409)
-            if time.monotonic() >= session["deadline"]:
-                self._expire_client_enrollment(session_id)
-                raise RuntimeRequestError("enrollment session timed out", 409)
-            embeddings = list(session.get("embeddings", []))
-            if len(embeddings) < SAMPLES_NEEDED:
-                raise RuntimeRequestError(
-                    f"Need {SAMPLES_NEEDED} samples, have {len(embeddings)}",
-                    400,
-                )
-            session.update(state="saving", message="Saving face template on device.", updated_at=self._now_ms())
-            name = session["name"]
-
-            try:
-                self._safety_settings()
-                if not self._authorization.session_is_current(
-                    session,
-                    require_admin=True,
-                    require_target=True,
-                ):
-                    raise RuntimeError(
-                        "Enrollment authorization expired before saving."
-                    )
-                face_engine = self._get_face_engine()
-                save_result = face_engine.save_user_embedding(name, embeddings)
-                if isinstance(save_result, dict) and not save_result.get("ok"):
-                    raise RuntimeError(save_result.get("error") or "could not save face enrollment")
-                self._finish(
-                    session_id,
-                    "completed",
-                    count=SAMPLES_NEEDED,
-                    recognition_available=True,
-                    message=f"Enrollment completed for {name} from client camera.",
-                )
-                return self.enrollment_status(session_id)
-            except Exception as exc:
-                self._finish(session_id, "error", message=str(exc))
-                return self.enrollment_status(session_id)
-            finally:
-                self._release_session(session_id)
-
-    def _expire_client_enrollment(self, session_id: str) -> None:
-        with self._lock:
-            session = self._sessions.get(session_id)
-            if not session or session.get("kind") != "enroll":
-                return
-            if session.get("source") != "client_camera":
-                return
-            if session["state"] in self._final_states("enroll"):
-                return
-            session["cancel_event"].set()
-            self._finish(session_id, "timeout", message="Enrollment timed out.")
-            self._release_session(session_id)
 
     def _user_by_id(self, user_id: str) -> dict[str, Any] | None:
         try:
@@ -787,7 +623,6 @@ class PiRuntime:
         """Cancel camera work for a revoked device without changing ignition."""
 
         cancelled = 0
-        client_session_ids = []
         with self._actuation.synchronized(), self._lock:
             for session in self._sessions.values():
                 if (
@@ -801,21 +636,14 @@ class PiRuntime:
                         updated_at=self._now_ms(),
                     )
                     self._stop_camera_capture_now_locked(session["id"])
-                    if session.get("source") == "client_camera":
-                        client_session_ids.append(session["id"])
                     cancelled += 1
-        for session_id in client_session_ids:
-            self._release_session(session_id)
         return cancelled
 
     def enrollment_status(self, session_id: str) -> dict[str, Any]:
         return self._get_view(session_id, "enroll")
 
     def cancel_enrollment(self, session_id: str) -> dict[str, Any]:
-        result = self._cancel(session_id, "enroll")
-        if result.get("source") == "client_camera":
-            self._release_session(session_id)
-        return result
+        return self._cancel(session_id, "enroll")
 
     # ── Actuator lifecycle ───────────────────────────────────────────────────
 
@@ -831,6 +659,7 @@ class PiRuntime:
         reason: str = "manual_ui",
         *,
         ignition_stop_seconds: int | None = None,
+        actor_user_id: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             closed = self._closed
@@ -859,9 +688,16 @@ class PiRuntime:
             reason,
             ignition_stop_seconds=ignition_stop_seconds or 0,
             closed=closed,
+            actor_user_id=actor_user_id,
+            actor_kind="user" if actor_user_id else "system",
         )
 
-    def force_lock(self, reason: str = "manual_ui") -> dict[str, Any]:
+    def force_lock(
+        self,
+        reason: str = "manual_ui",
+        *,
+        actor_user_id: str | None = None,
+    ) -> dict[str, Any]:
         """Cancel work and report lock only after both commands are sent."""
         with self._lock:
             if self._paused:
@@ -872,7 +708,11 @@ class PiRuntime:
                     "physical_state_confirmed": False,
                 }
         self._cancel_all_sessions()
-        result = self._actuation.force_lock(reason)
+        result = self._actuation.force_lock(
+            reason,
+            actor_user_id=actor_user_id,
+            actor_kind="user" if actor_user_id else "system",
+        )
         # A stuck camera teardown must not delay STOP/LOCK command dispatch.
         camera_closed = self._close_camera()
         if not result.get("ok"):
@@ -989,7 +829,7 @@ class PiRuntime:
         }
 
     def resume_after_maintenance(self) -> None:
-        """Reload database-backed state and accept new runtime work."""
+        """Resume locked so settings can be repaired before face operations."""
 
         with self._lock:
             if self._closed:
@@ -999,7 +839,9 @@ class PiRuntime:
             if not self._maintenance_drained:
                 raise RuntimeError("runtime maintenance has not drained")
 
-        self._safety_settings()
+        # Keep readiness errors visible without blocking settings recovery.
+        # Face operations still require valid safety settings before starting.
+        self._refresh_safety_settings()
         self._load_authorized_database(self._get_face_engine())
         self._actuation.resume_after_maintenance()
         with self._lock:
@@ -1695,6 +1537,8 @@ class PiRuntime:
             ignition_stop_seconds=safety_settings.ignition_stop_seconds,
             closed=False,
             expected_generation=actuation.generation,
+            actor_user_id=session.get("user_id"),
+            actor_kind="user" if session.get("user_id") else "system",
         )
         if not result.get("ok"):
             self._finish(
@@ -1783,6 +1627,8 @@ class PiRuntime:
             f"scan:{session_id}",
             auto_relock_seconds=safety_settings.auto_relock_seconds,
             expected_generation=generation,
+            actor_user_id=session.get("user_id"),
+            actor_kind="user" if session.get("user_id") else "system",
         )
         if not result.get("ok"):
             self._finish(
@@ -1873,13 +1719,31 @@ class PiRuntime:
             self._sessions[session_id] = session
             self._active_session_id = session_id
             if kind == "scan":
-                self._log("scan_started", "ok", json.dumps({
-                    "session_id": session_id,
-                    "purpose": session.get("purpose"),
-                    "runtime": type(self).__name__,
-                    "source": session.get("source", self.camera_source),
-                    "started_at_ms": session["started_at_ms"],
-                }))
+                actor_user_id = session.get("user_id")
+                self._log(
+                    "scan_started",
+                    "ok",
+                    json.dumps({
+                        "session_id": session_id,
+                        "purpose": session.get("purpose"),
+                        "runtime": type(self).__name__,
+                        "source": session.get("source", self.camera_source),
+                        "started_at_ms": session["started_at_ms"],
+                    }),
+                    user_id=session.get("expected_user_id"),
+                    actor_user_id=actor_user_id,
+                    actor_kind="user" if actor_user_id else "system",
+                )
+            elif kind == "enroll":
+                actor_user_id = session.get("user_id")
+                self._log(
+                    "enrollment_started",
+                    "ok",
+                    f"Host camera enrollment started for {session['name']}",
+                    user_id=session.get("expected_user_id"),
+                    actor_user_id=actor_user_id,
+                    actor_kind="user" if actor_user_id else "system",
+                )
             return session
 
     def _spawn(self, session_id: str, target: Any) -> None:
@@ -1898,16 +1762,36 @@ class PiRuntime:
             return self._scan_view(session) if kind == "scan" else self._enroll_view(session)
 
     def _cancel(self, session_id: str, kind: str) -> dict[str, Any]:
+        cancelled = False
+        log_user_id = None
+        log_actor_user_id = None
         with self._actuation.synchronized():
             with self._lock:
                 session = self._sessions.get(session_id)
                 if not session or session.get("kind") != kind:
                     raise RuntimeRequestError(f"unknown {kind} session", 404)
                 if session["state"] not in self._final_states(kind):
+                    cancelled = True
                     session["cancel_event"].set()
                     session.update(state="cancelled", message=f"{kind.capitalize()} cancelled.", updated_at=self._now_ms())
                     self._stop_camera_capture_now_locked(session_id)
-                return self._scan_view(session) if kind == "scan" else self._enroll_view(session)
+                log_user_id = session.get("expected_user_id")
+                log_actor_user_id = session.get("user_id")
+                view = (
+                    self._scan_view(session)
+                    if kind == "scan"
+                    else self._enroll_view(session)
+                )
+        if cancelled:
+            self._log(
+                f"{kind}_cancelled",
+                "ok",
+                f"{kind.capitalize()} cancelled",
+                user_id=log_user_id,
+                actor_user_id=log_actor_user_id,
+                actor_kind="user" if log_actor_user_id else "system",
+            )
+        return view
 
     def _session(self, session_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -1923,6 +1807,9 @@ class PiRuntime:
         log_detail = updates.get("message", "")
         log_failure = False
         timing = None
+        log_kind = None
+        log_user_id = None
+        log_actor_user_id = None
         with self._lock:
             session = self._sessions.get(session_id)
             if not session or session["state"] == "cancelled":
@@ -1946,6 +1833,9 @@ class PiRuntime:
                 }
                 session["timing_recorded"] = True
             session.update(state=state, updated_at=self._now_ms(), **updates)
+            log_kind = session.get("kind")
+            log_user_id = session.get("expected_user_id")
+            log_actor_user_id = session.get("user_id")
             self._stop_camera_capture_now_locked(session_id)
             if state == "error":
                 session["ok"] = False
@@ -1954,12 +1844,31 @@ class PiRuntime:
                 session["ok"] = True
                 log_failure = session.get("kind") == "scan" and state in {"denied", "timeout"}
         if log_failure:
-            self._log("face_scan", "fail", log_detail or state)
+            self._log(
+                "face_scan",
+                "fail",
+                log_detail or state,
+                user_id=log_user_id,
+                actor_user_id=log_actor_user_id,
+                actor_kind="user" if log_actor_user_id else "system",
+            )
         if timing is not None:
             self._log(
                 "scan_timing",
                 "ok" if state == "granted" else "fail",
                 json.dumps(timing),
+                user_id=log_user_id,
+                actor_user_id=log_actor_user_id,
+                actor_kind="user" if log_actor_user_id else "system",
+            )
+        if log_kind == "enroll":
+            self._log(
+                "enrollment",
+                "ok" if state == "completed" else "fail",
+                log_detail or state,
+                user_id=log_user_id,
+                actor_user_id=log_actor_user_id,
+                actor_kind="user" if log_actor_user_id else "system",
             )
         self._schedule_session_cleanup(session_id)
 
@@ -2414,9 +2323,25 @@ class PiRuntime:
             elif category == "serial":
                 self._serial_error = message
 
-    def _log(self, stage: str, result: str, detail: str, user_id: str | None = None) -> None:
+    def _log(
+        self,
+        stage: str,
+        result: str,
+        detail: str,
+        user_id: str | None = None,
+        *,
+        actor_user_id: str | None = None,
+        actor_kind: str = "system",
+    ) -> None:
         try:
-            self._db.log_event(stage, result, detail=detail, user_id=user_id)
+            self._db.log_event(
+                stage,
+                result,
+                detail=detail,
+                user_id=user_id,
+                actor_user_id=actor_user_id,
+                actor_kind=actor_kind,
+            )
         except Exception:
             pass
 

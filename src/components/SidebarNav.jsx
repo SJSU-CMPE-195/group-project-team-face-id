@@ -9,7 +9,7 @@ const items = [
   { id: "hardware", icon: Cpu, label: "Hardware" },
 ];
 
-export default function SidebarNav({ tab, setTab, isAdmin, hardwareEnabled }) {
+export default function SidebarNav({ tab, setTab, hardwareEnabled, localControls }) {
   return (
     <>
       <aside className="hidden w-[72px] shrink-0 flex-col items-center border-r border-white/[0.06] bg-dna-sidebar py-5 md:flex">
@@ -21,33 +21,34 @@ export default function SidebarNav({ tab, setTab, isAdmin, hardwareEnabled }) {
         </div>
 
         <nav className="flex flex-1 flex-col gap-1.5" aria-label="Main navigation">
-          <NavigationItems tab={tab} setTab={setTab} isAdmin={isAdmin} hardwareEnabled={hardwareEnabled} />
+          <NavigationItems tab={tab} setTab={setTab} hardwareEnabled={hardwareEnabled} localControls={localControls} />
         </nav>
 
         <div className="mt-auto h-9 w-9 rounded-full border border-white/10 bg-dna-surface" title="Profile" />
       </aside>
 
       <nav className="mobile-bottom-nav fixed inset-x-0 bottom-0 z-40 flex border-t border-white/[0.08] bg-dna-sidebar/95 px-2 backdrop-blur-xl md:hidden" aria-label="Main navigation">
-        <NavigationItems tab={tab} setTab={setTab} isAdmin={isAdmin} hardwareEnabled={hardwareEnabled} mobile />
+        <NavigationItems tab={tab} setTab={setTab} hardwareEnabled={hardwareEnabled} localControls={localControls} mobile />
       </nav>
     </>
   );
 }
 
-function NavigationItems({ tab, setTab, isAdmin, hardwareEnabled, mobile = false }) {
+function NavigationItems({ tab, setTab, hardwareEnabled, localControls, mobile = false }) {
   return items.filter(({ id }) => {
-    if (id === "logs" && !isAdmin) return false;
+    if (["settings", "hardware"].includes(id) && !localControls) return false;
     if (id === "hardware" && !hardwareEnabled) return false;
     return true;
   }).map(({ id, icon, label }) => {
     const active = tab === id;
     const NavIcon = icon;
+    const visibleLabel = id === "control" && !localControls ? "Status" : label;
     return (
       <button
         key={id}
         type="button"
-        title={label}
-        aria-label={label}
+        title={visibleLabel}
+        aria-label={visibleLabel}
         aria-current={active ? "page" : undefined}
         onClick={() => setTab(id)}
         className={
@@ -63,7 +64,7 @@ function NavigationItems({ tab, setTab, isAdmin, hardwareEnabled, mobile = false
         <span className={mobile && active ? "flex h-8 w-14 items-center justify-center rounded-full bg-fuchsia-500/15" : mobile ? "flex h-8 w-14 items-center justify-center" : ""}>
           <NavIcon className="h-5 w-5" strokeWidth={active ? 2.25 : 1.75} />
         </span>
-        {mobile ? <span>{label}</span> : null}
+        {mobile ? <span>{visibleLabel}</span> : null}
       </button>
     );
   });

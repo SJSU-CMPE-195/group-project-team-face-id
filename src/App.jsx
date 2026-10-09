@@ -15,15 +15,33 @@ import HardwareSimulatorPanel from "./hardware/HardwareSimulatorPanel.jsx";
 import useHardwareSimulator from "./hardware/useHardwareSimulator.js";
 import { resolveRuntimeCapabilities } from "./utils/actuatorStatus.js";
 
+function cameraLabel(status) {
+  const source = String(
+    status.runtime?.camera_source ||
+      status.camera_source ||
+      status.cameraSource ||
+      status.capabilities?.camera_source ||
+      "",
+  ).toLowerCase();
+  const mode = String(status.runtime?.mode || "").toLowerCase();
+  if (mode.includes("pi") || source.includes("pi")) return "Pi camera";
+  if (source.includes("webcam") || source.includes("pc")) {
+    return "PC development camera";
+  }
+  return source ? source.replaceAll("_", " ") : "Host camera";
+}
+
 export default function App({ onHardwareReset }) {
   const { user, logout } = useSecurity();
   const hardware = useHardwareSimulator();
   const state = useAppState();
   const actions = useAppActions(state);
   const mainRef = React.useRef(null);
+  const { setTab, tab } = state;
 
   const runtime = state.status.runtime || {};
   const capabilities = state.status.capabilities || {};
+  const localControls = capabilities.local_controls === true;
   const locked =
     state.mode === "sim"
       ? state.sim.locked
@@ -41,6 +59,14 @@ export default function App({ onHardwareReset }) {
     runtime,
     capabilities,
   });
+  const localActuatorControlAvailable =
+    localControls && actuatorControlAvailable;
+
+  React.useEffect(() => {
+    if (!localControls && ["settings", "hardware"].includes(tab)) {
+      setTab("control");
+    }
+  }, [localControls, setTab, tab]);
 
   React.useEffect(() => {
     if (mainRef.current) mainRef.current.scrollTop = 0;
@@ -52,8 +78,8 @@ export default function App({ onHardwareReset }) {
       <SidebarNav
         tab={state.tab}
         setTab={state.setTab}
-        isAdmin={user.is_admin}
         hardwareEnabled={hardware.enabled}
+        localControls={localControls}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -63,7 +89,7 @@ export default function App({ onHardwareReset }) {
           ignitionOn={ignitionOn}
           online={online}
           simulatedActuators={simulatedActuators}
-          actuatorControlAvailable={actuatorControlAvailable}
+          actuatorControlAvailable={localActuatorControlAvailable}
           physicalStateConfirmed={physicalStateConfirmed}
           busy={state.busy}
           onRefresh={
@@ -73,12 +99,13 @@ export default function App({ onHardwareReset }) {
           }
           user={user}
           onLogout={logout}
+          localControls={localControls}
         />
 
         <main ref={mainRef} className="app-content flex-1 overflow-y-auto overscroll-y-contain px-4 pt-4 sm:px-5 sm:pt-6 md:px-8 md:py-6">
           {state.tab === "control" && (
             <div className="mx-auto w-full max-w-6xl space-y-6">
-              <ControlTab
+              {localControls ? <ControlTab
                 api={state.api}
                 currentUser={user}
                 cameraSource={
@@ -93,7 +120,7 @@ export default function App({ onHardwareReset }) {
                 locked={locked}
                 ignitionOn={ignitionOn}
                 simulatedActuators={simulatedActuators}
-                actuatorControlAvailable={actuatorControlAvailable}
+                actuatorControlAvailable={localActuatorControlAvailable}
                 physicalStateConfirmed={physicalStateConfirmed}
                 promptAutoLockSeconds={
                   typeof state.settings?.promptAutoLockSeconds === "number"
@@ -106,7 +133,7 @@ export default function App({ onHardwareReset }) {
                 popToast={state.popToast}
                 busy={state.busy}
                 onRefresh={actions.refresh}
-              />
+              /> : null}
               <div id="panel-status" className="scroll-mt-6 space-y-4">
                 <Overview status={state.status} />
                 <StatusPanel
@@ -115,7 +142,7 @@ export default function App({ onHardwareReset }) {
                   doLock={actions.doLock}
                   status={state.status}
                   simulatedActuators={simulatedActuators}
-                  actuatorControlAvailable={actuatorControlAvailable}
+                  actuatorControlAvailable={localActuatorControlAvailable}
                   physicalStateConfirmed={physicalStateConfirmed}
                 />
               </div>
@@ -124,34 +151,29 @@ export default function App({ onHardwareReset }) {
 
           {state.tab === "users" && (
             <UsersTab
-              mode={state.mode}
-              sim={state.sim}
-              setSim={state.setSim}
               deviceUsers={state.deviceUsers}
               name={state.name}
               setName={state.setName}
               busy={state.busy}
               addUserToDirectory={actions.addUserToDirectory}
               delUser={actions.delUser}
-              faceApiUrl={state.faceApiUrl}
               popToast={state.popToast}
-              faceAccessAllowed={state.faceAccessAllowed}
-              setFaceAccessAllowed={state.setFaceAccessAllowed}
               setDeviceUsers={state.setDeviceUsers}
               api={state.api}
               currentUser={user}
               devices={state.devices}
               setDevices={state.setDevices}
+              cameraLabel={cameraLabel(state.status)}
             />
           )}
 
-          {state.tab === "logs" && user.is_admin && (
+          {state.tab === "logs" && (
             <LogsTab
               deviceLogs={state.deviceLogs}
             />
           )}
 
-          {state.tab === "settings" && (
+          {state.tab === "settings" && localControls && (
             <SettingsTab
               settings={state.settings}
               setSettings={state.setSettings}
@@ -162,7 +184,7 @@ export default function App({ onHardwareReset }) {
             />
           )}
 
-          {state.tab === "hardware" && hardware.enabled && (
+          {state.tab === "hardware" && hardware.enabled && localControls && (
             <HardwareSimulatorPanel
               embedded
               onReset={onHardwareReset}

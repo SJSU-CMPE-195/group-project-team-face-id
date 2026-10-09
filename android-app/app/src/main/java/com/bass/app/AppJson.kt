@@ -22,6 +22,12 @@ internal fun JSONObject.deviceStatus(capabilities: Capabilities): DeviceStatus {
         actuatorFeedback =
             runtime?.actuatorFeedback() ?: capabilities.actuatorFeedback,
         physicalStateConfirmed = runtime?.optBoolean("physical_state_confirmed") == true,
+        cameraSource =
+            runtime?.optString("camera_source")?.takeIf { it.isNotBlank() }
+                ?: capabilities.cameraSource,
+        localControls =
+            runtime?.optBoolean("local_controls", capabilities.localControls)
+                ?: capabilities.localControls,
     )
 }
 
@@ -38,15 +44,33 @@ internal fun JSONObject.faceStatus(): FaceStatus {
 internal fun JSONArray.users(enrolledNames: List<String>): List<User> =
     objects().map { row ->
         val name = row.getString("name")
-        val enrolled = enrolledNames.any { it.equals(name, ignoreCase = true) }
+        val enrolled =
+            when {
+                row.has("faceEnrolled") -> row.optBoolean("faceEnrolled")
+                row.has("face_enrolled") -> row.optBoolean("face_enrolled")
+                else -> enrolledNames.any { it.equals(name, ignoreCase = true) }
+            }
         User(
             id = row.getString("id"),
             name = name,
             faceAccess = row.optBoolean("faceAccess", true),
-            enrolled = enrolled,
+            faceEnrolled = enrolled,
             createdAtMillis = row.optLong("createdAt"),
             isAdmin = row.optBoolean("is_admin", row.optBoolean("isAdmin")),
             isOwner = row.optBoolean("is_owner", row.optBoolean("isOwner")),
+        )
+    }
+
+internal fun JSONArray.devices(): List<PairedDevice> =
+    objects().map { row ->
+        PairedDevice(
+            id = row.getString("id"),
+            userId = row.getString("user_id"),
+            userName = row.optString("user_name"),
+            name = row.optString("name", "Android"),
+            active = row.optBoolean("active"),
+            lastSeenMillis = row.optLong("last_seen") * 1000L,
+            userIsOwner = row.optBoolean("user_is_owner"),
         )
     }
 

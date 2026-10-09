@@ -13,6 +13,7 @@ import uuid
 
 from .security_credentials import (
     ADMIN_ACTIONS,
+    OWNER_ACTIONS,
     OWN_USER_ACTIONS,
     PIN_ITERATIONS,
     PIN_LOCKOUT_SECONDS,
@@ -114,6 +115,35 @@ class SecurityStore:
             ).fetchone()
             return row is not None
 
+    def validate_role_state(self) -> None:
+        """Reject a claimed database with an invalid owner/admin topology."""
+
+        with self._lock, self._get_conn() as conn:
+            state = conn.execute(
+                "SELECT ownership, owner_user_id FROM commissioning_state WHERE id=1"
+            ).fetchone()
+            if state is None or state["ownership"] != "claimed":
+                return
+            owner = conn.execute(
+                "SELECT 1 FROM users AS u "
+                "JOIN user_security AS s ON s.user_id=u.id "
+                "WHERE u.id=? AND u.active=1 AND s.is_admin=1",
+                (state["owner_user_id"],),
+            ).fetchone()
+            regular_admins = conn.execute(
+                "SELECT COUNT(*) AS count FROM users AS u "
+                "JOIN user_security AS s ON s.user_id=u.id "
+                "WHERE u.active=1 AND s.is_admin=1 AND u.id!=?",
+                (state["owner_user_id"],),
+            ).fetchone()["count"]
+            if owner is None or regular_admins > 1:
+                raise SecurityError(
+                    "invalid_role_state",
+                    503,
+                    "claimed products require one active owner and at most "
+                    "one administrator",
+                )
+
     def initial_admin(self, name: str, pin: str) -> dict[str, Any]:
         name = bounded_text(name, "name", 100)
         validate_pin(pin)
@@ -192,6 +222,7 @@ class SecurityStore:
                 "security_initial_admin",
                 "ok",
                 f"Initialized administrator {user_id}",
+                actor_kind="system",
             )
         return created_user_payload(user_id, display_name, True, created_at)
 
@@ -281,6 +312,7 @@ class SecurityStore:
                     "local_login",
                     "ok",
                     f"Local session {device_id}",
+                    actor_user_id=user_id,
                 )
                 result = {
                     "device_token": token,
@@ -356,6 +388,7 @@ class SecurityStore:
                 "security_admin_recovered",
                 "ok",
                 "Offline local recovery; credentials revoked",
+                actor_kind="system",
             )
         return {
             **created_user_payload(
@@ -400,6 +433,7 @@ class SecurityStore:
                 "local_logout",
                 "ok",
                 f"Local session {row['id']}",
+                actor_user_id=row["user_id"],
             )
             return True
 
@@ -408,27 +442,14 @@ class SecurityStore:
         admin: Principal,
         name: str,
         pin: str,
-        is_admin: bool = False,
-        enroll_face: bool = False,
     ) -> dict[str, Any]:
         name = bounded_text(name, "name", 100)
         validate_pin(pin)
-        if type(is_admin) is not bool:
-            raise SecurityError("invalid_role", 400, "is_admin must be a boolean")
-        if type(enroll_face) is not bool:
-            raise SecurityError("invalid_request", 400, "enroll_face must be a boolean")
         salt, verifier = new_pin_record(pin, self._pepper, self._pin_iterations)
         now = self._now()
-        enrollment_grant = None
         with self._lock, self._get_conn() as conn:
             self._begin(conn)
             current = principal_from_row(self._require_admin(conn, admin, now))
-            if is_admin and self._owner_user_id(conn) is not None and not current.is_owner:
-                raise SecurityError(
-                    "owner_required",
-                    403,
-                    "only the product owner can create an administrator",
-                )
             duplicate = conn.execute(
                 "SELECT 1 FROM users WHERE active=1 "
                 "AND lower(trim(name))=lower(trim(?)) LIMIT 1",
@@ -447,34 +468,17 @@ class SecurityStore:
                 "INSERT INTO user_security "
                 "(user_id, pin_salt, pin_verifier, is_admin, created_at, updated_at) "
                 "VALUES (?,?,?,?,?,?)",
-                (user_id, salt, verifier, int(is_admin), now, now),
+                (user_id, salt, verifier, 0, now, now),
             )
             self._audit(
                 conn,
                 user_id,
                 "security_user_created",
                 "ok",
-                f"Created by {admin.user_id}; admin={int(is_admin)}",
+                f"Created by {current.user_id}",
+                actor_user_id=current.user_id,
             )
-            if enroll_face:
-                enrollment_grant = self._issue_operation_grant(
-                    conn,
-                    current,
-                    "enrollment.start",
-                    user_id,
-                    now,
-                )
-                self._audit(
-                    conn,
-                    current.user_id,
-                    "operation_grant_issued",
-                    "ok",
-                    f"enrollment.start:{user_id}:via-user-create",
-                )
-        result = created_user_payload(user_id, name, is_admin, now)
-        if enrollment_grant is not None:
-            result["enrollment_grant"] = enrollment_grant["grant_token"]
-        return result
+        return created_user_payload(user_id, name, False, now)
 
     def issue_invite(
         self,
@@ -518,7 +522,8 @@ class SecurityStore:
                 target_user_id,
                 "pairing_invite",
                 "ok",
-                f"Issued by {admin.user_id}",
+                f"Issued by {current.user_id}",
+                actor_user_id=current.user_id,
             )
         return {"invite_token": token, "expires_in": PAIRING_INVITE_SECONDS}
 
@@ -638,6 +643,7 @@ class SecurityStore:
                     "device_pairing",
                     "ok",
                     f"Paired device {device_id}",
+                    actor_user_id=invite["target_user_id"],
                 )
                 result = {
                     "device_token": token,
@@ -725,6 +731,7 @@ class SecurityStore:
                 "face_verification",
                 result,
                 detail,
+                actor_user_id=principal.user_id,
             )
 
     def get_user(self, user_id: str) -> dict[str, Any] | None:
@@ -760,6 +767,92 @@ class SecurityStore:
                 row
                 and int(row["auth_version"]) == auth_version
                 and (not require_face_access or bool(row["face_access"]))
+            )
+
+    def set_role(
+        self,
+        owner: Principal,
+        target_user_id: str,
+        is_admin: bool,
+    ) -> dict[str, Any]:
+        target_user_id = bounded_text(target_user_id, "target_user_id", 128)
+        if type(is_admin) is not bool:
+            raise SecurityError("invalid_role", 400, "is_admin must be a boolean")
+        now = self._now()
+        with self._lock, self._get_conn() as conn:
+            self._begin(conn)
+            current = principal_from_row(self._require_admin(conn, owner, now))
+            if not current.is_owner:
+                raise SecurityError(
+                    "owner_required",
+                    403,
+                    "only the product owner can assign an administrator",
+                )
+            target = self._security_user(conn, target_user_id)
+            if target is None:
+                raise SecurityError("user_not_found", 404, "active user not found")
+            if bool(target["is_owner"]):
+                raise SecurityError(
+                    "owner_role_fixed",
+                    409,
+                    "the product owner must remain an administrator",
+                )
+
+            changed_user_ids: list[str] = []
+            if is_admin:
+                other_admins = conn.execute(
+                    "SELECT s.user_id FROM user_security AS s "
+                    "LEFT JOIN commissioning_state AS c ON c.id=1 "
+                    "WHERE s.is_admin=1 AND s.user_id!=? "
+                    "AND (c.owner_user_id IS NULL OR s.user_id!=c.owner_user_id)",
+                    (target_user_id,),
+                ).fetchall()
+                for row in other_admins:
+                    conn.execute(
+                        "UPDATE user_security SET is_admin=0, "
+                        "auth_version=auth_version+1, updated_at=? WHERE user_id=?",
+                        (now, row["user_id"]),
+                    )
+                    changed_user_ids.append(row["user_id"])
+            if bool(target["is_admin"]) != is_admin:
+                conn.execute(
+                    "UPDATE user_security SET is_admin=?, "
+                    "auth_version=auth_version+1, updated_at=? WHERE user_id=?",
+                    (int(is_admin), now, target_user_id),
+                )
+                changed_user_ids.append(target_user_id)
+
+            for user_id in changed_user_ids:
+                conn.execute(
+                    "DELETE FROM operation_grants WHERE user_id=? OR target=?",
+                    (user_id, user_id),
+                )
+                conn.execute(
+                    "DELETE FROM pairing_invites WHERE issued_by_user_id=?",
+                    (user_id,),
+                )
+                self._audit(
+                    conn,
+                    user_id,
+                    "security_role_changed",
+                    "ok",
+                    f"admin={int(is_admin and user_id == target_user_id)}",
+                    actor_user_id=current.user_id,
+                )
+            if not changed_user_ids:
+                self._audit(
+                    conn,
+                    target_user_id,
+                    "security_role_unchanged",
+                    "ok",
+                    f"admin={int(is_admin)}",
+                    actor_user_id=current.user_id,
+                )
+            return user_payload(
+                target_user_id,
+                target["name"],
+                is_admin,
+                False,
             )
 
     def set_pin(self, admin: Principal, target_user_id: str, pin: str) -> None:
@@ -804,7 +897,8 @@ class SecurityStore:
                 target_user_id,
                 "security_pin_changed",
                 "ok",
-                f"Changed by {admin.user_id}; credentials revoked",
+                f"Changed by {current.user_id}; credentials revoked",
+                actor_user_id=current.user_id,
             )
 
     def revoke_device(self, admin: Principal, device_id: str) -> None:
@@ -843,7 +937,8 @@ class SecurityStore:
                 device["user_id"],
                 "device_revoked",
                 "ok",
-                f"Revoked {device_id} by {admin.user_id}",
+                f"Revoked {device_id} by {current.user_id}",
+                actor_user_id=current.user_id,
             )
 
     def list_devices(self, admin: Principal) -> list[dict[str, Any]]:
@@ -897,6 +992,7 @@ class SecurityStore:
                 "session_login",
                 "denied" if pin_error else "ok",
                 pin_error.code if pin_error else current.device_id,
+                actor_user_id=current.user_id,
             )
         if pin_error is not None:
             raise pin_error
@@ -924,6 +1020,12 @@ class SecurityStore:
                     "admin_required",
                     403,
                     "administrator access required",
+                )
+            if action in OWNER_ACTIONS and not current.is_owner:
+                raise SecurityError(
+                    "owner_required",
+                    403,
+                    "only the product owner can authorize this operation",
                 )
             self._require_owner_target_control(
                 conn,
@@ -960,6 +1062,7 @@ class SecurityStore:
                     "operation_authorization",
                     "denied",
                     f"{action}:{pin_error.code}",
+                    actor_user_id=current.user_id,
                 )
             else:
                 result = self._issue_operation_grant(
@@ -975,6 +1078,7 @@ class SecurityStore:
                     "operation_authorization",
                     "ok",
                     f"{action}:{target or '-'}",
+                    actor_user_id=current.user_id,
                 )
         if pin_error is not None:
             raise pin_error
@@ -1052,6 +1156,18 @@ class SecurityStore:
             current = principal_from_row(
                 self._require_principal(conn, principal, now)
             )
+            if action in ADMIN_ACTIONS and not current.is_admin:
+                raise SecurityError(
+                    "admin_required",
+                    403,
+                    "administrator access required",
+                )
+            if action in OWNER_ACTIONS and not current.is_owner:
+                raise SecurityError(
+                    "owner_required",
+                    403,
+                    "only the product owner can perform this operation",
+                )
             self._require_owner_target_control(conn, current, action, target)
             grant = conn.execute(
                 "SELECT 1 FROM operation_grants "
@@ -1083,6 +1199,7 @@ class SecurityStore:
                 "operation_grant_consumed",
                 "ok",
                 f"{action}:{target or '-'}",
+                actor_user_id=current.user_id,
             )
 
     @staticmethod
@@ -1101,11 +1218,25 @@ class SecurityStore:
         stage: str,
         result: str,
         detail: str,
+        *,
+        actor_user_id: str | None = None,
+        actor_kind: str | None = None,
     ) -> None:
+        actor_kind = actor_kind or ("user" if actor_user_id else "legacy")
         conn.execute(
-            "INSERT INTO auth_logs (id, user_id, stage, result, detail, ts) "
-            "VALUES (?,?,?,?,?,?)",
-            (str(uuid.uuid4()), user_id, stage, result, detail, int(time.time())),
+            "INSERT INTO auth_logs "
+            "(id, user_id, actor_user_id, actor_kind, stage, result, detail, ts) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()),
+                user_id,
+                actor_user_id,
+                actor_kind,
+                stage,
+                result,
+                detail,
+                int(time.time()),
+            ),
         )
 
     @staticmethod

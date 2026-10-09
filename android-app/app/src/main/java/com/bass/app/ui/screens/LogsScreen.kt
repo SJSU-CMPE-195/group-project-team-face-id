@@ -39,7 +39,6 @@ fun LogsScreen(
             BassCard {
                 SectionTitle(
                     title = stringResource(R.string.logs_title),
-                    description = stringResource(R.string.logs_description),
                     action = {
                         StatusChip(
                             text = logs.size.toString(),

@@ -26,6 +26,17 @@ ADMIN_ACTIONS = frozenset(
         "device.revoke",
         "pairing.invite",
         "user.pin",
+        "user.role",
+    }
+)
+OWNER_ACTIONS = frozenset({"user.role"})
+LOCAL_CONTROL_ACTIONS = frozenset(
+    {
+        "scan.unlock",
+        "scan.ignition",
+        "device.lock",
+        "ignition.stop",
+        "device.reset",
     }
 )
 OWN_USER_ACTIONS = frozenset(
@@ -220,6 +231,7 @@ def created_user_payload(
         **user_payload(user_id, name, is_admin, is_owner),
         "createdAt": created_at * 1000,
         "faceAccess": True,
+        "faceEnrolled": False,
     }
 
 

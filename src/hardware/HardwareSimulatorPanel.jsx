@@ -143,14 +143,13 @@ export default function HardwareSimulatorPanel({ embedded = false, onReset }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-300">
-            Simulated device inputs
+            Development mode
           </p>
           <h1 className="mt-1 text-2xl font-bold text-slate-100">
             Hardware Simulator
           </h1>
           <p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-400">
-            These controls simulate future device inputs. Ownership, PINs and
-            authorization are still verified by the real host service.
+            Simulated inputs with real host authentication.
           </p>
         </div>
         <Btn
@@ -213,13 +212,11 @@ export default function HardwareSimulatorPanel({ embedded = false, onReset }) {
             />
           </dl>
           <div className="mt-3 rounded-xl border border-white/[0.06] bg-dna-bg p-3 text-xs leading-relaxed text-slate-400">
-            Network: current PC HTTPS over the existing LAN. Device hotspot and
-            automatic Wi-Fi setup are not simulated or accepted in this phase.
+            PC HTTPS over the current LAN. Hotspot and Wi-Fi setup are unavailable.
           </div>
           {status.ownership === "legacy" ? (
             <p className="mt-4 text-xs leading-relaxed text-amber-200">
-              Existing product data is preserved. Use Development reset only
-              when you decide to test the complete first-owner flow.
+              Data is preserved. Development reset starts a new activation flow.
             </p>
           ) : null}
         </Card>
@@ -232,7 +229,7 @@ export default function HardwareSimulatorPanel({ embedded = false, onReset }) {
                 Power switch
               </div>
               <p className="mt-2 text-xs leading-relaxed text-slate-400">
-                Simulates device power only. It does not stop this PC console.
+                Simulates device power; this console stays open.
               </p>
             </div>
             <Switch
@@ -264,8 +261,7 @@ export default function HardwareSimulatorPanel({ embedded = false, onReset }) {
             Multifunction button
           </div>
           <p className="mt-2 text-xs leading-relaxed text-slate-400">
-            Hold 3 seconds for pairing. Hold 10 seconds for recovery. The host
-            measures the duration and chooses one action when you release.
+            Hold 3 seconds for pairing or 10 seconds for recovery, then release.
           </p>
           <button
             type="button"

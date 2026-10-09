@@ -8,24 +8,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from io import BytesIO
 from typing import Any
 
 from flask import Flask, g, jsonify, request
-from PIL import Image, UnidentifiedImageError
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from car_face_auth.src.pi_runtime import RuntimeRequestError
 from safety_policy import BOOLEAN_SETTINGS, INTEGER_SETTING_RANGES
 
 
-MAX_CLIENT_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_REQUEST_BYTES = 9 * 1024 * 1024
 MAX_JSON_BYTES = 64 * 1024
 MAX_NAME_CHARS = 100
 MAX_IDENTIFIER_CHARS = 128
-MAX_IMAGE_DIMENSION = 4096
-MAX_IMAGE_PIXELS = 4 * 1024 * 1024
 
 
 def json_object() -> dict[str, Any]:
@@ -120,33 +115,6 @@ def _validated_settings(payload: dict[str, Any]) -> dict[str, Any]:
             )
         validated[key] = value
     return validated
-
-
-def _jpeg_dimensions(data: bytes) -> tuple[int, int]:
-    if len(data) < 4 or data[:2] != b"\xff\xd8":
-        raise RuntimeRequestError("image must be a valid JPEG", 400)
-    try:
-        with Image.open(BytesIO(data)) as image:
-            if image.format != "JPEG":
-                raise RuntimeRequestError("image must be a valid JPEG", 400)
-            width, height = image.size
-            if width <= 0 or height <= 0:
-                raise RuntimeRequestError("image has invalid dimensions", 400)
-            if (
-                width > MAX_IMAGE_DIMENSION
-                or height > MAX_IMAGE_DIMENSION
-                or width * height > MAX_IMAGE_PIXELS
-            ):
-                raise RuntimeRequestError("image dimensions are too large", 413)
-            image.verify()
-    except RuntimeRequestError:
-        raise
-    except Image.DecompressionBombError as exc:
-        raise RuntimeRequestError("image dimensions are too large", 413) from exc
-    except (OSError, UnidentifiedImageError) as exc:
-        raise RuntimeRequestError("image must be a valid JPEG", 400) from exc
-
-    return width, height
 
 
 def create_app(*, db_module: Any, runtime: Any) -> Flask:
@@ -277,17 +245,29 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
     def api_lock():
         body = json_object()
         reason = _bounded_string(body.get("reason"), "reason", 64) or "manual_ui"
-        result = runtime_impl.force_lock(reason=reason)
+        actor = g.get("principal")
+        lock_args = {"reason": reason}
+        if actor:
+            lock_args["actor_user_id"] = actor.user_id
+        result = runtime_impl.force_lock(**lock_args)
         return (jsonify(result), 200 if result.get("ok") else 503)
 
     @app.post("/api/ignition/stop")
     def api_ignition_stop():
-        result = runtime_impl.set_ignition(False, reason="api_stop")
+        actor = g.get("principal")
+        ignition_args = {"reason": "api_stop"}
+        if actor:
+            ignition_args["actor_user_id"] = actor.user_id
+        result = runtime_impl.set_ignition(False, **ignition_args)
         return jsonify(result), 200 if result.get("ok") else 503
 
     @app.post("/api/full-reset")
     def api_full_reset():
-        result = runtime_impl.force_lock(reason="full_reset")
+        actor = g.get("principal")
+        lock_args = {"reason": "full_reset"}
+        if actor:
+            lock_args["actor_user_id"] = actor.user_id
+        result = runtime_impl.force_lock(**lock_args)
         return jsonify(result), 200 if result.get("ok") else 503
 
     @app.get("/api/users")
@@ -321,6 +301,8 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
     @app.post("/api/users")
     def api_add_user():
         body = json_object()
+        if set(body) != {"name", "pin"}:
+            return json_error("only name and pin are accepted", 400)
         name = _bounded_string(
             body.get("name"),
             "name",
@@ -329,9 +311,7 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
         )
         security = app.extensions.get("bass_security")
         if security:
-            result = security.create_user(g.principal, name, body.get("pin"),
-                                          body.get("is_admin", False),
-                                          body.get("enroll_face", False))
+            result = security.create_user(g.principal, name, body.get("pin"))
         else:
             result = db_module.add_user(name)
         if result.get("ok") is False:
@@ -376,6 +356,9 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
 
     @app.get("/api/logs")
     def api_logs():
+        actor = g.get("principal")
+        if actor:
+            return jsonify(db_module.list_logs_for_ui(principal=actor))
         return jsonify(db_module.list_logs_for_ui())
 
     @app.get("/api/settings")
@@ -483,58 +466,34 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
             required=True,
         )
         try:
-            authorization = {"authorization": g.principal} if g.get("principal") else {}
-            if source in {"device_camera", "pi_camera", "pc_webcam"}:
-                result = runtime_impl.start_enrollment(name, **authorization)
-            elif source in {"client_camera", "phone_camera"}:
-                result = runtime_impl.start_client_enrollment(name, **authorization)
-            else:
+            if source in {"client_camera", "phone_camera"}:
                 raise RuntimeRequestError(
-                    "source must be device_camera or client_camera",
-                    400,
+                    "face enrollment requires the backend host camera",
+                    409,
                 )
+            authorization = (
+                {"authorization": g.principal}
+                if g.get("principal")
+                else {}
+            )
+            result = runtime_impl.start_enrollment(name, **authorization)
             return jsonify(result)
         except RuntimeRequestError as exc:
             return runtime_error(exc)
 
     @app.post("/api/enroll/sample")
     def api_enroll_sample():
-        if request.mimetype != "multipart/form-data":
-            return json_error("multipart/form-data content type required", 415)
-        session_id = _bounded_string(
-            request.form.get("session_id") or request.form.get("sessionId"),
-            "session_id",
-            MAX_IDENTIFIER_CHARS,
-            required=True,
+        return json_error(
+            "client camera enrollment has been retired; use the host camera",
+            410,
         )
-        image = request.files.get("image")
-        if image is None:
-            return json_error("image is required", 400)
-        if (image.mimetype or "").lower() not in {"image/jpeg", "image/jpg"}:
-            return json_error("image must be a JPEG", 415)
-        image_bytes = image.stream.read(MAX_CLIENT_IMAGE_BYTES + 1)
-        if len(image_bytes) > MAX_CLIENT_IMAGE_BYTES:
-            return json_error("image is too large", 413)
-        _jpeg_dimensions(image_bytes)
-        try:
-            return jsonify(runtime_impl.add_client_enrollment_sample(session_id, image_bytes))
-        except RuntimeRequestError as exc:
-            return runtime_error(exc)
 
     @app.post("/api/enroll/finish")
     def api_enroll_finish():
-        body = json_object()
-        session_id = _bounded_string(
-            body.get("session_id") or body.get("sessionId"),
-            "session_id",
-            MAX_IDENTIFIER_CHARS,
-            required=True,
+        return json_error(
+            "client camera enrollment has been retired; use the host camera",
+            410,
         )
-        try:
-            result = runtime_impl.finish_client_enrollment(session_id)
-        except RuntimeRequestError as exc:
-            return runtime_error(exc)
-        return jsonify(result), 200 if result.get("ok") else 503
 
     @app.get("/api/enroll/status")
     def api_enroll_status():

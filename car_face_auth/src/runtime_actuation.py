@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterator
 
 
 CommandSender = Callable[..., bool]
-EventLogger = Callable[[str, str, str, str | None], None]
+EventLogger = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -69,9 +69,13 @@ class RuntimeActuation:
         ignition_stop_seconds: int,
         closed: bool,
         expected_generation: int | None = None,
+        user_id: str | None = None,
+        actor_user_id: str | None = None,
+        actor_kind: str = "system",
     ) -> dict[str, Any]:
         running = bool(running)
         with self._lock:
+            event_user_id = user_id or self._unlock_owner_id or actor_user_id
             if self._maintenance_requested.is_set() or self._maintenance:
                 return self._error("Pi runtime is in maintenance")
             if closed:
@@ -115,7 +119,14 @@ class RuntimeActuation:
             if not running:
                 self._cancel_ignition_stop()
             action = "start" if running else "stop"
-            self._log("ignition", "ok", f"{action}:{reason}", None)
+            self._log(
+                "ignition",
+                "ok",
+                f"{action}:{reason}",
+                event_user_id,
+                actor_user_id=actor_user_id,
+                actor_kind=actor_kind,
+            )
             return {
                 "ok": True,
                 "ignitionOn": running,
@@ -131,6 +142,8 @@ class RuntimeActuation:
         *,
         auto_relock_seconds: int,
         expected_generation: int,
+        actor_user_id: str | None = None,
+        actor_kind: str = "system",
     ) -> dict[str, Any]:
         with self._lock:
             if self._maintenance_requested.is_set() or self._maintenance:
@@ -138,14 +151,22 @@ class RuntimeActuation:
             if self._generation != expected_generation:
                 return self._error("Actuation authorization changed before unlock")
             try:
-                self._arm_auto_relock(auto_relock_seconds)
+                self._arm_auto_relock(
+                    auto_relock_seconds,
+                    user_id=user_id,
+                )
             except RuntimeError as exc:
                 return self._error(str(exc))
             if not self._send_command("UNLOCK"):
                 self._cancel_auto_relock()
                 return self._error("UNLOCK command was not sent")
             try:
-                self._db.set_unlock(reason=reason)
+                self._db.set_unlock(
+                    reason=reason,
+                    user_id=user_id,
+                    actor_user_id=actor_user_id,
+                    actor_kind=actor_kind,
+                )
             except Exception as exc:
                 compensating_lock_sent = self._send_command(
                     "LOCK",
@@ -177,18 +198,35 @@ class RuntimeActuation:
             self._unlock_owner = user_name
             self._unlock_owner_id = user_id
             self._generation += 1
-            self._log("face_scan", "ok", f"Granted: {user_name}", user_id)
+            self._log(
+                "face_scan",
+                "ok",
+                f"Granted: {user_name}",
+                user_id,
+                actor_user_id=actor_user_id,
+                actor_kind=actor_kind,
+            )
             return {
                 "ok": True,
                 "command_sent": True,
                 "physical_state_confirmed": False,
             }
 
-    def force_lock(self, reason: str) -> dict[str, Any]:
+    def force_lock(
+        self,
+        reason: str,
+        *,
+        actor_user_id: str | None = None,
+        actor_kind: str = "system",
+    ) -> dict[str, Any]:
         with self._lock:
             if self._maintenance_requested.is_set() or self._maintenance:
                 return self._error("Pi runtime is in maintenance")
-            return self._force_lock(reason)
+            return self._force_lock(
+                reason,
+                actor_user_id=actor_user_id,
+                actor_kind=actor_kind,
+            )
 
     def quiesce(self, reason: str, timeout: float) -> dict[str, Any]:
         """Stop safety timers and leave actuation locked in maintenance."""
@@ -269,16 +307,36 @@ class RuntimeActuation:
             self._generation += 1
             return True
 
-    def _force_lock(self, reason: str) -> dict[str, Any]:
+    def _force_lock(
+        self,
+        reason: str,
+        *,
+        user_id: str | None = None,
+        actor_user_id: str | None = None,
+        actor_kind: str = "system",
+    ) -> dict[str, Any]:
         self._generation += 1
-        result = self._dispatch_lock(reason)
+        result = self._dispatch_lock(
+            reason,
+            user_id=user_id,
+            actor_user_id=actor_user_id,
+            actor_kind=actor_kind,
+        )
         if result.get("ok"):
             self._cancel_auto_relock()
             self._cancel_ignition_stop()
             self._mark_locked()
         return result
 
-    def _dispatch_lock(self, reason: str) -> dict[str, Any]:
+    def _dispatch_lock(
+        self,
+        reason: str,
+        *,
+        user_id: str | None = None,
+        actor_user_id: str | None = None,
+        actor_kind: str = "system",
+    ) -> dict[str, Any]:
+        event_user_id = user_id or self._unlock_owner_id or actor_user_id
         stop_ok = self._send_command("STOP")
         lock_ok = self._send_command("LOCK")
         result = {
@@ -300,7 +358,12 @@ class RuntimeActuation:
                 "locked": False,
             }
         try:
-            self._db.set_lock(reason=reason)
+            self._db.set_lock(
+                reason=reason,
+                user_id=event_user_id,
+                actor_user_id=actor_user_id,
+                actor_kind=actor_kind,
+            )
         except Exception as exc:
             return {
                 **result,
@@ -310,7 +373,12 @@ class RuntimeActuation:
             }
         return {**result, "ok": True, "locked": True}
 
-    def _arm_auto_relock(self, seconds: int) -> None:
+    def _arm_auto_relock(
+        self,
+        seconds: int,
+        *,
+        user_id: str | None,
+    ) -> None:
         if seconds <= 0:
             self._cancel_auto_relock()
             return
@@ -324,7 +392,10 @@ class RuntimeActuation:
                 self._auto_relock_timer = None
                 if self._maintenance_requested.is_set() or self._maintenance:
                     return
-                self._force_lock(f"auto_relock_{seconds}s")
+                self._force_lock(
+                    f"auto_relock_{seconds}s",
+                    user_id=user_id,
+                )
 
         if self._maintenance_requested.is_set() or self._maintenance:
             raise RuntimeError("Pi runtime is in maintenance")
@@ -346,6 +417,7 @@ class RuntimeActuation:
             self._cancel_ignition_stop()
             return
         previous_timer = self._ignition_stop_timer
+        user_id = self._unlock_owner_id
         timer = None
 
         def stop_if_current() -> None:
@@ -360,6 +432,7 @@ class RuntimeActuation:
                     f"ignition_timeout_{seconds}s",
                     ignition_stop_seconds=0,
                     closed=False,
+                    user_id=user_id,
                 )
 
         if self._maintenance_requested.is_set() or self._maintenance:

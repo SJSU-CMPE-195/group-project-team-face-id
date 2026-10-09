@@ -137,7 +137,7 @@ export default function DevelopmentResetCard({ buttonHeld, onReset }) {
           role="status"
           className="mb-4 rounded-xl border border-emerald-400/25 bg-emerald-400/10 p-3 text-sm text-emerald-200"
         >
-          This reset request completed. The current device state is shown above.
+          Reset complete.
         </div>
       ) : null}
       {completion === "retirement_blocked" ? (
@@ -146,9 +146,7 @@ export default function DevelopmentResetCard({ buttonHeld, onReset }) {
           className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-100"
         >
           <p>
-            The host completed the reset, but this tab remains in recovery mode
-            until its completed request ID can be removed. No new reset request
-            will be issued.
+            Reset complete. Browser cleanup is pending; no new reset will start.
           </p>
           <Btn
             className="mt-3"

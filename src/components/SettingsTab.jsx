@@ -3,11 +3,10 @@ import Card from "./Card";
 import Input from "./Input";
 import Switch from "./Switch";
 import Btn from "./Btn";
-import DevicePairingCard from "./DevicePairingCard";
 
 export default function SettingsTab({ settings, setSettings, busy, saveSettings, isAdmin, livenessAvailable }) {
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+    <div className="max-w-2xl">
       <Card>
         <div className="text-sm font-semibold text-slate-100">Core settings</div>
 
@@ -130,8 +129,6 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings,
           </div> : null}
         </div>
       </Card>
-
-      {isAdmin ? <DevicePairingCard /> : null}
     </div>
   );
 }

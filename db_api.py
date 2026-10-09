@@ -7,10 +7,30 @@ from safety_policy import BOOLEAN_SETTINGS, INTEGER_SETTING_RANGES
 # ── Device status (face-ui /api/status) ─────────────────────────────────────────
 
 
-def _insert_log(conn, stage: str, result: str, detail: str = "", user_id: str = None):
+def _insert_log(
+    conn,
+    stage: str,
+    result: str,
+    detail: str = "",
+    user_id: str = None,
+    *,
+    actor_user_id: str = None,
+    actor_kind: str = "legacy",
+):
     conn.execute(
-        "INSERT INTO auth_logs (id, user_id, stage, result, detail, ts) VALUES (?,?,?,?,?,?)",
-        (str(uuid.uuid4()), user_id, stage, result, detail, int(time.time())),
+        "INSERT INTO auth_logs "
+        "(id, user_id, actor_user_id, actor_kind, stage, result, detail, ts) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (
+            str(uuid.uuid4()),
+            user_id,
+            actor_user_id,
+            actor_kind,
+            stage,
+            result,
+            detail,
+            int(time.time()),
+        ),
     )
 
 def get_status():
@@ -38,30 +58,59 @@ def get_status():
             "lastSeen": last,
         }
 
-def set_unlock(reason: str = "manual_ui"):
+def set_unlock(
+    reason: str = "manual_ui",
+    *,
+    user_id: str = None,
+    actor_user_id: str = None,
+    actor_kind: str = "legacy",
+):
     now_ms = int(time.time() * 1000)
     with get_conn() as conn:
         conn.execute(
             "UPDATE device_state SET lock_state = 'unlocked', last_seen = ? WHERE id = 1",
             (now_ms,),
         )
-        _insert_log(conn, "unlock", "ok", detail=reason)
+        _insert_log(
+            conn,
+            "unlock",
+            "ok",
+            detail=reason,
+            user_id=user_id,
+            actor_user_id=actor_user_id,
+            actor_kind=actor_kind,
+        )
 
-def set_lock(reason: str = "auto_relock"):
+def set_lock(
+    reason: str = "auto_relock",
+    *,
+    user_id: str = None,
+    actor_user_id: str = None,
+    actor_kind: str = "legacy",
+):
     now_ms = int(time.time() * 1000)
     with get_conn() as conn:
         conn.execute(
             "UPDATE device_state SET lock_state = 'locked', last_seen = ? WHERE id = 1",
             (now_ms,),
         )
-        _insert_log(conn, "lock", "ok", detail=reason)
+        _insert_log(
+            conn,
+            "lock",
+            "ok",
+            detail=reason,
+            user_id=user_id,
+            actor_user_id=actor_user_id,
+            actor_kind=actor_kind,
+        )
 
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 def get_all_users():
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, name, face_access, created_at FROM users WHERE active=1 ORDER BY created_at DESC"
+            "SELECT id, name, face_access, face_encoding IS NOT NULL AS face_enrolled, "
+            "created_at FROM users WHERE active=1 ORDER BY created_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -72,6 +121,7 @@ def list_users_for_ui():
             "id": u["id"],
             "name": u["name"],
             "faceAccess": bool(u.get("face_access", 1)),
+            "faceEnrolled": bool(u.get("face_enrolled")),
             "createdAt": int(u["created_at"]) * 1000,
         }
         for u in get_all_users()
@@ -183,9 +233,25 @@ def get_all_face_encodings():
 
 # ── Logs ───────────────────────────────────────────────────────────────────────
 
-def log_event(stage: str, result: str, detail: str = "", user_id: str = None):
+def log_event(
+    stage: str,
+    result: str,
+    detail: str = "",
+    user_id: str = None,
+    *,
+    actor_user_id: str = None,
+    actor_kind: str = "legacy",
+):
     with get_conn() as conn:
-        _insert_log(conn, stage, result, detail=detail, user_id=user_id)
+        _insert_log(
+            conn,
+            stage,
+            result,
+            detail=detail,
+            user_id=user_id,
+            actor_user_id=actor_user_id,
+            actor_kind=actor_kind,
+        )
 
 def get_logs(limit: int = 80):
     with get_conn() as conn:
@@ -201,19 +267,54 @@ def _result_ok(result: str) -> bool:
     return result.lower() in ("ok", "success", "true", "pass", "1")
 
 
-def list_logs_for_ui(limit: int = 80):
+def list_logs_for_ui(limit: int = 80, *, principal=None):
+    where = ""
+    params = []
+    if principal is not None and not getattr(principal, "is_owner", False):
+        user_id = getattr(principal, "user_id", None)
+        if not user_id:
+            return []
+        if getattr(principal, "is_admin", False):
+            with get_conn() as conn:
+                owner = conn.execute(
+                    "SELECT owner_user_id FROM commissioning_state "
+                    "WHERE id=1 AND ownership='claimed'"
+                ).fetchone()
+            owner_id = owner["owner_user_id"] if owner else None
+            where = (
+                "WHERE actor_kind != 'legacy' "
+                "AND (? IS NULL OR actor_user_id IS NULL OR actor_user_id != ?) "
+                "AND (? IS NULL OR user_id IS NULL OR user_id != ?) "
+            )
+            params.extend((owner_id, owner_id, owner_id, owner_id))
+        else:
+            where = (
+                "WHERE actor_kind != 'legacy' "
+                "AND (actor_user_id = ? OR user_id = ?) "
+            )
+            params.extend((user_id, user_id))
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM auth_logs {where}ORDER BY ts DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+
     out = []
-    for row in get_logs(limit):
+    for row in rows:
         ts = row["ts"]
         if ts < 10_000_000_000:
             ts = ts * 1000
+        detail = row["detail"] or ""
+        if principal is not None and not getattr(principal, "is_owner", False):
+            detail = f"{row['stage']}: {row['result']}"
         out.append(
             {
                 "id": row["id"],
                 "ts": ts,
                 "type": row["stage"],
                 "ok": _result_ok(row["result"]),
-                "detail": row["detail"] or "",
+                "detail": detail,
             }
         )
     return out

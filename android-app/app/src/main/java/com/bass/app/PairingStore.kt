@@ -226,45 +226,6 @@ class PairingStore(private val context: Context) {
             true
         }
 
-    fun savePendingTransfer(pending: PendingTransfer, expectedWriteScope: Long): Boolean =
-        synchronized(mutationLock) {
-            if (writeScope != expectedWriteScope) return@synchronized false
-            val encrypted = encrypted(pending.json())
-            check(
-                preferences.edit()
-                    .putString(KEY_TRANSFER_IV, encrypted.iv)
-                    .putString(KEY_TRANSFER_DATA, encrypted.data)
-                    .commit()
-            ) { context.getString(R.string.core_pairing_save_failed) }
-            true
-        }
-
-    fun completeTransfer(
-        pending: PendingTransfer,
-        material: ExportMaterial,
-        expectedWriteScope: Long,
-    ): Boolean =
-        synchronized(mutationLock) {
-            if (writeScope != expectedWriteScope) return@synchronized false
-            val stored = decryptedText(KEY_TRANSFER_IV, KEY_TRANSFER_DATA)?.let(PendingTransfer::parse)
-            check(stored == pending) { "Pending transfer does not match" }
-            val raw =
-                JSONObject()
-                    .put("file_name", material.fileName)
-                    .put("content", material.content)
-                    .toString()
-            val encrypted = encrypted(raw)
-            check(
-                preferences.edit()
-                    .remove(KEY_TRANSFER_IV)
-                    .remove(KEY_TRANSFER_DATA)
-                    .putString(KEY_EXPORT_IV, encrypted.iv)
-                    .putString(KEY_EXPORT_DATA, encrypted.data)
-                    .commit()
-            ) { context.getString(R.string.core_pairing_save_failed) }
-            true
-        }
-
     fun discardPendingTransfer(expectedWriteScope: Long): Boolean =
         synchronized(mutationLock) {
             if (writeScope != expectedWriteScope) return@synchronized false

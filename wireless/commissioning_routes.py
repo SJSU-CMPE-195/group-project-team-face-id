@@ -1,6 +1,6 @@
 """Pinned-HTTPS commissioning routes with server-owned lifecycle decisions."""
 
-from flask import g, jsonify, request
+from flask import jsonify, request
 
 from pi_device_api import json_object
 from .security import SecurityError
@@ -47,8 +47,14 @@ def register_commissioning_routes(
 
     @app.post("/api/commissioning/transfer/accept")
     def accept_owner_transfer():
-        return jsonify(transfer_handler(json_object())), 201
+        raise SecurityError(
+            "route_retired", 410,
+            "Owner transfer is retired. Contact the developer for a factory reset.",
+        )
 
     @app.post("/api/ownership/transfer")
     def start_owner_transfer():
-        return jsonify(commissioning.start_transfer(g.principal, json_object())), 201
+        raise SecurityError(
+            "route_retired", 410,
+            "Owner transfer is retired. Contact the developer for a factory reset.",
+        )

@@ -21,7 +21,7 @@ VPNs can block discovery. The app does not install itself or configure Wi-Fi.
 3. Follow the launcher instructions for Private-network firewall rules if needed.
 4. Keep the host running and open `http://localhost:5057` on the PC. Existing
    accounts can sign in. New ownership is established from Android using an
-   activation card and a device pairing window; local administrator bootstrap
+   one-time activation card and a name/PIN; no button is required. Local administrator bootstrap
    is retired. For the current hardware-free PC, use the
    [Hardware Simulator tab](#hardware-simulator-and-developer-reset).
 5. In **Users**, create the intended user with a six-digit PIN, then select
@@ -47,15 +47,15 @@ PowerShell. Rules allow only Private profiles and local-subnet peers.
 Every unlock uses the camera attached to the connected backend. On Windows,
 the backend captures its webcam and runs CPU InsightFace recognition; on Pi,
 it captures the Pi camera. The UI device does not select or upload unlock
-images. Phone images remain supported for enrollment.
+images. Enrollment also uses the host camera; phone images are rejected.
 
 PC lock and ignition outputs are simulated and identified as such. A real face
 match is still required before the simulated lock opens. PC success does not
-establish that a physical lock or engine responded. The real Pi blocks every
-motor and ignition output path until the protocol provides command
-acknowledgement and physical-position feedback. Android uses the single wireless
-HTTPS API (port 5056 by default); Vite and the standalone Face API on port 8765
-are not required. The old standalone Face API is retired and cannot be started.
+establish that a physical lock or engine responded. Pi prototype mode sends
+real ESP32 commands; physical motor and lock state remain unconfirmed.
+Android uses the single wireless HTTPS API (port 5056 by default); Vite and the
+standalone Face API on port 8765 are not required. The old standalone Face API
+is retired and cannot be started.
 
 ## One dashboard and phone connection
 
@@ -71,8 +71,8 @@ account and confirms their administrator PIN. Scan the displayed invitation QR
 in BASS Android and enter the invited account's PIN. This single scan supplies
 the device identity, TLS pin and invitation; the PIN stays separate. The host
 returns a distinct revocable credential for that phone. The dashboard and phone
-then share the host's users, settings, camera, and controls within that user's
-permissions. Open **Users**, then select **Refresh** to load a new phone
+then share the host's scoped users, logs and vehicle status. Phones have no
+vehicle controls or Settings tab; administrators can start host-camera enrollment. Open **Users**, then select **Refresh** to load a new phone
 enrollment.
 Switching to a different Pi requires scanning that Pi's QR; proximity does not
 change the pairing. The version 3 public QR carries the device identity and
@@ -106,17 +106,17 @@ the host port; the parameter also defaults from `BASS_DASHBOARD_PORT`.
 ## Hardware simulator and developer reset
 
 The PC developer panel uses the existing host database, identity and LAN
-connection. Start `scripts/start-wireless.cmd -HardwareSimulator`, open the normal
+connection. PC mode enables it by default. Start `scripts/start-wireless.cmd`, open the normal
 dashboard at `http://localhost:5057`, and select **Hardware** in its sidebar.
 The controls stay in that dashboard before product login and after product
 reset. Other product tabs still require sign-in.
 
-This explicit PC development mode trusts direct localhost clients. The backend
+PC development mode trusts direct localhost clients. The backend
 silently establishes and renews a separate HttpOnly developer cookie and CSRF
 token when the UI reads hardware status. There is no separate developer login
 or special browser entry. Writes still require the cookie, exact Origin and
-CSRF token. The LAN listener, cross-origin requests, ordinary PC startup and Pi
-mode cannot use these controls. Enable this mode only on a trusted development
+CSRF token. The LAN listener, cross-origin requests and Pi
+mode cannot use these controls. Run PC mode only on a trusted development
 PC.
 The built dashboard at `http://localhost:5057` is the control surface; Vite does
 not proxy these privileged developer routes.
@@ -126,15 +126,17 @@ two-minute pairing window; ten seconds opens a two-minute recovery window.
 Only one action fires on release. The backend times the press and expires it
 when keepalives stop. Losing focus cancels the incomplete press. Power off
 cancels work and windows while retaining committed ownership.
+The pairing-window indicator is a development input; first activation does not
+require it.
 
-Fresh devices require the activation card, an open pairing window, and a name
-and six-digit PIN chosen in Android. The app saves the pending request and
+Fresh devices require the one-time activation card and a name and six-digit PIN
+chosen in Android. No physical button is required; the first successful claim
+becomes the owner and invalidates the activation credential. The app saves the pending request and
 credentials before submitting, so an interrupted reply can resume the same
 attempt. Export recovery material outside the phone. Recovery requires that
 separate material and the recovery window, rotates recovery credentials, and
-revokes previous device sessions. Ownership transfer requires the current owner,
-a fresh PIN, and pairing window; the successor must accept its short-lived
-transfer credential and create their own PIN. Invited administrators cannot
+revokes previous device sessions. Owner transfer is retired; a developer must
+fully reset the product before issuing another owner activation card. Ordinary administrators cannot
 alter the owner's PIN, face, account access or devices.
 
 Upgrades classify existing populated databases as `legacy`; they do not select
@@ -160,7 +162,56 @@ mode have no developer routes. Even in developer mode, LAN requests cannot use
 them. No real hotspot, automatic Wi-Fi provisioning, GPIO, trusted boot, rollback
 protection, PAD or physical actuator acceptance is supplied by this panel.
 
-## Watch a phone-triggered scan on the host
+## Factory owner QR and full reset
+
+The product ships with a private one-time activation QR. The first successful
+QR/name/PIN claim becomes the super administrator; scanning alone does not
+consume it. A public device QR is discovery information and grants no access.
+Claim retries reuse the same saved request and credentials.
+
+The developer's offline tool requires the matching SQLite, `device.json`,
+`device.tls.pem` and `device.auth.key`. Stop `faceid-wireless.service` on Pi or
+the PC host before using it. The tool and host acquire the same database process
+lock. It never opens a camera, listener or hardware simulator.
+
+For an unclaimed product, reprint its existing activation credential:
+
+```bash
+.venv-wireless/bin/python scripts/factory-owner-qr.py export \
+  --db /home/pi/faceid/faceid.db --config /home/pi/faceid/device.json \
+  --output /home/pi/faceid/activation
+```
+
+For a claimed or legacy product, issue a new Owner QR only through a complete
+reset. Use a fresh UUID for a new reset, and retain it for every retry:
+
+```bash
+.venv-wireless/bin/python scripts/factory-owner-qr.py reset \
+  --db /home/pi/faceid/faceid.db --config /home/pi/faceid/device.json \
+  --output /home/pi/faceid/activation \
+  --request-id YOUR-RESET-UUID --confirm RESET
+```
+
+On Windows, use `.venv-wireless/Scripts/python.exe` and the actual Windows
+database/config/output paths. The command prints paths and a request ID, never
+the activation secret. It creates private `bass-activation.png` and printable
+`bass-activation.html` files.
+
+Reset verifies a coherent database/identity/key backup before schema migration,
+then creates another verified backup before clearing accounts,
+faces, logs, credentials, invitations and recovery data. Device UUID, TLS pin
+and PIN pepper remain unchanged; ownership generation increments and the old
+activation secret is replaced. An export failure can retry the same reset ID
+without repeating its committed wipe. An incomplete reset blocks normal host
+startup; resume that request with this offline tool rather than deleting its
+journal. Product Owner transfer endpoints return 410.
+
+The additive audit-column migration uses the existing
+[`--migrate-security-only` procedure](#manual-pi-authorization-migration).
+Migration and Pi code deployment are separate operations; this change does not
+claim that either has been performed on a real Pi.
+
+## Watch phone-triggered enrollment on the host
 
 Open the dashboard on the backend computer at `http://localhost:5057` (or
 `http://localhost:5173` during development). Sign in as an administrator and
@@ -168,10 +219,8 @@ leave its **Control** tab open. Administrators can preview sessions started on
 other devices. Regular users can view only sessions they started on their own
 device. Preview permission does not allow cancelling or changing another
 device's session.
-Starting face unlock or ignition verification on the phone displays the host's
-camera image in the original camera viewport and progress in the existing scan
-status area. Backend-camera enrollment uses the same viewport while Control is
-open.
+Starting enrollment from the phone displays the host camera in the existing
+Control viewport. Unlock and ignition start only from the local dashboard.
 
 The backend opens its camera once and captures continuously. Recognition reads
 new frames from that capture while the dashboard displays a continuous MJPEG
@@ -180,19 +229,18 @@ not open the webcam separately. Actual smoothness depends on the camera, host
 load, and connection; the view is a positioning aid and is not recorded.
 The image clears when capture ends or the connection fails. The latest session
 result remains visible. Viewing or leaving
-the preview does not start or cancel the phone's scan. Phone-camera enrollment
-images are not included in this host-camera preview.
+the preview does not start or cancel the enrollment session. The phone never
+opens its camera for face enrollment.
 
-## Display the QR in web Settings
+## Pair a phone from Users
 
 On the PC or Pi itself, keep the wireless host running and open the existing
 BASS web UI through `localhost` or `127.0.0.1` and sign in as an administrator.
-In **Settings → Device pairing**, select **Show QR**. The card displays that
-host's name and fixed public QR. For normal phone pairing, use **Users → Pair
-phone** and scan its invitation QR instead. If the phone already scanned the
-fixed public QR, choose **Scan invitation QR** on the next screen, then enter
-the user's PIN. Select **Hide QR** when finished; leaving Settings also clears
-the displayed QR.
+Choose the account in **Users → Pair phone**, authorize with the administrator's
+PIN, then scan the invitation QR in Android and enter that user's PIN. The
+invitation already identifies the host; there is no separate Settings QR step.
+If the phone already scanned a fixed public QR, choose **Scan invitation QR** on
+the next screen, then enter the user's PIN. Select **Hide QR** when finished.
 
 The Users invitation contains the same fixed identity plus a one-use invitation
 token. The dashboard removes the image at expiry and shows a countdown. Only the
@@ -205,18 +253,15 @@ recipient opens it from the initial pairing screen's saved-file action. Older
 token-only invitation files need to be reissued. A rejected PIN can be corrected
 without rescanning a still-valid invitation; an expired invitation needs a new QR.
 
-The card loads `/local/pairing-qr` from the same origin as its controls. The
-built dashboard uses the serving backend's actual port; the development server
-forwards to its local backend. Both use that backend's loaded identity. A
+The Users invitation comes from the authenticated `/api/pairing-invites` route.
+The built dashboard uses the serving backend's actual port; the development
+server forwards to its local backend. Both use that backend's loaded identity. A
 standalone `vite preview` only serves files and is not the operational dashboard.
 
-This QR is available only to a browser on the host. Opening the web UI through
-a LAN address does not grant access. The read endpoint
-`GET /local/pairing-qr` requires a loopback peer, loopback Host, and trusted local
-browser request, an authenticated local administrator session, and returns
-non-cacheable metadata plus the PNG as a data URL. It is separate from the
-authenticated functional `/api/*` routes. Displaying the QR does not create a
-phone credential; only successful invite-and-PIN onboarding does that.
+The compatibility endpoint `GET /local/pairing-qr` remains local-only and
+administrator-authenticated, but has no Settings card. A fixed public QR
+identifies a host; only successful invite-and-PIN onboarding creates a phone
+credential.
 
 ## Build the APK
 
@@ -300,12 +345,17 @@ It does not revoke the host's credential record or remove backend users, face
 templates, PIN verifiers, other phones, or the fixed QR. An administrator can
 separately revoke a phone from the device list.
 
-Phone camera is available for enrollment only. Face unlock and same-person
-ignition verification always use the connected backend's camera: PC webcam or
-Pi camera. Every unlock button starts this flow. An unavailable camera, failed
-match, or cancelled scan cannot fall back to a PIN-only/manual unlock. Lock,
-stop, and reset retain their existing behavior. Android must not show successful
-physical actuation in PC mode.
+Phone camera is available for QR scanning only. Android exposes Status, Users
+and Logs. Administrators can add name/PIN accounts and later start host-camera
+enrollment, issue invitations and revoke phones. The owner alone can replace
+the one ordinary administrator. Ordinary users receive only their own account
+and logs; ordinary administrators receive logs excluding owner involvement.
+
+Vehicle operations are available only through the trusted local dashboard.
+Production face capture uses Pi; PC webcam and simulated actuators are explicitly
+labeled development behavior. An unavailable camera, failed match or cancelled
+scan cannot fall back to a PIN-only/manual unlock. Old phones are also refused
+by the service when attempting vehicle operations.
 
 The paired host determines the camera. To use a Pi instead of the PC, connect
 to that Pi's identity. Being near another host does not silently switch the
@@ -320,7 +370,7 @@ authorization secret. Invitation QR uses the same version, device ID and TLS pin
 with `purpose: "pairing_invite"` and `invite_token` (64 lowercase hex digits).
 It contains no PIN, activation, recovery or transfer credential. Android checks
 both the device ID and certificate pin when an invitation is scanned after a
-public device QR. Activation, recovery and transfer cards each have a
+public device QR. Activation and recovery cards each have a
 distinct purpose and only their corresponding secret. The TLS value is the lowercase hexadecimal SHA-256
 fingerprint of the leaf certificate's DER bytes. Android verifies this pin
 during the TLS handshake before sending an activation/recovery proof, invite, PIN, or
@@ -338,7 +388,7 @@ proof of host identity. An IP change does not require a new label.
 
 Possession of the QR does not grant control. Successful onboarding also needs an
 unexpired user-specific invite and that user's PIN. Keep activation, recovery
-and transfer exports private. The fixed public QR display is local-only.
+exports private. The fixed public QR display is local-only.
 Invitation images are returned only to authenticated administrators after the
 existing PIN-authorized operation grant, with `Cache-Control: no-store`.
 Android encrypts its distinct phone token with Android
@@ -387,34 +437,39 @@ and rejects remote peers.
 The canonical host is served by bounded Cheroot 11.1.2 workers with pyOpenSSL
 26.4.0. Its shared HTTP dependencies also pin Flask 3.1.3, Werkzeug 3.1.8, and
 Pillow 12.3.0. The host rejects requests larger than 9 MiB and JSON bodies
-larger than 64 KiB. Client enrollment accepts JPEG only, up to 8 MiB, 4096
-pixels on either axis, and 4,194,304 total pixels; oversized input returns 413
-before enrollment or a data-changing runtime operation starts.
+larger than 64 KiB. Client-image enrollment is retired. Oversized input remains
+rejected before a data-changing runtime operation starts.
 
 Authenticated `GET /api/device-info` returns `device_id`, API
 `protocol_version` 3,
 `transport` (`https`), `name`, and `capabilities` (`client_camera`, `device_camera`, `camera_source`,
 `pi_camera`, `simulated_actuators`, `actuator_control_available`,
-`physical_state_confirmed`, `actuator_feedback`, and `liveness_available`).
+`physical_state_confirmed`, `actuator_feedback`, `liveness_available`, and
+`local_controls`). `client_camera` and `client_camera_enrollment` are false.
+`local_controls` is true only through the trusted host-local dashboard listener.
 `camera_source` is `pc_webcam` or `pi_camera`;
 the legacy `pi_camera` flag remains true only on Pi. `device_camera` describes
 the supported capture path, not a guarantee that the camera is plugged in or
 free. `GET /api/status` reports the same actuator and liveness fields under
-`runtime`. The Pi reports control unavailable, physical state unconfirmed, and
+`runtime`. The Pi reports control available, physical state unconfirmed, and
 feedback unavailable. PC reports available simulated controls and simulated
 feedback. `liveness_available` is currently false. The app checks identity and
 API protocol before reading state.
 
 Existing Device API routes remain authoritative for users, permissions,
-templates, settings, logs, sessions, and actuation. Phone enrollment frames are
-JPEG multipart uploads to enrollment sample endpoints. Android never grants
-face authorization itself.
+templates, settings, logs, sessions, and local actuation. Enrollment accepts
+only the host camera. `/api/enroll/sample` and `/api/enroll/finish` return 410.
+`POST /api/users` creates a regular account without an enrollment grant.
+Owner-only `PATCH /api/users/<id>/role` atomically replaces or revokes the
+ordinary administrator and requires a `user.role` operation grant.
+Android never grants face authorization itself.
 
 `POST /api/verify-log` is retired and returns 410 without writing an event.
 Clients cannot submit an authoritative verification result.
 
-`POST /api/scan/start` starts backend-camera unlock or same-person ignition
-verification after a matching operation grant. `POST /api/unlock` is retired
+`POST /api/scan/start` starts host-camera unlock or same-person ignition
+verification through the local dashboard after a matching operation grant.
+LAN phone credentials cannot request vehicle controls or their operation grants. `POST /api/unlock` is retired
 and returns 410. Poll `/api/scan/status` for the result. Client/phone
 verification sources and `/api/scan/sample` uploads are rejected. Legacy
 `pi_camera` request values remain compatible with the backend camera route.
@@ -427,12 +482,16 @@ explicitly disable the policy for prototype testing. That choice reduces
 security and must not be presented as liveness, production, physical-lock, or
 vehicle-safety acceptance.
 
-The Pi does not open the serial actuator path or send commands from startup,
-shutdown, manual controls, scans, or timers. The dashboard and Android disable
-those controls, label physical state as unconfirmed, and do not turn stored
-database state into a physical success claim. There is no environment-variable
-bypass. Enrollment and administrator data tasks remain available, subject to
-the liveness policy. PC controls remain available and are labelled simulated.
+Pi prototype mode sends `UNLOCK`, `LOCK`, `START`, and `STOP` over the existing
+115200-baud ESP32 connection. Face authorization, manual stop/lock, safety
+timers, and best-effort shutdown retain their existing behavior. The dashboard
+enables those controls while labelling physical state as unconfirmed. Android
+shows their status without vehicle action buttons.
+`command_sent: true` means the serial write completed, not that the firmware
+completed the action or a motor reached its position. Incomplete writes and
+serial errors fail the operation. Set `ESP32_SERIAL_PORT` when automatic port
+detection fails. Enrollment and administrator data tasks remain available,
+subject to the liveness policy. PC controls remain labelled simulated.
 
 `GET /api/camera/status` returns the camera source, latest visible host-camera
 session status (including its `kind`), `frame_id`, and `frame_available`.
@@ -455,8 +514,8 @@ session. Its service worker excludes these API requests from offline caching.
 
 Capture stops on leaving a workflow or backgrounding; the app attempts to
 cancel that exact session. It does not replay interrupted control commands.
-Reconnection refreshes state before enabling controls. Abandoned client
-enrollment sessions also expire on the server.
+Reconnection refreshes identity, role and scoped state before enabling actions.
+Abandoned host-camera enrollment sessions expire on the server.
 
 Failed enrollment or verification keeps the backend's error message in the
 phone's error dialog after capture ends. Camera open/read/stall errors include
@@ -467,63 +526,30 @@ retry; without a saved face template, their card shows **No face template**.
 
 ## Manual Pixel 7 acceptance
 
-The user performs these checks with USB unplugged. Compilation and service
-startup do not establish phone acceptance. No connected Pi/ESP32/lock was
-tested for this batch, and presentation-attack detection is not implemented;
-these steps do not establish production or vehicle safety.
+The user performs these checks. Compilation does not establish phone/Pi/ESP32
+acceptance; no automated tests or browser automation are part of this change.
+Liveness/PAD is maintained separately and its existing policy is unchanged.
 
-- Scan once, reconnect after app/host restart, and reconnect after the host IP
-  changes. With multiple hosts, connect only to the scanned identity.
-- Pair with an administrator-issued invite and the intended user's host PIN.
-  Cancel PIN entry, enter incorrect PINs, and restart the app during the
-  server-side cooldown. Verify that pairing and sensitive actions cannot proceed
-  without a valid host grant, including after an update.
-- From both the connected and offline screens, open Sign out and cancel;
-  the saved phone credential must remain. Confirm sign-out and verify that
-  reconnecting requires a new invitation QR and the user's PIN. Backend users,
-  PIN verifiers, other phones, and face templates must remain.
-- Return to Android after backgrounding and verify that only the paired
-  account's PIN is requested before content loads. Cancel/back must remain
-  locked, with Retry and Sign out available. Wrong PIN and temporary disconnect
-  must preserve the pairing. Returning from a file picker must preserve pending
-  exports while still requiring PIN before dashboard access.
-- On PC, sign in once with name and PIN, then let the session expire or restart
-  the host. The same browser should request only PIN. Explicit sign-out must
-  restore account selection. Changing accounts in another tab must clear any
-  unsubmitted PIN draft.
-- Enroll a real face, verify the saved template, cancel/retry enrollment, and
-  try frames containing no face or multiple faces.
-- Make the host camera unavailable, then start paired-device-camera enrollment.
-  Confirm an error dialog remains visible after capture ends and explains how
-  to retry. A new person's card must show **No face template**. Release the
-  camera and retry from that card; dismissing the error must not start a session.
-- On PC, start Unlock from the phone and verify that the PC webcam captures the
-  face and that every lock or ignition result is labelled simulated. On Pi,
-  verify that lock, unlock, ignition, reset, timer, startup, and shutdown paths
-  cannot send serial output and that both UIs report physical state unconfirmed.
-  Pi camera enrollment and administrator data operations may still be checked.
-  Keep the host dashboard open and confirm it automatically shows the actual
-  continuous PC camera view and progress in Control's existing camera area,
-  even while recognition is processing a frame. Change dashboard
-  tabs during the phone scan and confirm the scan continues; return to Control
-  to view it again. The image must clear when the scan ends.
-  Correct PIN alone must not change simulated state; unknown faces and camera
-  failures must deny the operation. On PC, complete same-person simulated
-  ignition, then verify simulated stop, lock, and reset. Inspect status and logs
-  after each operation. Phone-camera unlock must not be offered.
-- As an administrator, add/remove users, reset a user PIN, change access, issue
-  an invite, and revoke one phone without affecting another. As an ordinary
-  user, verify logs, full user lists, settings writes, and administrator actions
-  remain unavailable. A directory entry without a template must not count as an
-  enrolled face.
-- Save and refresh all settings. Liveness/failure-lockout retain existing
-  backend limits; a setting switch does not add an enforcement algorithm.
-- Refuse permissions, scan an invalid QR, use a wrong key, present a certificate
-  that does not match the QR pin, and try an HTTP-only host. Credentials must
-  not be sent after TLS verification fails, and there must be no HTTP fallback.
-  Interrupt Wi-Fi mid-session and reconnect; commands must not repeat.
-- Check discovery failure on an isolated/guest network produces an actionable
-  error instead of connecting to a different device.
+- Scan a fresh activation QR and set name/PIN without pressing the product button.
+  Retry after an interrupted response. A different claimant cannot reuse it.
+- Pair invited phones, restart/reconnect, verify TLS identity and PIN cooldown,
+  and ensure cancellation/network failures retain the pairing.
+- As owner, appoint, replace and demote the one ordinary administrator. Refresh
+  the affected phone and verify restricted data and pending actions are cleared.
+- Check owner/all, admin/non-owner, user/self log visibility; check ordinary users
+  cannot obtain another user's row. Non-owner log details must contain no raw IDs.
+- Create a name/PIN account without opening a camera. Later enroll with the Pi
+  camera, cancel/retry and retain previous templates on failure. Phone camera
+  must be used only by QR scanning.
+- Revoke a phone, including the current phone. Its next authenticated request
+  must fail; other phones remain paired. Ordinary admin cannot revoke owner phones.
+- Phones have Status, Users and Logs only. No lock/unlock/ignition/reset or Settings
+  controls are offered; old phone API calls are denied at the host too.
+- Exercise local-dashboard vehicle behavior on Pi and PC development separately.
+  PC results remain simulated; Pi command delivery does not confirm motor position.
+  Face success remains dependent on the separately maintained liveness policy.
+- Verify backup manifests, preserved device/TLS identity and a new activation
+  credential after a deliberately confirmed full factory reset.
 
 ## Pi handoff
 
@@ -581,7 +607,7 @@ before explicitly disabling those services. Inspect the installed service with
 `journalctl -u faceid-wireless.service -n 50 --no-pager`.
 
 On the Pi itself, open `http://localhost:5057` using its browser (substitute
-`BASS_DASHBOARD_PORT` if changed). Controls and the Settings QR use that running
+`BASS_DASHBOARD_PORT` if changed). Controls and Users pairing use that running
 service automatically. Android connects separately to the Pi's HTTPS port 5056
 (`BASS_PORT`). Scan the Pi's QR on the same network, then either UI can operate
 the Pi camera. Phone enrollment appears in the Pi dashboard after Refresh.
@@ -595,11 +621,15 @@ credentials, schema, or data.
 
 ## Host authorization and recovery
 
-Authorization adds tables to the existing SQLite database; it does not replace
-face templates or create a second database. The Pi installer runs the additive
+Authorization adds tables and audit actor columns to the existing SQLite
+database; it does not replace face templates or create a second database.
+`auth_logs.actor_user_id` and `actor_kind` are additive schema changes. Existing
+unattributed logs are classified `legacy` and shown only to the owner. SQL
+filters trustworthy actor/subject rows before the log limit; non-owner API
+details are safe stage/result summaries. The Pi installer runs the additive
 migration before starting the service.
 
-### Windows staged migration
+### September 19, 2026 staged migration (historical)
 
 Keep the host and every other SQLite writer stopped from the backup through the
 final switch. On this workstation, the active database is
@@ -713,7 +743,8 @@ FACEID_DB_PATH=/home/pi/faceid/faceid.db \
 The command does not create or replace an existing valid TLS file. It
 atomically binds the certificate already on disk and revokes every phone and
 local credential, operation grant, and pairing invite. After success, start the
-host, sign in locally with an administrator PIN, display the replacement QR,
+host, sign in locally with an administrator PIN, issue fresh **Users → Pair phone**
+invitation QRs,
 and issue new user invites. Without this explicit rotation, a replacement TLS
 file and bound database are rejected; printing a QR alone does not re-pair or
 revoke anything.
@@ -782,7 +813,7 @@ above. Startup applies that schema to `FACEID_DB_PATH`; configure the actual
 target database before starting a host. See the dated delivery record for the
 completed PC migration and the still-unperformed Pi migration.
 
-Pi Camera still requires separate hardware acceptance. Real ESP32 lock and
-ignition output remains deliberately blocked until command acknowledgement and
-position feedback are implemented and accepted. PC simulated controls cannot
-satisfy physical-hardware acceptance.
+Pi Camera and real ESP32 motor movement still require separate hardware
+acceptance. Pi prototype mode sends commands without firmware completion or
+physical-position confirmation. PC simulated controls cannot satisfy
+physical-hardware acceptance.

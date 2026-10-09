@@ -1,35 +1,32 @@
 package com.bass.app.ui.screens
 
-import android.Manifest
-import android.content.pm.PackageManager
 import android.text.format.DateUtils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,25 +34,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bass.app.AppViewModel
 import com.bass.app.BassState
-import com.bass.app.CameraSource
 import com.bass.app.CaptureFlow
+import com.bass.app.PairedDevice
 import com.bass.app.R
 import com.bass.app.User
-import com.bass.app.camera.CameraPanel
 import com.bass.app.ui.components.BassCard
 import com.bass.app.ui.components.ChipTone
 import com.bass.app.ui.components.SectionTitle
@@ -68,52 +60,34 @@ fun UsersScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val isAdmin = state.identity?.user?.isAdmin == true
-    val isOwner = state.identity?.user?.isOwner == true
+    val actor = state.identity?.user
+    val isAdmin = actor?.isAdmin == true
+    val isOwner = actor?.isOwner == true
     val newUserDraft by viewModel.newUserDraft.collectAsStateWithLifecycle()
-    var selectedSource by remember { mutableStateOf(CameraSource.PHONE) }
-    var pendingUserId by remember { mutableStateOf<String?>(null) }
-    var permissionDenied by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<User?>(null) }
-    val cameraPermission = Manifest.permission.CAMERA
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        permissionDenied = !granted
-        val userId = pendingUserId
-        pendingUserId = null
-        if (granted && userId != null) {
-            viewModel.startEnrollment(userId, CameraSource.PHONE)
-        }
-    }
-    val hasCameraPermission =
-        ContextCompat.checkSelfPermission(context, cameraPermission) ==
-            PackageManager.PERMISSION_GRANTED
+    var revokeTarget by remember { mutableStateOf<PairedDevice?>(null) }
 
-    LaunchedEffect(state.capabilities) {
-        val currentSupported = when (selectedSource) {
-            CameraSource.PHONE -> state.capabilities.clientCamera
-            CameraSource.DEVICE -> state.capabilities.deviceCamera
-        }
-        if (!currentSupported && state.capabilities.deviceCamera) {
-            selectedSource = CameraSource.DEVICE
-        } else if (!currentSupported && state.capabilities.clientCamera) {
-            selectedSource = CameraSource.PHONE
-        }
+    LaunchedEffect(isAdmin, isOwner) {
+        deleteTarget = null
+        revokeTarget = null
     }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            pendingUserId = null
-        }
-    }
-    LaunchedEffect(isOwner) {
-        if (!isOwner) viewModel.updateNewUserAdmin(false)
+    LaunchedEffect(state.users, state.pairedDevices) {
+        deleteTarget =
+            deleteTarget?.let { target ->
+                state.users.singleOrNull { it.id == target.id }
+            }
+        revokeTarget =
+            revokeTarget?.let { target ->
+                state.pairedDevices.singleOrNull {
+                    it.id == target.id && it.active && (!it.userIsOwner || isOwner)
+                }
+            }
     }
     val inviteMaterial = state.inviteMaterial
     val inviteExportLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) {
-            uri ->
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument("application/json"),
+        ) { uri ->
             if (uri != null && inviteMaterial != null) {
                 runCatching {
                     context.contentResolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use {
@@ -124,17 +98,6 @@ fun UsersScreen(
             }
         }
 
-    fun startEnrollment(userId: String) {
-        if (!isAdmin) return
-        permissionDenied = false
-        if (selectedSource == CameraSource.DEVICE || hasCameraPermission) {
-            viewModel.startEnrollment(userId, selectedSource)
-        } else {
-            pendingUserId = userId
-            permissionLauncher.launch(cameraPermission)
-        }
-    }
-
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -142,23 +105,20 @@ fun UsersScreen(
     ) {
         if (isAdmin) {
             item {
-                AdminControlsCard(
+                CreateUserCard(
                     state = state,
-                    newName = newUserDraft.name,
-                    newPin = newUserDraft.pin,
-                    newIsAdmin = newUserDraft.isAdmin,
-                    selectedSource = selectedSource,
-                    permissionDenied = permissionDenied,
+                    name = newUserDraft.name,
+                    pin = newUserDraft.pin,
                     onNameChange = viewModel::updateNewUserName,
                     onPinChange = viewModel::updateNewUserPin,
-                    onAdminChange = viewModel::updateNewUserAdmin,
-                    canCreateAdmin = isOwner,
                     onCreate = viewModel::createUser,
-                    onSourceSelected = { selectedSource = it },
-                    onCancel = viewModel::cancelActiveSession,
-                    onFrame = viewModel::submitEnrollmentSample,
-                    onCameraError = viewModel::cameraError,
                 )
+            }
+        }
+
+        if (state.captureFlow == CaptureFlow.ENROLL) {
+            item {
+                EnrollmentCard(state, viewModel::cancelActiveSession)
             }
         }
 
@@ -166,42 +126,66 @@ fun UsersScreen(
             BassCard {
                 SectionTitle(
                     title = stringResource(R.string.users_people_title),
-                    description = stringResource(R.string.users_people_description),
                     action = {
-                        StatusChip(
-                            text = state.users.size.toString(),
-                            tone = ChipTone.INFO,
-                        )
+                        StatusChip(state.users.size.toString(), tone = ChipTone.INFO)
                     },
                 )
                 if (state.users.isEmpty()) {
                     Text(
                         text = stringResource(R.string.users_empty),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium,
                     )
                 }
             }
         }
 
-        items(
-            items = state.users,
-            key = { it.id },
-        ) { user ->
+        items(state.users, key = { it.id }) { user ->
             UserCard(
                 user = user,
                 busy = state.busy,
                 isAdmin = isAdmin,
                 isOwner = isOwner,
                 onAccessChange = { viewModel.setUserAccess(user.id, it) },
-                onEnroll = { startEnrollment(user.id) },
+                onRoleChange = { viewModel.setUserRole(user.id, !user.isAdmin) },
+                onEnroll = { viewModel.startEnrollment(user.id) },
                 onRemove = { deleteTarget = user },
                 onInvite = { viewModel.createPairingInvite(user.id) },
             )
         }
+
+        if (isAdmin) {
+            item {
+                BassCard {
+                    SectionTitle(
+                        title = stringResource(R.string.devices_title),
+                        action = {
+                            StatusChip(
+                                state.pairedDevices.count { it.active }.toString(),
+                                tone = ChipTone.INFO,
+                            )
+                        },
+                    )
+                    if (state.pairedDevices.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.devices_empty),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            items(state.pairedDevices, key = { it.id }) { device ->
+                DeviceCard(
+                    device = device,
+                    currentDeviceId = state.identity?.deviceId,
+                    busy = state.busy,
+                    canRevoke = device.active && (!device.userIsOwner || isOwner),
+                    onRevoke = { revokeTarget = device },
+                )
+            }
+        }
     }
 
-    if (isAdmin) deleteTarget?.let { user ->
+    deleteTarget?.let { user ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text(stringResource(R.string.users_remove_title, user.name)) },
@@ -214,7 +198,7 @@ fun UsersScreen(
                     },
                 ) {
                     Text(
-                        text = stringResource(R.string.action_remove),
+                        stringResource(R.string.action_remove),
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -226,6 +210,33 @@ fun UsersScreen(
             },
         )
     }
+
+    revokeTarget?.let { device ->
+        AlertDialog(
+            onDismissRequest = { revokeTarget = null },
+            title = { Text(stringResource(R.string.devices_revoke_title, device.name)) },
+            text = { Text(stringResource(R.string.devices_revoke_description)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        revokeTarget = null
+                        viewModel.revokeDevice(device.id)
+                    },
+                ) {
+                    Text(
+                        stringResource(R.string.devices_revoke),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { revokeTarget = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
     inviteMaterial?.let { material ->
         AlertDialog(
             onDismissRequest = viewModel::clearInviteMaterial,
@@ -246,63 +257,31 @@ fun UsersScreen(
 }
 
 @Composable
-private fun AdminControlsCard(
+private fun CreateUserCard(
     state: BassState,
-    newName: String,
-    newPin: String,
-    newIsAdmin: Boolean,
-    selectedSource: CameraSource,
-    permissionDenied: Boolean,
+    name: String,
+    pin: String,
     onNameChange: (String) -> Unit,
     onPinChange: (String) -> Unit,
-    onAdminChange: (Boolean) -> Unit,
-    canCreateAdmin: Boolean,
     onCreate: () -> Unit,
-    onSourceSelected: (CameraSource) -> Unit,
-    onCancel: () -> Unit,
-    onFrame: (ByteArray) -> Unit,
-    onCameraError: (String) -> Unit,
 ) {
-    val enrolling = state.captureFlow == CaptureFlow.ENROLL
-    val cameraPreviewDescription = stringResource(R.string.console_camera_preview)
     BassCard {
         SectionTitle(
-            title = stringResource(R.string.users_enroll_title),
-            description = stringResource(R.string.users_enroll_description),
-            action = {
-                StatusChip(
-                    text = state.faceStatus.count.toString(),
-                    tone = ChipTone.INFO,
-                )
-            },
+            title = stringResource(R.string.users_add_title),
         )
-
         OutlinedTextField(
-            value = newName,
+            value = name,
             onValueChange = onNameChange,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !enrolling && !state.busy,
+            enabled = !state.busy,
             singleLine = true,
             label = { Text(stringResource(R.string.users_display_name)) },
-            placeholder = { Text(stringResource(R.string.users_display_name_hint)) },
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(stringResource(R.string.users_make_admin))
-            Switch(
-                checked = newIsAdmin,
-                enabled = canCreateAdmin && !enrolling && !state.busy,
-                onCheckedChange = onAdminChange,
-            )
-        }
         OutlinedTextField(
-            value = newPin,
+            value = pin,
             onValueChange = onPinChange,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !enrolling && !state.busy,
+            enabled = !state.busy,
             singleLine = true,
             label = { Text(stringResource(R.string.users_new_pin)) },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -310,118 +289,38 @@ private fun AdminControlsCard(
         )
         Button(
             modifier = Modifier.fillMaxWidth(),
-            enabled = !enrolling && !state.busy && newName.isNotBlank() && newPin.length == 6,
+            enabled = !state.busy && name.isNotBlank() && pin.length == 6,
             onClick = onCreate,
         ) {
             Text(stringResource(R.string.action_add_user))
         }
+    }
+}
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            FilterChip(
-                modifier = Modifier.weight(1f),
-                selected = selectedSource == CameraSource.PHONE,
-                onClick = { onSourceSelected(CameraSource.PHONE) },
-                enabled = state.capabilities.clientCamera && !enrolling,
-                label = {
-                    Text(
-                        text = stringResource(R.string.console_phone_camera),
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                },
-            )
-            FilterChip(
-                modifier = Modifier.weight(1f),
-                selected = selectedSource == CameraSource.DEVICE,
-                onClick = { onSourceSelected(CameraSource.DEVICE) },
-                enabled = state.capabilities.deviceCamera && !enrolling,
-                label = {
-                    Text(
-                        text = stringResource(R.string.console_device_camera),
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                },
-            )
-        }
-
-        if (
-            enrolling &&
-            state.cameraSource == CameraSource.PHONE &&
-            hasCameraPermission()
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(280.dp)
-                    .clip(RoundedCornerShape(16.dp)),
-            ) {
-                CameraPanel(
-                    enabled = true,
-                    qrMode = false,
-                    onQr = {},
-                    onFrame = onFrame,
-                    onError = onCameraError,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .semantics {
-                            contentDescription = cameraPreviewDescription
-                        },
-                )
-            }
-        }
-
-        if (enrolling) {
-            Text(
-                text = if (state.cameraSource == CameraSource.DEVICE) {
-                    stringResource(R.string.users_device_capture)
-                } else {
-                    stringResource(R.string.users_phone_capture)
-                },
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            val progress = state.activeSessionProgress ?: 0
-            val total = state.activeSessionTotal ?: 10
-            LinearProgressIndicator(
-                progress = { (progress.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(
-                text = stringResource(R.string.users_enroll_progress, progress, total),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.labelSmall,
-            )
-            state.activeSessionMessage?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            OutlinedButton(
-                modifier = Modifier.fillMaxWidth(),
-                onClick = onCancel,
-            ) {
-                Text(stringResource(R.string.action_cancel))
-            }
-        }
-
-        if (permissionDenied) {
-            Text(
-                text = stringResource(R.string.pair_permission_denied),
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Text(
-            text = stringResource(R.string.users_retry_note),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelSmall,
+@Composable
+private fun EnrollmentCard(state: BassState, onCancel: () -> Unit) {
+    val progress = state.activeSessionProgress ?: 0
+    val total = state.activeSessionTotal ?: 10
+    BassCard {
+        SectionTitle(
+            title = stringResource(R.string.users_enroll_title),
+            description = stringResource(R.string.users_enroll_description),
         )
+        LinearProgressIndicator(
+            progress = { (progress.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(stringResource(R.string.users_enroll_progress, progress, total))
+        state.activeSessionMessage?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                text = it,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onCancel) {
+            Text(stringResource(R.string.action_cancel))
+        }
     }
 }
 
@@ -432,86 +331,66 @@ private fun UserCard(
     isAdmin: Boolean,
     isOwner: Boolean,
     onAccessChange: (Boolean) -> Unit,
+    onRoleChange: () -> Unit,
     onEnroll: () -> Unit,
     onRemove: () -> Unit,
     onInvite: () -> Unit,
 ) {
     val context = LocalContext.current
-    val added =
-        DateUtils.getRelativeTimeSpanString(
-            context,
-            user.createdAtMillis,
-            false,
-        ).toString()
-
+    val added = DateUtils.getRelativeTimeSpanString(context, user.createdAtMillis, false).toString()
+    val canManage = isAdmin && (!user.isOwner || isOwner)
     BassCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = user.name,
+                    user.name,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = stringResource(R.string.users_added, added),
+                    stringResource(R.string.users_added, added),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            Column(horizontalAlignment = Alignment.End) {
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 if (user.isOwner) {
-                    StatusChip(
-                        text = stringResource(R.string.users_owner),
-                        tone = ChipTone.SUCCESS,
-                    )
+                    RoleBadge(isOwner = true)
                 } else if (user.isAdmin) {
-                    StatusChip(
-                        text = stringResource(R.string.users_admin),
-                        tone = ChipTone.INFO,
-                    )
+                    RoleBadge(isOwner = false)
                 }
                 StatusChip(
-                    text = if (user.enrolled) {
-                        stringResource(R.string.status_enrolled)
-                    } else {
-                        stringResource(R.string.status_not_enrolled)
-                    },
-                    tone = if (user.enrolled) ChipTone.SUCCESS else ChipTone.WARNING,
+                    stringResource(
+                        if (user.faceEnrolled) R.string.status_enrolled
+                        else R.string.status_not_enrolled,
+                    ),
+                    tone = if (user.faceEnrolled) ChipTone.SUCCESS else ChipTone.WARNING,
                 )
             }
         }
-
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = if (user.faceAccess) {
-                    stringResource(R.string.status_allowed)
-                } else {
-                    stringResource(R.string.status_blocked)
-                },
+                stringResource(
+                    if (user.faceAccess) R.string.status_allowed else R.string.status_blocked
+                ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
             )
             if (isAdmin && !user.isOwner) {
-                Switch(
-                    checked = user.faceAccess,
-                    enabled = !busy,
-                    onCheckedChange = onAccessChange,
-                )
+                Switch(checked = user.faceAccess, enabled = !busy, onCheckedChange = onAccessChange)
             }
         }
-
-        if (isAdmin && (!user.isOwner || isOwner)) {
+        if (canManage) {
             OutlinedButton(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !busy,
@@ -519,12 +398,22 @@ private fun UserCard(
             ) {
                 Text(stringResource(R.string.users_phone_invite))
             }
-            Button(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !busy,
-                onClick = onEnroll,
-            ) {
+            Button(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = onEnroll) {
                 Text(stringResource(R.string.action_enroll_face))
+            }
+            if (isOwner && !user.isOwner) {
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                    onClick = onRoleChange,
+                ) {
+                    Text(
+                        stringResource(
+                            if (user.isAdmin) R.string.users_remove_admin
+                            else R.string.users_make_admin,
+                        )
+                    )
+                }
             }
             if (!user.isOwner) {
                 OutlinedButton(
@@ -533,7 +422,7 @@ private fun UserCard(
                     onClick = onRemove,
                 ) {
                     Text(
-                        text = stringResource(R.string.action_remove),
+                        stringResource(R.string.action_remove),
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -543,8 +432,79 @@ private fun UserCard(
 }
 
 @Composable
-private fun hasCameraPermission(): Boolean {
+private fun RoleBadge(isOwner: Boolean) {
+    val colors = MaterialTheme.colorScheme
+    val label =
+        stringResource(
+            if (isOwner) R.string.users_owner else R.string.users_admin,
+        )
+    Surface(
+        color = if (isOwner) colors.primaryContainer else colors.secondaryContainer,
+        contentColor = if (isOwner) colors.onPrimaryContainer else colors.onSecondaryContainer,
+        shape = CircleShape,
+    ) {
+        Icon(
+            painter =
+                painterResource(
+                    if (isOwner) R.drawable.ic_role_owner else R.drawable.ic_role_admin,
+                ),
+            contentDescription = label,
+            modifier = Modifier.padding(6.dp).size(16.dp),
+        )
+    }
+}
+
+@Composable
+private fun DeviceCard(
+    device: PairedDevice,
+    currentDeviceId: String?,
+    busy: Boolean,
+    canRevoke: Boolean,
+    onRevoke: () -> Unit,
+) {
     val context = LocalContext.current
-    return ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-        PackageManager.PERMISSION_GRANTED
+    val lastSeen = DateUtils.getRelativeTimeSpanString(context, device.lastSeenMillis, false)
+    BassCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(device.name, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    device.userName,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    stringResource(R.string.devices_last_seen, lastSeen),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            StatusChip(
+                stringResource(
+                    when {
+                        device.id == currentDeviceId -> R.string.devices_this_phone
+                        device.active -> R.string.devices_active
+                        else -> R.string.devices_revoked
+                    }
+                ),
+                tone = if (device.active) ChipTone.SUCCESS else ChipTone.DEFAULT,
+            )
+        }
+        if (canRevoke) {
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy,
+                onClick = onRevoke,
+            ) {
+                Text(
+                    stringResource(R.string.devices_revoke),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
 }

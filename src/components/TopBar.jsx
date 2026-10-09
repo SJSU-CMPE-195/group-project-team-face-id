@@ -1,5 +1,12 @@
 import React from "react";
-import { LogOut, Moon, RefreshCw, ShieldCheck, Sun } from "lucide-react";
+import {
+  Crown,
+  LogOut,
+  Moon,
+  RefreshCw,
+  ShieldCheck,
+  Sun,
+} from "lucide-react";
 import { useTheme } from "../context/useTheme.js";
 import { actuatorLabels } from "../utils/actuatorStatus.js";
 
@@ -23,6 +30,7 @@ export default function TopBar({
   onRefresh,
   user,
   onLogout,
+  localControls,
 }) {
   const { isDark, toggleTheme } = useTheme();
   const linkLabel = online ? "Host online" : "Host offline";
@@ -43,7 +51,11 @@ export default function TopBar({
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h1 className="truncate text-base font-semibold text-slate-100">{titles[tab] ?? "BASS"}</h1>
+            <h1 className="truncate text-base font-semibold text-slate-100">
+              {tab === "control" && !localControls
+                ? "Status"
+                : titles[tab] ?? "BASS"}
+            </h1>
             <span className="hidden rounded-md border border-white/10 bg-dna-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500 sm:inline">
               BASS
             </span>
@@ -104,8 +116,25 @@ export default function TopBar({
 
       <div className="flex items-center gap-1">
         {user?.name ? (
-          <span className="hidden max-w-32 truncate px-2 text-xs text-slate-400 sm:inline">
-            {user.name}
+          <span className="hidden max-w-40 items-center gap-1.5 px-2 text-xs text-slate-400 sm:flex">
+            <span className="truncate">{user.name}</span>
+            {user.is_owner ? (
+              <span title="Owner">
+                <Crown
+                  className="h-3.5 w-3.5 text-amber-300"
+                  aria-hidden="true"
+                />
+                <span className="sr-only">Owner</span>
+              </span>
+            ) : user.is_admin ? (
+              <span title="Administrator">
+                <ShieldCheck
+                  className="h-3.5 w-3.5 text-sky-300"
+                  aria-hidden="true"
+                />
+                <span className="sr-only">Administrator</span>
+              </span>
+            ) : null}
           </span>
         ) : null}
         <button

@@ -35,7 +35,7 @@ export default function StatusPanel({
           </div>
           {online && !actuatorControlAvailable ? (
             <div className="mt-3 max-w-xl text-sm leading-relaxed text-amber-200/90">
-              The backend does not currently provide lock or ignition controls.
+              Vehicle controls are unavailable.
             </div>
           ) : null}
           {online && actuatorControlAvailable && !locked ? (

@@ -447,6 +447,21 @@ export default function AuthProvider({ children }) {
     [clearRememberedAccount, clearSession, refreshAuthentication],
   );
 
+  const syncUser = useCallback(
+    (nextUser) => {
+      if (!nextUser?.id || nextUser.id !== user?.id) return false;
+      const changed =
+        nextUser.name !== user.name ||
+        !!nextUser.is_admin !== !!user.is_admin ||
+        !!nextUser.is_owner !== !!user.is_owner;
+      if (!changed) return false;
+      setUser(nextUser);
+      setSessionEpoch((value) => value + 1);
+      return true;
+    },
+    [user],
+  );
+
   useEffect(() => {
     const synchronizeAccount = (event) => {
       if (event.key !== REMEMBERED_ACCOUNT_KEY && event.key !== null) return;
@@ -479,6 +494,7 @@ export default function AuthProvider({ children }) {
       dismissLogoutError,
       expireSession,
       refreshAuthentication,
+      syncUser,
     }),
     [
       csrfToken,
@@ -495,6 +511,7 @@ export default function AuthProvider({ children }) {
       rememberWarning,
       refreshAuthentication,
       sessionEpoch,
+      syncUser,
       useAnotherAccount,
       user,
     ],

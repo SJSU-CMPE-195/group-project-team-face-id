@@ -2,9 +2,9 @@
 
 Facial-recognition runtime and historical development utilities live in this
 folder. The deployed entrypoint is the root `bass_wireless.py`; it constructs
-the injected Device API and owns camera recognition. The real Pi runtime blocks
-all ESP32 lock and ignition output until command acknowledgement and physical
-position feedback are implemented. PC actuator behavior remains simulated.
+the injected Device API and owns camera recognition. Pi prototype mode sends
+real ESP32 lock and ignition commands; serial delivery does not confirm motor
+movement or physical lock position. PC actuator behavior remains simulated.
 
 **Full documentation** (repo overview, frontend UI, installation, and running the PoC) is in the [root README](../README.md).
 
@@ -40,10 +40,11 @@ The runtime reports presentation-attack detection as unavailable. Because the
 persisted liveness policy defaults to enabled, scans fail closed before camera
 or actuator work. An administrator can explicitly disable the policy for
 prototype testing only; doing so does not add presentation-attack protection or
-support a production-safety claim. Pi startup, shutdown, scans, manual controls,
-and timers cannot send motor or ignition commands. The runtime reports actuator
-control unavailable and physical state unconfirmed; there is no environment
-variable bypass. Enrollment and administrator data tasks may still operate.
+support a production-safety claim. Pi uses the existing ESP32 serial commands
+for face-authorized unlock and ignition, manual stop/lock, safety timers, and
+best-effort shutdown. It reports actuator control available but physical state
+unconfirmed. Serial failure prevents a successful command result; delivery
+alone does not establish firmware completion or physical position.
 
 ## Prerequisites
 

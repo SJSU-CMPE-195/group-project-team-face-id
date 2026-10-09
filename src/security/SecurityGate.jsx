@@ -131,8 +131,8 @@ export default function SecurityGate() {
       <SidebarNav
         tab={activeTab}
         setTab={setAnonymousTab}
-        isAdmin={false}
         hardwareEnabled={simulator.enabled}
+        localControls={simulator.enabled}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
@@ -150,6 +150,7 @@ export default function SecurityGate() {
               : () => void security.refreshAuthentication().catch(() => {})
           }
           user={null}
+          localControls={simulator.enabled}
         />
         <main className="app-content flex-1 overflow-y-auto overscroll-y-contain px-4 pt-4 sm:px-5 sm:pt-6 md:px-8 md:py-6">
           {activeTab === "hardware" ? (
@@ -213,7 +214,7 @@ function AuthenticationCard({
             <h1 className="text-lg font-semibold">BASS host dashboard</h1>
             <p className="text-sm text-slate-400">
               {security.phase === "setup"
-                ? "Activate the first owner from the phone."
+                ? "Activate this device from the phone."
                 : "Sign in on this host."}
             </p>
           </div>
@@ -318,13 +319,13 @@ function AuthenticationCard({
 
 function FirstOwnerSetup({ hardwareAvailable, onOpenHardware, onRefresh }) {
   const instructions = hardwareAvailable
-    ? "Open Hardware Simulator, reveal the activation card, hold the multifunction button for 3 seconds, then scan and choose the owner PIN on the phone."
-    : "Use the activation card supplied with the device, hold its physical multifunction button for 3 seconds, then scan and choose the owner PIN on the phone.";
+    ? "Open Hardware Simulator, reveal the one-time activation QR, then scan it and choose the first account name and PIN on the phone."
+    : "Scan the one-time activation QR supplied with the device, then choose the first account name and PIN on the phone.";
 
   return (
     <div className="mt-6 space-y-4">
       <div className="rounded-xl border border-sky-400/20 bg-sky-400/10 p-4 text-sm leading-relaxed text-sky-100">
-        This device has no owner. {instructions}
+        {instructions} The QR expires after activation.
       </div>
       <div className="flex flex-col gap-2 sm:flex-row">
         {hardwareAvailable ? (
@@ -336,10 +337,6 @@ function FirstOwnerSetup({ hardwareAvailable, onOpenHardware, onRefresh }) {
           Check activation
         </Btn>
       </div>
-      <p className="text-xs leading-relaxed text-slate-500">
-        This page updates automatically after the phone completes ownership.
-        There is no local first-administrator shortcut.
-      </p>
     </div>
   );
 }

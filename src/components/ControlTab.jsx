@@ -113,7 +113,7 @@ export default function ControlTab({
         : displayedSession?.state === "denied"
           ? "Face scan was denied."
           : displayedSession?.state === "error"
-            ? "Backend camera scan failed."
+            ? "Camera scan failed."
             : displayedSession?.state === "cancelled"
               ? "Scan cancelled."
               : displayedSession?.state === "timeout"
@@ -121,11 +121,11 @@ export default function ControlTab({
                 : displayedSessionActive
                   ? `${activeCameraLabel} is scanning.`
                   : !online
-                    ? "Connect to the backend host to scan."
+                    ? "Camera unavailable while offline."
                     : !cameraAvailable
-                      ? "The selected backend has no available camera."
+                      ? "No camera available."
                       : !actuatorControlAvailable
-                        ? "The backend's actuator controls are unavailable."
+                        ? "Vehicle controls are unavailable."
                         : "");
 
   const clearPoll = useCallback(() => {
@@ -266,7 +266,7 @@ export default function ControlTab({
               {
                 state: "error",
                 session_id: activeScan.sessionId,
-                message: `${pollError} Backend scan was cancelled.`,
+                message: `${pollError} Camera scan was cancelled.`,
               },
               purpose,
             );
@@ -313,7 +313,7 @@ export default function ControlTab({
         popToast(
           "info",
           "Physical outputs blocked",
-          "The backend does not currently provide lock or ignition controls.",
+          "Vehicle controls are unavailable.",
         );
         return;
       }
@@ -330,7 +330,7 @@ export default function ControlTab({
         } catch (error) {
           if (generation !== scanGenerationRef.current) return;
           activeScanRef.current = previousScan;
-          const message = `Could not cancel the previous backend scan: ${
+          const message = `Could not cancel the previous camera scan: ${
             error.message || "unknown error"
           }`;
           setScan(
@@ -386,7 +386,7 @@ export default function ControlTab({
           let cancellationError = null;
           if (!staleSessionId) {
             cancellationError = new Error(
-              "Backend returned no session to cancel.",
+              "Could not confirm cancellation of the previous scan.",
             );
           } else {
             try {
@@ -412,11 +412,11 @@ export default function ControlTab({
               popToast(
                 "info",
                 "Scan cancelled",
-                "Backend camera scan stopped.",
+                "Camera scan stopped.",
               );
             } catch (error) {
               const message =
-                error.message || "Could not confirm pending scan cancellation.";
+                error.message || "Could not confirm that the previous scan stopped.";
               if (staleSessionId) {
                 activeScanRef.current = {
                   api: requestApi,
@@ -473,7 +473,7 @@ export default function ControlTab({
             pendingCancellation.cancelGeneration === scanGenerationRef.current
           ) {
             pendingStartCancellationRef.current = null;
-            const message = `Could not confirm pending scan cancellation: ${
+            const message = `Could not confirm that the previous scan stopped: ${
               error.message || "scan start failed"
             }`;
             setScan(normalizeScan({ state: "error", message }, purpose));
@@ -523,7 +523,7 @@ export default function ControlTab({
         normalizeScan(
           {
             state: "cancelling",
-            message: "Waiting for the backend session so it can be cancelled.",
+            message: "Waiting for the scan to start before cancelling.",
           },
           purpose,
         ),
@@ -531,7 +531,7 @@ export default function ControlTab({
       popToast(
         "info",
         "Cancellation requested",
-        "The scan will be cancelled as soon as the backend returns its session.",
+        "The scan will stop as soon as it starts.",
       );
       return;
     }
@@ -542,7 +542,7 @@ export default function ControlTab({
         {
           state: "cancelling",
           session_id: activeScan.sessionId,
-          message: "Waiting for the backend to confirm cancellation.",
+          message: "Waiting for the camera scan to stop.",
         },
         purpose,
       ),
@@ -553,7 +553,7 @@ export default function ControlTab({
       const cancelledScan = confirmedCancellation(raw, purpose);
       activeScanRef.current = null;
       setScan(cancelledScan);
-      popToast("info", "Scan cancelled", "Backend camera scan stopped.");
+      popToast("info", "Scan cancelled", "Camera scan stopped.");
     } catch (error) {
       if (generation !== scanGenerationRef.current) return;
       activeScanRef.current = activeScan;
@@ -562,7 +562,7 @@ export default function ControlTab({
           {
             state: "error",
             session_id: activeScan.sessionId,
-            message: error.message || "Could not cancel the backend scan.",
+            message: error.message || "Could not cancel the camera scan.",
           },
           purpose,
         ),
@@ -570,7 +570,7 @@ export default function ControlTab({
       popToast(
         "err",
         "Cancel failed",
-        error.message || "Could not cancel the backend scan.",
+        error.message || "Could not cancel the camera scan.",
       );
     }
   }, [cancelRemoteScan, invalidateScan, popToast, scan?.purpose]);
@@ -712,7 +712,7 @@ export default function ControlTab({
                     ? "Waiting for the next camera frame…"
                     : online
                       ? "Camera idle"
-                      : "Connect to the backend host to view its camera.")}
+                      : "Camera unavailable while offline.")}
               </div>
             )}
           </div>
@@ -757,8 +757,7 @@ export default function ControlTab({
 
           {online && !actuatorControlAvailable ? (
             <div className="mt-4 text-sm leading-relaxed text-amber-200/90">
-              Lock and ignition controls are unavailable. Enrollment and
-              administrator data tasks remain available.
+              Vehicle controls are unavailable.
             </div>
           ) : null}
 
@@ -862,7 +861,7 @@ export default function ControlTab({
         {flowStage === "prompt" ? (
           <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-center gap-2 rounded-xl border border-violet-500/25 bg-violet-500/10 px-4 py-3">
             <div className="w-full text-center text-sm text-violet-200">
-              Start ignition now? The backend camera must verify{" "}
+              Start ignition now? The host camera must verify{" "}
               {unlockOwner || "the same driver"} again.
             </div>
             {promptAutoLockSeconds > 0 ? (

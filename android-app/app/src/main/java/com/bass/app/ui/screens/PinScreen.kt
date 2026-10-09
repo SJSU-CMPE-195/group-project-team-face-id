@@ -307,6 +307,7 @@ private fun PinPrompt.description(): String =
                 PinPurpose.UNLOCK -> R.string.pin_unlock_description
                 PinPurpose.IGNITION -> R.string.pin_ignition_description
                 PinPurpose.USER_ADMIN -> R.string.pin_user_admin_description
+                PinPurpose.USER_ROLE -> R.string.pin_user_role_description
                 PinPurpose.SETTINGS -> R.string.pin_settings_description
                 PinPurpose.LOCK -> R.string.pin_lock_description
                 PinPurpose.STOP_IGNITION -> R.string.pin_stop_ignition_description

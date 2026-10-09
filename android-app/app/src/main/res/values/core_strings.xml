@@ -10,7 +10,6 @@
     <string name="core_offline">Device offline. Check Wi-Fi and device service.</string>
     <string name="core_operation_failed">Operation failed.</string>
     <string name="core_session_disconnected">Session disconnected.</string>
-    <string name="core_upload_failed">Camera upload failed.</string>
     <string name="core_discovery_failed">Device discovery failed (%1$d).</string>
     <string name="core_discovery_unavailable">Device discovery unavailable.</string>
     <string name="core_camera_missing">Requested camera is unavailable.</string>
@@ -24,5 +23,5 @@
     <string name="core_pairing_pending_save_failed">This phone was authorized, but the new device token could not be saved. Ask an administrator to revoke this phone and issue a new invite.</string>
     <string name="core_pairing_verification_pending">This phone was authorized and saved, but verification did not finish. Retry to resume with the saved device token.</string>
     <string name="core_commissioning_pending">The saved authorization request has not finished. Retry to resume the same request.</string>
-    <string name="core_commissioning_unavailable">This device is not in the required powered ownership state.</string>
+    <string name="core_commissioning_unavailable">This authorization is not available for this device.</string>
 </resources>

@@ -6,7 +6,6 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
-import java.util.UUID
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
@@ -92,24 +91,6 @@ class DeviceApi(
                 "application/json",
                 body.toString().toByteArray(Charsets.UTF_8),
                 "Onboarding $onboardingKey",
-                null,
-            )
-        )
-    }
-
-    suspend fun sample(kind: String, sessionId: String, jpeg: ByteArray): JSONObject {
-        val boundary = "bass-${UUID.randomUUID()}"
-        val head =
-            "--$boundary\r\nContent-Disposition: form-data; name=\"session_id\"\r\n\r\n$sessionId\r\n--$boundary\r\nContent-Disposition: form-data; name=\"image\"; filename=\"frame.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n"
-                .toByteArray()
-        val tail = "\r\n--$boundary--\r\n".toByteArray()
-        return JSONObject(
-            exchange(
-                "/api/$kind/sample",
-                "POST",
-                "multipart/form-data; boundary=$boundary",
-                head + jpeg + tail,
-                bearerAuthorization(),
                 null,
             )
         )

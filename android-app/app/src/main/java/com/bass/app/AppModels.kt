@@ -6,7 +6,6 @@ enum class Tab {
     CONSOLE,
     USERS,
     LOGS,
-    SETTINGS,
 }
 
 enum class ConnectionPhase {
@@ -29,7 +28,6 @@ enum class CaptureFlow {
 }
 
 enum class CameraSource {
-    PHONE,
     DEVICE,
 }
 
@@ -61,6 +59,7 @@ enum class PinPurpose {
     UNLOCK,
     IGNITION,
     USER_ADMIN,
+    USER_ROLE,
     SETTINGS,
     LOCK,
     STOP_IGNITION,
@@ -81,7 +80,6 @@ data class PinPrompt(
 data class NewUserDraft(
     val name: String = "",
     val pin: String = "",
-    val isAdmin: Boolean = false,
     val revision: Long = 0,
 )
 
@@ -102,11 +100,14 @@ data class DeviceStatus(
     val actuatorControlAvailable: Boolean = false,
     val actuatorFeedback: String = "unavailable",
     val physicalStateConfirmed: Boolean = false,
+    val cameraSource: String = "unknown",
+    val localControls: Boolean = false,
 )
 
 data class Capabilities(
-    val clientCamera: Boolean = false,
     val deviceCamera: Boolean = false,
+    val cameraSource: String = "unknown",
+    val localControls: Boolean = false,
     val simulatedActuator: Boolean = false,
     val livenessAvailable: Boolean = false,
     val actuatorControlAvailable: Boolean = false,
@@ -117,10 +118,20 @@ data class User(
     val id: String,
     val name: String,
     val faceAccess: Boolean,
-    val enrolled: Boolean,
+    val faceEnrolled: Boolean,
     val createdAtMillis: Long,
     val isAdmin: Boolean = false,
     val isOwner: Boolean = false,
+)
+
+data class PairedDevice(
+    val id: String,
+    val userId: String,
+    val userName: String,
+    val name: String,
+    val active: Boolean,
+    val lastSeenMillis: Long,
+    val userIsOwner: Boolean,
 )
 
 data class SessionUser(
@@ -164,18 +175,18 @@ data class BassState(
     val commissioningPrompt: CommissioningPrompt? = null,
     val exportMaterial: ExportMaterial? = null,
     val inviteMaterial: ExportMaterial? = null,
-    val transferPending: Boolean = false,
     val identity: SessionIdentity? = null,
     val device: DeviceInfo? = null,
     val status: DeviceStatus? = null,
     val capabilities: Capabilities = Capabilities(),
     val users: List<User> = emptyList(),
+    val pairedDevices: List<PairedDevice> = emptyList(),
     val faceStatus: FaceStatus = FaceStatus(),
     val logs: List<LogEntry> = emptyList(),
     val settings: AppSettings = AppSettings(),
     val busy: Boolean = false,
     val captureFlow: CaptureFlow = CaptureFlow.NONE,
-    val cameraSource: CameraSource = CameraSource.PHONE,
+    val cameraSource: CameraSource = CameraSource.DEVICE,
     val activeSessionProgress: Int? = null,
     val activeSessionTotal: Int? = null,
     val activeSessionMessage: String? = null,

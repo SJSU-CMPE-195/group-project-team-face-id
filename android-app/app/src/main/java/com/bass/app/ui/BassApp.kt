@@ -40,7 +40,6 @@ import com.bass.app.ui.screens.LogsScreen
 import com.bass.app.ui.screens.PairingScreen
 import com.bass.app.ui.screens.PairingCredentialsScreen
 import com.bass.app.ui.screens.PinScreen
-import com.bass.app.ui.screens.SettingsScreen
 import com.bass.app.ui.screens.UsersScreen
 import com.bass.app.ui.theme.BassTheme
 
@@ -189,7 +188,6 @@ private fun ConnectedApp(
         bottomBar = {
             AppNavigation(
                 selectedTab = state.selectedTab,
-                isAdmin = state.identity?.user?.isAdmin == true,
                 onSelect = viewModel::selectTab,
             )
         },
@@ -208,22 +206,8 @@ private fun ConnectedApp(
                     modifier = Modifier.padding(innerPadding),
                 )
             Tab.LOGS ->
-                if (state.identity?.user?.isAdmin == true) {
-                    LogsScreen(
-                        logs = state.logs,
-                        modifier = Modifier.padding(innerPadding),
-                    )
-                } else {
-                    ConsoleScreen(
-                        state = state,
-                        viewModel = viewModel,
-                        modifier = Modifier.padding(innerPadding),
-                    )
-                }
-            Tab.SETTINGS ->
-                SettingsScreen(
-                    state = state,
-                    viewModel = viewModel,
+                LogsScreen(
+                    logs = state.logs,
                     modifier = Modifier.padding(innerPadding),
                 )
         }
@@ -273,20 +257,14 @@ private data class NavigationDestination(
 @Composable
 private fun AppNavigation(
     selectedTab: Tab,
-    isAdmin: Boolean,
     onSelect: (Tab) -> Unit,
 ) {
     val destinations =
         listOf(
             NavigationDestination(Tab.CONSOLE, R.string.nav_console, "⌂"),
             NavigationDestination(Tab.USERS, R.string.nav_users, "♙"),
-        ) +
-            if (isAdmin) {
-                listOf(NavigationDestination(Tab.LOGS, R.string.nav_logs, "≡"))
-            } else {
-                emptyList()
-            } +
-            NavigationDestination(Tab.SETTINGS, R.string.nav_settings, "⚙")
+            NavigationDestination(Tab.LOGS, R.string.nav_logs, "≡"),
+        )
 
     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
         destinations.forEach { destination ->

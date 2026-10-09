@@ -35,38 +35,6 @@ async function fetchJson(url, options = {}, onUnauthorized) {
   return data;
 }
 
-async function fetchFormJson(url, form, headers, onUnauthorized) {
-  const response = await fetch(url, {
-    method: "POST",
-    body: form,
-    cache: "no-store",
-    credentials: "same-origin",
-    redirect: "error",
-    headers,
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const data = contentType.includes("application/json")
-    ? await response.json().catch(() => null)
-    : null;
-  if (response.status === 401) onUnauthorized?.();
-  if (!response.ok) {
-    const detail = data?.message || data?.error || data?.detail;
-    const error = new Error(
-      typeof detail === "string"
-        ? detail
-        : `HTTP ${response.status} ${response.statusText}`,
-    );
-    error.status = response.status;
-    error.code = data?.code;
-    error.payload = data;
-    throw error;
-  }
-  if (!contentType.includes("application/json")) {
-    throw new Error(`Expected JSON response from ${url}`);
-  }
-  return data;
-}
-
 export default function useApi(baseUrl) {
   const { csrfToken, expireSession } = useSecurity();
 
@@ -99,6 +67,7 @@ export default function useApi(baseUrl) {
     return {
       status: () => get("/api/status"),
       deviceInfo: () => get("/api/device-info"),
+      me: () => get("/api/me"),
       cameraStatus: (signal) => get("/api/camera/status", { signal }),
       cameraStreamUrl: (sessionId) =>
         endpoint(
@@ -118,18 +87,12 @@ export default function useApi(baseUrl) {
       fullReset: (grantToken) =>
         mutate("/api/full-reset", { method: "POST" }, grantToken),
       users: () => get("/api/users"),
-      faceStatus: () => get("/api/face-status"),
-      addUser: (name, pin, isAdmin, grantToken, enrollFace = false) =>
+      addUser: (name, pin, grantToken) =>
         mutate(
           "/api/users",
           {
             method: "POST",
-            body: JSON.stringify({
-              name,
-              pin,
-              is_admin: !!isAdmin,
-              enroll_face: enrollFace,
-            }),
+            body: JSON.stringify({ name, pin }),
           },
           grantToken,
         ),
@@ -149,6 +112,15 @@ export default function useApi(baseUrl) {
         mutate(
           `/api/users/${encodeURIComponent(id)}/pin`,
           { method: "POST", body: JSON.stringify({ pin }) },
+          grantToken,
+        ),
+      setRole: (id, isAdmin, grantToken) =>
+        mutate(
+          `/api/users/${encodeURIComponent(id)}/role`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ is_admin: !!isAdmin }),
+          },
           grantToken,
         ),
       pairingInvite: (userId, grantToken) =>
@@ -195,22 +167,6 @@ export default function useApi(baseUrl) {
         get(`/api/enroll/status?session_id=${encodeURIComponent(sessionId)}`),
       piEnrollCancel: (sessionId) =>
         mutate("/api/enroll/cancel", {
-          method: "POST",
-          body: JSON.stringify({ session_id: sessionId }),
-        }),
-      piEnrollSample: (sessionId, blob) => {
-        const form = new FormData();
-        form.append("session_id", sessionId);
-        form.append("image", blob, "sample.jpg");
-        return fetchFormJson(
-          endpoint("/api/enroll/sample"),
-          form,
-          { "X-BASS-CSRF": csrfToken },
-          expireSession,
-        );
-      },
-      piEnrollFinish: (sessionId) =>
-        mutate("/api/enroll/finish", {
           method: "POST",
           body: JSON.stringify({ session_id: sessionId }),
         }),

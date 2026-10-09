@@ -35,7 +35,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingPairingQr: PairingQr? = null
     private var pendingPairingInviteToken = ""
     private var pendingCommissioning: PendingCommissioning? = null
-    private var pendingTransfer: PendingTransfer? = null
     private var pendingPairing: Pairing? = null
     private var pairingExchangeStarted = false
     private var pairing: Pairing? = null
@@ -44,7 +43,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var sessionGeneration = 0L
     private var connectionJob: Job? = null
     private var pollJob: Job? = null
-    private var frameJob: Job? = null
     private var reconnectJob: Job? = null
     private var promptJob: Job? = null
     private var foreground = false
@@ -55,13 +53,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var snapshotVersion = 0L
     private var pendingStart: PendingStart? = null
 
+    private fun loadSupportedPairings(): StoredPairings {
+        val stored = store.loadPairings()
+        val retiredCommissioning =
+            stored.pendingCommissioning?.qr?.purpose == CommissioningPurpose.TRANSFER
+        if (retiredCommissioning) {
+            check(store.discardPendingCommissioning(stored.writeScope)) {
+                text(R.string.core_pairing_clear_failed)
+            }
+        }
+        if (stored.pendingTransfer != null) {
+            check(store.discardPendingTransfer(stored.writeScope)) {
+                text(R.string.core_pairing_clear_failed)
+            }
+        }
+        val exportMaterial = stored.exportMaterial
+        val retiredTransfer = exportMaterial?.fileName?.startsWith("bass-transfer-") == true
+        if (retiredTransfer) {
+            check(store.clearExportMaterial(stored.writeScope)) {
+                text(R.string.core_pairing_clear_failed)
+            }
+        }
+        return stored.copy(
+            pendingCommissioning = stored.pendingCommissioning.takeUnless {
+                retiredCommissioning
+            },
+            pendingTransfer = null,
+            exportMaterial = exportMaterial.takeUnless { retiredTransfer },
+        )
+    }
+
     init {
-        runCatching { store.loadPairings() }
+        runCatching { loadSupportedPairings() }
             .onSuccess { stored ->
                 pairing = stored.active
                 pendingPairing = stored.pending
                 pendingCommissioning = stored.pendingCommissioning
-                pendingTransfer = stored.pendingTransfer
                 val owner = stored.pending ?: stored.active
                 if (owner != null) {
                     mutableState.update {
@@ -85,9 +112,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } else if (stored.exportMaterial != null) {
                     mutableState.update { it.copy(exportMaterial = stored.exportMaterial) }
-                }
-                if (stored.pendingTransfer != null) {
-                    mutableState.update { it.copy(transferPending = true) }
                 }
             }
             .onFailure { error ->
@@ -134,7 +158,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectTab(tab: Tab) {
-        if (tab == Tab.LOGS && state.value.identity?.user?.isAdmin != true) return
         if (tab != state.value.selectedTab) {
             pinProtection.cancel()
             stopSession(restorePrompt = true)
@@ -182,6 +205,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 return
             }
+        if (parsed.purpose == CommissioningPurpose.TRANSFER) {
+            mutableState.update { it.copy(error = text(R.string.core_invalid_qr)) }
+            return
+        }
         stopSession()
         pendingPairingQr = parsed
         pendingPairingInviteToken = invitation?.inviteToken.orEmpty()
@@ -486,16 +513,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!state.value.showForgetDeviceDialog || state.value.busy) return
         mutableState.update { it.copy(busy = true, forgetDeviceError = null, error = null) }
 
-        pinProtection.cancel()
-        generation++
-        connectionJob?.cancel()
-        connectionJob = null
-        reconnectJob?.cancel()
-        reconnectJob = null
-        stopPrompt()
-        stopSession()
-        api = null
-
         val pairingCleared = runCatching { store.clear() }
         if (pairingCleared.isFailure) {
             mutableState.update {
@@ -508,6 +525,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        resetLocalPairingState()
+    }
+
+    private fun resetLocalPairingState() {
+        pinProtection.cancel()
+        generation++
+        connectionJob?.cancel()
+        connectionJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+        stopPrompt()
+        stopSession()
+        api = null
         pairing = null
         sessionLoginVerified = false
         commissioningSubmittedThisForeground = false
@@ -515,7 +545,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pendingPairingInviteToken = ""
         pendingPairing = null
         pendingCommissioning = null
-        pendingTransfer = null
         settingsDirty = false
         clearNewUserDraft()
         mutableState.value = BassState()
@@ -524,7 +553,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun retryConnection() {
         if (!foreground) return
         val stored =
-            runCatching { store.loadPairings() }.getOrElse { error ->
+            runCatching { loadSupportedPairings() }.getOrElse { error ->
                 mutableState.update {
                     it.copy(
                         phase = ConnectionPhase.ERROR,
@@ -537,11 +566,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pairing = stored.active
         pendingPairing = stored.pending
         pendingCommissioning = stored.pendingCommissioning
-        pendingTransfer = stored.pendingTransfer
         mutableState.update {
             it.copy(
                 exportMaterial = stored.exportMaterial,
-                transferPending = stored.pendingTransfer != null,
             )
         }
         if (stored.pendingCommissioning != null) {
@@ -584,10 +611,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 api = connected.api
                 applyConnected(connected)
                 if (sessionLoginVerified) {
-                    resumeConnected(connected, epoch, transferWriteScope = writeScope)
+                    resumeConnected(connected, epoch)
                 } else {
                     requestSessionLogin(connected, epoch) {
-                        resumeConnected(connected, epoch, transferWriteScope = writeScope)
+                        resumeConnected(connected, epoch)
                     }
                 }
             } catch (error: CancellationException) {
@@ -624,10 +651,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     api = connected.api
                     applyConnected(connected)
                     if (sessionLoginVerified) {
-                        resumeConnected(connected, epoch, transferWriteScope = writeScope)
+                        resumeConnected(connected, epoch)
                     } else {
                         requestSessionLogin(connected, epoch) {
-                            resumeConnected(connected, epoch, transferWriteScope = writeScope)
+                            resumeConnected(connected, epoch)
                         }
                     }
                 } catch (error: CancellationException) {
@@ -692,8 +719,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             phase = ConnectionPhase.SIGN_IN_REQUIRED,
                             status = null,
                             users = emptyList(),
+                            pairedDevices = emptyList(),
                             faceStatus = FaceStatus(),
                             logs = emptyList(),
+                            inviteMaterial = null,
                             unlockOwner = null,
                             busy = false,
                             error = null,
@@ -713,7 +742,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         connected: ConnectedDevice,
         epoch: Long,
         exportMaterial: ExportMaterial? = state.value.exportMaterial,
-        transferWriteScope: Long? = null,
     ) {
         if (!isCurrentConnection(connected, epoch) || !sessionLoginVerified) return
         mutableState.update {
@@ -733,9 +761,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (!isCurrentConnection(connected, epoch)) return@launch
                     mutableState.update {
                         it.copy(phase = ConnectionPhase.CONNECTED, busy = false)
-                    }
-                    transferWriteScope?.let { scope ->
-                        pendingTransfer?.let { runPendingTransfer(it, scope) }
                     }
                     pollConnected(connected.api, epoch)
                 } catch (error: CancellationException) {
@@ -778,8 +803,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         stopSession()
         stopPrompt()
         api = null
-        val unauthorized = error is ApiException && error.statusCode == 401
+        val unauthorized = error is ApiException && error.statusCode in setOf(401, 403)
         val identityFailure = error is TlsIdentityException || error is DeviceIdentityException
+        val clearProtectedState = unauthorized || identityFailure
         if (unauthorized || identityFailure) sessionLoginVerified = false
         mutableState.update {
             it.copy(
@@ -792,8 +818,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 busy = false,
                 error = errorText(error, R.string.core_offline),
                 unlockOwner = null,
+                identity = if (clearProtectedState) null else it.identity,
+                status = if (clearProtectedState) null else it.status,
+                users = if (clearProtectedState) emptyList() else it.users,
+                pairedDevices = if (clearProtectedState) emptyList() else it.pairedDevices,
+                faceStatus = if (clearProtectedState) FaceStatus() else it.faceStatus,
+                logs = if (clearProtectedState) emptyList() else it.logs,
+                inviteMaterial = if (clearProtectedState) null else it.inviteMaterial,
             )
         }
+        if (clearProtectedState) clearNewUserDraft()
         if (!unauthorized && !identityFailure && foreground) {
             reconnectJob?.cancel()
             reconnectJob = viewModelScope.launch {
@@ -835,7 +869,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ?: throw DeviceIdentityException(text(R.string.core_identity_mismatch))
         val loaded = client.readSnapshot(savedIdentity)
         if (epoch != generation || snapshot != snapshotVersion) return
-        mutableState.update { it.withSnapshot(loaded, settingsDirty) }
+        val previousUser = state.value.identity?.user
+        val roleChanged =
+            previousUser != null &&
+                (previousUser.isAdmin != loaded.identity.user.isAdmin ||
+                    previousUser.isOwner != loaded.identity.user.isOwner)
+        if (roleChanged) {
+            pinProtection.cancel()
+            stopSession()
+            clearNewUserDraft()
+        }
+        mutableState.update { it.withSnapshot(loaded) }
     }
 
     private fun command(
@@ -858,6 +902,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (epoch == generation) {
                     after()
+                    if (epoch != generation) return@launch
                     loadSnapshot(client, epoch)
                 }
             } catch (error: Exception) {
@@ -915,7 +960,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val epoch = generation
         val owner = pairing
-        val actorId = state.value.identity?.user?.id
+        val actor = state.value.identity?.user
+        val actorId = actor?.id
+        val actorIsAdmin = actor?.isAdmin
+        val actorIsOwner = actor?.isOwner
         val tab = state.value.selectedTab
         mutableState.update { it.copy(error = null) }
         pinProtection.request(
@@ -936,6 +984,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     generation == epoch &&
                     pairing == owner &&
                     state.value.identity?.user?.id == actorId &&
+                    state.value.identity?.user?.isAdmin == actorIsAdmin &&
+                    state.value.identity?.user?.isOwner == actorIsOwner &&
                     state.value.selectedTab == tab &&
                     (!operation.action.requiresActuatorControl ||
                         state.value.canControlActuators)
@@ -1028,16 +1078,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateNewUserAdmin(isAdmin: Boolean) {
-        mutableNewUserDraft.update {
-            if (it.isAdmin == isAdmin) {
-                it
-            } else {
-                it.copy(isAdmin = isAdmin, revision = it.revision + 1)
-            }
-        }
-    }
-
     fun createUser() {
         val draft = newUserDraft.value
         val cleanName = draft.name.trim()
@@ -1066,7 +1106,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 JSONObject()
                     .put("name", cleanName)
                     .put("pin", String(newPin))
-                    .put("is_admin", draft.isAdmin)
             newPin.fill('\u0000')
             command(
                 "/api/users",
@@ -1127,6 +1166,45 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setUserRole(userId: String, isAdmin: Boolean) {
+        if (state.value.identity?.user?.isOwner != true) return
+        val target = state.value.users.singleOrNull { it.id == userId } ?: return
+        if (target.isOwner || target.isAdmin == isAdmin) return
+        requestGrant(
+            PinPurpose.USER_ROLE,
+            OperationRequest(OperationAction.USER_ROLE, userId),
+        ) { grant ->
+            command(
+                "/api/users/${DeviceApi.encoded(userId)}/role",
+                "PATCH",
+                JSONObject().put("is_admin", isAdmin),
+                grant,
+            )
+        }
+    }
+
+    fun revokeDevice(deviceId: String) {
+        val actor = state.value.identity?.user ?: return
+        val target = state.value.pairedDevices.singleOrNull { it.id == deviceId } ?: return
+        if (!actor.isAdmin || !target.active || (target.userIsOwner && !actor.isOwner)) return
+        val revokingThisPhone = state.value.identity?.deviceId == deviceId
+        requestGrant(
+            PinPurpose.USER_ADMIN,
+            OperationRequest(OperationAction.DEVICE_REVOKE, deviceId),
+        ) { grant ->
+            command(
+                "/api/devices/${DeviceApi.encoded(deviceId)}/revoke",
+                operationGrant = grant,
+                after = {
+                    if (revokingThisPhone) {
+                        store.clear()
+                        resetLocalPairingState()
+                    }
+                },
+            )
+        }
+    }
+
     fun clearInviteMaterial() {
         mutableState.update { it.copy(inviteMaterial = null) }
     }
@@ -1161,85 +1239,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(error = null) }
     }
 
-    fun startOwnershipTransfer(pin: CharArray) {
-        val owner = state.value.identity?.user
-        if (
-            owner?.isOwner != true ||
-                api == null ||
-                state.value.busy ||
-                state.value.exportMaterial != null
-        ) {
-            pin.fill('\u0000')
-            if (state.value.exportMaterial != null) {
-                mutableState.update { it.copy(error = text(R.string.export_material_pending)) }
-            }
-            return
-        }
-        pendingTransfer?.let { saved ->
-            pin.fill('\u0000')
-            val writeScope =
-                runCatching { store.loadPairings().writeScope }.getOrElse {
-                    mutableState.update {
-                        state -> state.copy(error = text(R.string.core_pairing_unavailable))
-                    }
-                    return
-                }
-            runPendingTransfer(saved, writeScope)
-            return
-        }
-        if (
-            pin.size != 6 ||
-                pin.any { it !in '0'..'9' } ||
-                state.value.phase != ConnectionPhase.CONNECTED
-        ) {
-            pin.fill('\u0000')
-            mutableState.update { it.copy(error = text(R.string.commissioning_invalid)) }
-            return
-        }
-        val pending = commissioning.newTransfer(String(pin))
-        pin.fill('\u0000')
-        val writeScope = store.beginWriteScope()
-        val saved = runCatching { store.savePendingTransfer(pending, writeScope) }
-        if (!saved.getOrDefault(false)) {
-            mutableState.update { it.copy(error = text(R.string.core_pairing_pending_save_failed)) }
-            return
-        }
-        pendingTransfer = pending
-        mutableState.update { it.copy(transferPending = true) }
-        runPendingTransfer(pending, writeScope)
-    }
-
-    private fun runPendingTransfer(pending: PendingTransfer, writeScope: Long) {
-        val client = api ?: return
-        val currentPairing = pairing ?: return
-        val epoch = generation
-        mutableState.update { it.copy(busy = true, error = null) }
-        viewModelScope.launch {
-            try {
-                val material =
-                    commissioning.startTransfer(client, currentPairing, pending, writeScope)
-                if (epoch != generation) return@launch
-                pendingTransfer = null
-                mutableState.update {
-                    it.copy(exportMaterial = material, transferPending = false)
-                }
-            } catch (error: Exception) {
-                if (epoch == generation) {
-                    if (error.isDefinitiveTransferFailure()) {
-                        runCatching { store.discardPendingTransfer(writeScope) }
-                        pendingTransfer = null
-                        mutableState.update { it.copy(transferPending = false) }
-                    }
-                    mutableState.update {
-                        it.copy(error = errorText(error, R.string.transfer_failed))
-                    }
-                }
-            } finally {
-                if (epoch == generation) mutableState.update { it.copy(busy = false) }
-            }
-        }
-    }
-
     fun exportMaterialSaved() {
         val writeScope = store.beginWriteScope()
         val cleared = runCatching { store.clearExportMaterial(writeScope) }
@@ -1254,17 +1253,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(error = text(R.string.export_write_failed)) }
     }
 
-    fun cameraError(message: String) {
+    private fun cameraError(message: String) {
         stopSession(restorePrompt = true)
         mutableState.update { it.copy(error = message) }
     }
 
-    fun startEnrollment(userId: String, source: CameraSource) {
+    fun startEnrollment(userId: String) {
         if (state.value.identity?.user?.isAdmin != true) return
         val target = state.value.users.singleOrNull { it.id == userId } ?: return
         if (target.isOwner && state.value.identity?.user?.isOwner != true) return
-        if (source == CameraSource.PHONE && !state.value.capabilities.clientCamera) return
-        if (source == CameraSource.DEVICE && !state.value.capabilities.deviceCamera) return
+        if (!state.value.capabilities.deviceCamera) return
         requestGrant(
             PinPurpose.ENROLL,
             OperationRequest(OperationAction.ENROLLMENT_START, userId),
@@ -1272,7 +1270,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             startSession(
                 "enroll",
                 CaptureFlow.ENROLL,
-                source,
                 JSONObject().put("user_id", userId),
                 grant,
             )
@@ -1289,38 +1286,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         body.put("expected_user_id", expectedUserId)
         val flow =
             if (purpose == "ignition") CaptureFlow.VERIFY_IGNITION else CaptureFlow.VERIFY_UNLOCK
-        startSession("scan", flow, CameraSource.DEVICE, body, operationGrant)
+        startSession("scan", flow, body, operationGrant)
     }
 
     private fun startSession(
         kind: String,
         flow: CaptureFlow,
-        source: CameraSource,
         body: JSONObject,
         operationGrant: String,
     ) {
         val client = api ?: return
         if (!foreground || state.value.pinPrompt != null) return
         if (state.value.busy || state.value.phase != ConnectionPhase.CONNECTED) return
-        val supported = when (source) {
-            CameraSource.PHONE -> state.value.capabilities.clientCamera
-            CameraSource.DEVICE -> state.value.capabilities.deviceCamera
-        }
-        if (!supported) return
+        if (!state.value.capabilities.deviceCamera) return
         sessionGeneration++
         snapshotVersion++
         val token = sessionGeneration
         val epoch = generation
         val pending = PendingStart(epoch, token)
         pendingStart = pending
-        body.put(
-            "source",
-            when (source) {
-                CameraSource.PHONE -> "client_camera"
-                CameraSource.DEVICE -> "device_camera"
-            },
-        )
-        mutableState.update { it.startCapture(flow, source) }
+        body.put("source", "device_camera")
+        mutableState.update { it.startCapture(flow, CameraSource.DEVICE) }
         viewModelScope.launch {
             var created: ActiveSession? = null
             try {
@@ -1401,41 +1387,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (session == active) {
                     if (error is TlsIdentityException) failConnection(error, epoch)
                     else cameraError(errorText(error, R.string.core_session_disconnected))
-                }
-            }
-        }
-    }
-
-    fun submitEnrollmentSample(bytes: ByteArray) = submitFrame(bytes)
-
-    fun submitFrame(bytes: ByteArray) {
-        val active = session ?: return
-        if (active.kind != "enroll") return
-        if (
-            state.value.cameraSource != CameraSource.PHONE ||
-                frameJob?.isActive == true ||
-                !foreground
-        )
-            return
-        frameJob = viewModelScope.launch {
-            try {
-                val result = active.api.sample(active.kind, active.id, bytes)
-                if (session != active) return@launch
-                applySession(result, active)
-                val enough = result.optInt("count") >= result.optInt("samples_needed", 10)
-                if (active.kind == "enroll" && enough && session == active) {
-                    val finished =
-                        active.api.json(
-                            "/api/enroll/finish",
-                            "POST",
-                            JSONObject().put("session_id", active.id),
-                        )
-                    if (session == active) applySession(finished, active)
-                }
-            } catch (error: Exception) {
-                if (session == active) {
-                    if (error is TlsIdentityException) failConnection(error, generation)
-                    else cameraError(errorText(error, R.string.core_upload_failed))
                 }
             }
         }

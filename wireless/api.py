@@ -69,8 +69,8 @@ def secure_wireless_app(
     local_sessions.register(app)
     register_security_routes(app, security, config)
     if commissioning is not None:
-        if transfer_handler is None or recovery_handler is None:
-            raise ValueError("Commissioning requires runtime-draining ownership handlers.")
+        if recovery_handler is None:
+            raise ValueError("Commissioning requires a runtime-draining recovery handler.")
         register_commissioning_routes(
             app, commissioning, events, transfer_handler, recovery_handler,
         )
@@ -179,7 +179,8 @@ def secure_wireless_app(
             return None
         protected = request.path.startswith("/api/") or request.path == "/ready"
         if protected:
-            if request.environ.get("bass.local_dashboard"):
+            g.local_controls = bool(request.environ.get("bass.local_dashboard"))
+            if g.local_controls:
                 actor, _ = local_sessions.authenticate()
             else:
                 actor = security.principal(_credential("bearer"))
@@ -191,11 +192,10 @@ def secure_wireless_app(
                 response.headers["Retry-After"] = str(retry_after)
                 return response
             if request.method not in {"GET", "HEAD", "OPTIONS"}:
-                # Read bounded input outside the shared authorization barrier:
-                # a slow upload must not hold every user's permission checks.
-                if request.endpoint == "api_enroll_sample":
-                    request.form
-                else:
+                if request.endpoint not in {
+                    "api_enroll_sample",
+                    "api_enroll_finish",
+                }:
                     json_object()
             _hold_product_barrier()
             if not security.still_authorized(actor):
@@ -224,11 +224,16 @@ def secure_wireless_app(
                 "transport": "https",
                 "name": config.name,
                 "capabilities": {
-                    "client_camera": True,
-                    "client_camera_enrollment": True,
+                    "client_camera": False,
+                    "client_camera_enrollment": False,
                     "client_camera_verification": False,
                     "device_camera": True,
-                    "camera_source": "pi_camera" if mode == "pi" else "pc_webcam",
+                    "camera_source": getattr(
+                        runtime,
+                        "camera_source",
+                        "pi_camera" if mode == "pi" else "pc_webcam",
+                    ),
+                    "local_controls": bool(g.get("local_controls", False)),
                     "pi_camera": mode == "pi",
                     "simulated_actuators": mode == "pc",
                     "liveness_available": False,

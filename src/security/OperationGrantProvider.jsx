@@ -9,6 +9,7 @@ const API_ROOT = "/local/wireless/api";
 export default function OperationGrantProvider({ children }) {
   const { csrfToken, expireSession, user } = useSecurity();
   const pendingRef = useRef(null);
+  const accountRoleRef = useRef("");
   const [prompt, setPrompt] = useState(null);
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
@@ -23,6 +24,14 @@ export default function OperationGrantProvider({ children }) {
     setBusy(false);
     pending?.resolve(value);
   }, []);
+
+  useEffect(() => {
+    const accountRole = `${user?.id || ""}:${!!user?.is_owner}:${!!user?.is_admin}`;
+    if (accountRoleRef.current && accountRoleRef.current !== accountRole) {
+      finish(null);
+    }
+    accountRoleRef.current = accountRole;
+  }, [finish, user?.id, user?.is_admin, user?.is_owner]);
 
   useEffect(
     () => () => {

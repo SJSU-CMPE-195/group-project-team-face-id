@@ -5,9 +5,6 @@ import { genId } from "../utils/helpers";
 export default function useAppState() {
   const [mode, setMode] = useState("device");
   const baseUrl = `${window.location.origin}/local/wireless`;
-  const [faceApiUrl, setFaceApiUrl] = useState(
-    () => localStorage.getItem("faceApiUrl") || "http://127.0.0.1:8765"
-  );
   const [tab, setTab] = useState("control");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
@@ -90,9 +87,8 @@ export default function useAppState() {
 
   useEffect(() => {
     localStorage.setItem("mode", mode);
-    localStorage.setItem("faceApiUrl", faceApiUrl);
     localStorage.setItem("sim", JSON.stringify(sim));
-  }, [mode, faceApiUrl, sim]);
+  }, [mode, sim]);
 
   useEffect(() => {
     localStorage.setItem("faceAccessAllowed", JSON.stringify(simFaceAccessAllowed));
@@ -130,8 +126,6 @@ export default function useAppState() {
     mode,
     setMode,
     baseUrl,
-    faceApiUrl,
-    setFaceApiUrl,
     tab,
     setTab,
     busy,
