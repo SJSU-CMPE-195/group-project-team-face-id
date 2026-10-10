@@ -22,6 +22,7 @@ from .camera_capture import (
     CapturedFrame,
     SessionCameraCapture,
 )
+from .esp32_link import AUTH_REPLIES, Esp32Link
 from .runtime_authorization import AuthorizationRejected, RuntimeAuthorization
 from .runtime_actuation import RuntimeActuation
 from .runtime_safety import (
@@ -88,6 +89,7 @@ class PiRuntime:
         self._model_error: str | None = None
         self._camera_error: str | None = None
         self._serial_error: str | None = None
+        self._esp32_link: Esp32Link | None = None
         self._settings_error: str | None = None
         self._authorization = RuntimeAuthorization()
         self._actuation = RuntimeActuation(
@@ -906,6 +908,9 @@ class PiRuntime:
                 return
             self._closed = True
             had_hardware = self._serial is not None or self._modules is not None
+            esp32_link = self._esp32_link
+        if esp32_link is not None:
+            esp32_link.stop()
         self._cancel_all_sessions()
         self._actuation.shutdown(had_hardware)
         self._close_camera()
@@ -1049,7 +1054,7 @@ class PiRuntime:
         if not self.actuator_control_available:
             self._record_error(self.actuator_block_reason, "serial")
             return False
-        if command not in {"UNLOCK", "LOCK", "START", "STOP"}:
+        if command not in {"UNLOCK", "LOCK", "START", "STOP"} | AUTH_REPLIES:
             self._record_error("Unknown actuator command", "serial")
             return False
         try:
@@ -1080,6 +1085,58 @@ class PiRuntime:
                     connection.close()
                 except Exception:
                     pass
+
+    # ── ESP32 trigger link ───────────────────────────────────────────────────
+
+    def start_esp32_link(self) -> None:
+        """Start listening for button-triggered authentication requests."""
+
+        with self._lock:
+            if self._closed or self._esp32_link is not None:
+                return
+            self._esp32_link = Esp32Link(self)
+            link = self._esp32_link
+        link.start()
+
+    def esp32_link_connection(self) -> Any | None:
+        """Return the open ESP32 port for reading, or None while unavailable."""
+
+        with self._lock:
+            if self._closed or self._paused:
+                return None
+        return self._ensure_serial()
+
+    def esp32_link_failed(self, connection: Any | None, exc: Exception) -> None:
+        self._record_error(f"ESP32 link failed: {exc}", "serial")
+        with self._lock:
+            current = connection is not None and connection is self._serial
+        if current:
+            self._close_serial()
+
+    def sync_esp32_state(self) -> None:
+        """Re-send LOCK after the port opens, because the ESP32 boots unlocked."""
+
+        try:
+            locked = self._db.get_status().get("lockState") == "locked"
+        except Exception as exc:
+            self._record_error(f"could not read device state: {exc}", "serial")
+            return
+        if locked:
+            self._send_command("LOCK", connect=False)
+
+    def handle_esp32_trigger(self, purpose: str) -> None:
+        """Answer a ``START_AUTH`` request from the ESP32 button."""
+
+        with self._lock:
+            busy = self._active_session_id is not None
+        reply = "BUSY" if busy else "ERROR"
+        self._log(
+            "esp32_trigger",
+            "fail",
+            f"START_AUTH {purpose.upper()} received; replied {reply} "
+            "(button-triggered scans are not enabled yet)",
+        )
+        self._send_command(reply, connect=False)
 
     # ── Background workers ───────────────────────────────────────────────────
 
