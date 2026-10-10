@@ -18,9 +18,9 @@ const int STEP_IN2 = 16;
 const int STEP_IN3 = 21;
 const int STEP_IN4 = 22;
 
-// Trigger button (to GND, internal pull-up) and status LED (onboard)
+// Trigger button (to GND, internal pull-up) and external status LED (220 ohm to GND)
 const int BUTTON_PIN = 32;
-const int STATUS_LED = 2;
+const int STATUS_LED = 33;
 
 // 28BYJ-48 step count for lock/unlock position
 const int LOCK_STEPS = 2048;

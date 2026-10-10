@@ -26,7 +26,7 @@ One button steps through these:
 | DC Motor A (OUT1/OUT2) | Simulates engine ignition |
 | 28BYJ-48 Stepper + ULN2003 | Simulates lock/unlock mechanism |
 | Momentary pushbutton | Face-auth trigger (stand-in for a door/start sensor) |
-| Onboard LED (GPIO2) | Authentication status |
+| LED + 220 Ω resistor (GPIO33) | Authentication status |
 
 ## Wiring
 
@@ -40,8 +40,8 @@ One button steps through these:
 | GPIO21 | ULN2003 IN3 |
 | GPIO22 | ULN2003 IN4 |
 | GPIO32 | Pushbutton leg 1 (leg 2 to GND; internal pull-up, no resistor) |
-| GPIO2 | Onboard LED (no wiring) |
-| GND | L298N GND, ULN2003 GND, pushbutton |
+| GPIO33 | 220 Ω resistor → LED long leg (+); LED short leg (−) to GND |
+| GND | L298N GND, ULN2003 GND, pushbutton, LED (−) |
 
 | Input Terminal | L298N Pin |
 |---|---|
