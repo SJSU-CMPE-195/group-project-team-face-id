@@ -26,7 +26,6 @@ export default function ControlTab({
   ignitionOn,
   simulatedActuators,
   actuatorControlAvailable,
-  physicalStateConfirmed,
   promptAutoLockSeconds = 0,
   doLock,
   doIgnitionStop,
@@ -94,7 +93,6 @@ export default function ControlTab({
     ignitionOn,
     simulatedActuators,
     actuatorControlAvailable,
-    physicalStateConfirmed,
   });
   const statusLine =
     displayedSession?.message ||
@@ -731,24 +729,26 @@ export default function ControlTab({
             </Badge>
             <Badge
               variant={
-                simulatedActuators
-                  ? "info"
-                  : physicalStateConfirmed
-                    ? locked
+                !online
+                  ? "default"
+                  : simulatedActuators
+                    ? "info"
+                    : locked
                       ? "warn"
                       : "ok"
-                    : "warn"
               }
             >
               {labels.lockLong}
             </Badge>
             <Badge
               variant={
-                simulatedActuators
-                  ? "info"
-                  : physicalStateConfirmed && ignitionOn
-                    ? "ok"
-                    : "default"
+                !online
+                  ? "default"
+                  : simulatedActuators
+                    ? "info"
+                    : ignitionOn
+                      ? "ok"
+                      : "default"
               }
             >
               {labels.ignitionLong}

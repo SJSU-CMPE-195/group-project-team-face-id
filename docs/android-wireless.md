@@ -501,8 +501,11 @@ vehicle-safety acceptance.
 Pi prototype mode sends `UNLOCK`, `LOCK`, `START`, and `STOP` over the existing
 115200-baud ESP32 connection. Face authorization, manual stop/lock, safety
 timers, and best-effort shutdown retain their existing behavior. The dashboard
-enables those controls while labelling physical state as unconfirmed. Android
-shows their status without vehicle action buttons.
+enables those controls and displays `Locked`/`Unlocked` and ignition `On`/`Off`
+from the host's `lockState` and `ignitionOn` values. Android shows the same
+reported status without vehicle action buttons. These values track the host's
+control state, not sensor-confirmed physical position; the API continues to
+report `physical_state_confirmed: false`.
 `command_sent: true` means the serial write completed, not that the firmware
 completed the action or a motor reached its position. Incomplete writes and
 serial errors fail the operation. Set `ESP32_SERIAL_PORT` when automatic port

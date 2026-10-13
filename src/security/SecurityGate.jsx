@@ -148,7 +148,6 @@ export default function SecurityGate() {
           online={false}
           simulatedActuators={false}
           actuatorControlAvailable={false}
-          physicalStateConfirmed={false}
           busy={busy || security.phase === "loading"}
           onRefresh={
             activeTab === "hardware"
