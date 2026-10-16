@@ -24,6 +24,12 @@ from .camera_capture import (
 )
 from .runtime_authorization import AuthorizationRejected, RuntimeAuthorization
 from .runtime_actuation import RuntimeActuation
+from .liveness_engine import (
+    LivenessObservation,
+    LivenessSession,
+    LivenessEngine,
+    UnavailableLivenessEngine,
+)
 from .runtime_safety import (
     RuntimeSafetySettings,
     validate_runtime_safety_settings,
@@ -64,11 +70,16 @@ class PiRuntime:
     actuator_control_available = True
     simulated_actuators = False
     actuator_block_reason = "Actuator control is unavailable."
-    liveness_available = False
-
-    def __init__(self, db_api: Any, *, face_engine: Any | None = None):
+    def __init__(
+        self,
+        db_api: Any,
+        *,
+        face_engine: Any | None = None,
+        liveness_engine: LivenessEngine | None = None,
+    ):
         self._db = db_api
         self._face_engine = face_engine
+        self._liveness_engine = liveness_engine or UnavailableLivenessEngine()
         self._lock = threading.RLock()
         self._camera_io_lock = threading.Lock()
         self._inference_lock = threading.Lock()
@@ -100,6 +111,12 @@ class PiRuntime:
         self._maintenance_drained = False
         self._maintenance_reason: str | None = None
         self._cleanup_timers: set[threading.Timer] = set()
+
+    @property
+    def liveness_available(self) -> bool:
+        """Whether a usable detector has been supplied to this runtime."""
+
+        return bool(getattr(self._liveness_engine, "available", False))
 
     # ── Public status and session API ────────────────────────────────────────
 
@@ -435,6 +452,12 @@ class PiRuntime:
                 "database": None,
                 "face_mismatch_observed": False,
                 "face_result_recorded": False,
+                "liveness_session": (
+                    self._liveness_engine.create_session(purpose=purpose)
+                    if safety_settings.liveness
+                    else None
+                ),
+                "liveness": None,
                 "message": (
                     f"{self.camera_label} scan starting."
                     if source == self.camera_source
@@ -487,6 +510,12 @@ class PiRuntime:
                     "source": self.camera_source,
                     "state": "accepted",
                     "count": 0,
+                    "liveness_session": (
+                        self._liveness_engine.create_session(purpose="enroll")
+                        if self._require_safety_settings().liveness
+                        else None
+                    ),
+                    "liveness": None,
                     "message": "Enrollment accepted and waiting for the camera.",
                 },
                 session_id=reservation["session_id"],
@@ -1149,11 +1178,20 @@ class PiRuntime:
                     if cancel_event.is_set():
                         return
                     break
-                matched = bool(result.get("matched") and result.get("user"))
-                user = result.get("user") if matched else None
+                face_count = int(result.get("face_count") or 0)
+                liveness = self._observe_liveness(
+                    session,
+                    captured.bgr,
+                    face_count=face_count,
+                    enabled=safety_settings.liveness,
+                )
+                identity_matched = bool(result.get("matched") and result.get("user"))
+                matched = identity_matched and (
+                    liveness is None or liveness.passed
+                )
+                user = result.get("user") if identity_matched else None
                 history.append((matched, user))
                 candidate, count = self._window_candidate(history)
-                face_count = int(result.get("face_count") or 0)
                 expected_user = session.get("expected_user")
                 mismatch_observed = bool(
                     face_count == 1
@@ -1177,7 +1215,22 @@ class PiRuntime:
                         or mismatch_observed
                     ),
                     window={"matches": count, "needed": MIN_MATCHES, "size": WINDOW_SIZE},
-                    message=self._scan_message(face_count, result, candidate, count),
+                    liveness=(
+                        {
+                            "status": liveness.status,
+                            "score": liveness.score,
+                            "reason": liveness.reason,
+                        }
+                        if liveness is not None
+                        else None
+                    ),
+                    message=self._scan_message(
+                        face_count,
+                        result,
+                        candidate,
+                        count,
+                        liveness=liveness,
+                    ),
                 )
                 if count >= MIN_MATCHES:
                     if not self._camera_capture_can_continue(
@@ -1284,6 +1337,34 @@ class PiRuntime:
                     model,
                     captured.bgr,
                 )
+                liveness = self._observe_liveness(
+                    session,
+                    captured.bgr,
+                    face_count=face_count,
+                    enabled=self._require_safety_settings().liveness,
+                )
+                self._update(
+                    session_id,
+                    face_count=face_count,
+                    liveness=(
+                        {
+                            "status": liveness.status,
+                            "score": liveness.score,
+                            "reason": liveness.reason,
+                        }
+                        if liveness is not None
+                        else None
+                    ),
+                )
+                if liveness is not None and not liveness.passed:
+                    self._update(
+                        session_id,
+                        message=(
+                            liveness.reason
+                            or "Liveness was not established; try again."
+                        ),
+                    )
+                    continue
                 if not self._camera_capture_can_continue(
                     capture,
                     deadline,
@@ -2262,6 +2343,7 @@ class PiRuntime:
             "user": session.get("user"),
             "score": session.get("score"),
             "face_count": session.get("face_count", 0),
+            "liveness": session.get("liveness"),
             "message": session.get("message", ""),
             "matches": session.get("matches", 0),
             "window": session.get("window", {"matches": 0, "needed": MIN_MATCHES, "size": WINDOW_SIZE}),
@@ -2293,6 +2375,7 @@ class PiRuntime:
             "face_count": session.get("face_count", 0),
             "samples_needed": SAMPLES_NEEDED,
             "recognition_available": bool(session.get("recognition_available", False)),
+            "liveness": session.get("liveness"),
             "message": session.get("message", ""),
             "updated_at": session.get("updated_at", self._now_ms()),
         }
@@ -2466,12 +2549,46 @@ class PiRuntime:
         candidate, count = counts.most_common(1)[0]
         return candidate, count
 
+    def _observe_liveness(
+        self,
+        session: dict[str, Any],
+        frame: Any,
+        *,
+        face_count: int,
+        enabled: bool,
+    ) -> LivenessObservation | None:
+        """Run the configured detector without letting it authorize by itself."""
+
+        if not enabled:
+            return None
+        liveness_session = session.get("liveness_session")
+        if not isinstance(liveness_session, LivenessSession):
+            raise RuntimeError("liveness session is unavailable")
+        observation = self._liveness_engine.analyze(
+            frame,
+            face_count=face_count,
+            session=liveness_session,
+        )
+        if not isinstance(observation, LivenessObservation):
+            raise RuntimeError("liveness detector returned an invalid observation")
+        liveness_session.add(observation)
+        return observation
+
     @staticmethod
-    def _scan_message(face_count: int, result: dict[str, Any], candidate: str | None, count: int) -> str:
+    def _scan_message(
+        face_count: int,
+        result: dict[str, Any],
+        candidate: str | None,
+        count: int,
+        *,
+        liveness: LivenessObservation | None = None,
+    ) -> str:
         if face_count == 0:
             return f"No face detected ({count}/{WINDOW_SIZE})."
         if face_count > 1:
             return f"Multiple faces detected ({count}/{WINDOW_SIZE})."
+        if liveness is not None and not liveness.passed:
+            return liveness.reason or "Liveness was not established."
         if result.get("matched"):
             return f"Matched {candidate or result.get('user')} ({count}/{WINDOW_SIZE})."
         return f"Face not recognized ({count}/{WINDOW_SIZE})."
