@@ -72,6 +72,7 @@ class RuntimeActuation:
         user_id: str | None = None,
         actor_user_id: str | None = None,
         actor_kind: str = "system",
+        start_command: str = "START",
     ) -> dict[str, Any]:
         running = bool(running)
         with self._lock:
@@ -109,7 +110,7 @@ class RuntimeActuation:
                 except RuntimeError as exc:
                     return self._error(str(exc))
 
-            command = "START" if running else "STOP"
+            command = start_command if running else "STOP"
             if not self._send_command(command):
                 if running:
                     self._cancel_ignition_stop()
@@ -144,6 +145,7 @@ class RuntimeActuation:
         expected_generation: int,
         actor_user_id: str | None = None,
         actor_kind: str = "system",
+        command: str = "UNLOCK",
     ) -> dict[str, Any]:
         with self._lock:
             if self._maintenance_requested.is_set() or self._maintenance:
@@ -157,9 +159,9 @@ class RuntimeActuation:
                 )
             except RuntimeError as exc:
                 return self._error(str(exc))
-            if not self._send_command("UNLOCK"):
+            if not self._send_command(command):
                 self._cancel_auto_relock()
-                return self._error("UNLOCK command was not sent")
+                return self._error(f"{command} command was not sent")
             try:
                 self._db.set_unlock(
                     reason=reason,
