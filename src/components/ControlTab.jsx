@@ -44,7 +44,7 @@ export default function ControlTab({
   const [scan, setScan] = useState(null);
   const [flowStage, setFlowStage] = useState("unlock_verify");
   const [promptCountdown, setPromptCountdown] = useState(null);
-  const [unlockOwner, setUnlockOwner] = useState(null);
+  const [, setUnlockOwner] = useState(null);
 
   const observedSession = cameraPreview.session
     ? normalizeScan(
@@ -168,7 +168,7 @@ export default function ControlTab({
           popToast(
             "ok",
             "Ignition start",
-            `${verifiedCamera} verified the same driver.`,
+            `${verifiedCamera} verified the driver.`,
           );
           setFlowStage("unlock_verify");
         } else {
@@ -861,8 +861,7 @@ export default function ControlTab({
         {flowStage === "prompt" ? (
           <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-center gap-2 rounded-xl border border-violet-500/25 bg-violet-500/10 px-4 py-3">
             <div className="w-full text-center text-sm text-violet-200">
-              Start ignition now? The host camera must verify{" "}
-              {unlockOwner || "the same driver"} again.
+              Start ignition now? The host camera must verify your face.
             </div>
             {promptAutoLockSeconds > 0 ? (
               <div className="w-full text-center text-xs text-violet-300/90">

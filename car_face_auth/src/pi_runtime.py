@@ -408,23 +408,10 @@ class PiRuntime:
             expected_user_id = principal_user.get("id")
         actuation = self._actuation.snapshot()
         if purpose == "ignition":
-            unlock_owner = actuation.unlock_owner
-            unlock_owner_id = actuation.unlock_owner_id
-            if not unlock_owner:
+            # Any authorized driver may start the engine once the car has been
+            # unlocked by a face scan; it need not be the person who unlocked.
+            if not actuation.unlock_owner:
                 raise RuntimeRequestError("a face-verified unlock is required before ignition", 409)
-            if expected_user and expected_user.casefold() != unlock_owner.casefold():
-                raise RuntimeRequestError("expected_user does not match the active unlock", 409)
-            if (
-                self._authorization.required
-                and not hardware
-                and expected_user_id != unlock_owner_id
-            ):
-                raise RuntimeRequestError(
-                    "authorized user does not own the active unlock",
-                    403,
-                )
-            expected_user = unlock_owner
-            expected_user_id = unlock_owner_id
             try:
                 if self._db.get_status().get("lockState") == "locked":
                     raise RuntimeRequestError("device is locked", 409)
@@ -1681,30 +1668,35 @@ class PiRuntime:
         session_id = session["id"]
         expected_user = session.get("expected_user")
         actuation = self._actuation.snapshot()
-        authorization_is_current = (
-            actuation.unlock_owner is not None
-            and expected_user is not None
-            and candidate.casefold()
-            == expected_user.casefold()
-            == actuation.unlock_owner.casefold()
-            and (
-                not self._authorization.required
-                or matched_user_id
-                == session.get("expected_user_id")
-                == actuation.unlock_owner_id
-            )
-            and session.get("authorization_generation")
-            == actuation.generation
-        )
-        if not authorization_is_current:
+        if (
+            actuation.unlock_owner is None
+            or session.get("authorization_generation") != actuation.generation
+        ):
             self._finish(
                 session_id,
                 "denied",
                 user=candidate,
                 score=score,
-                message=(
-                    "Ignition denied: face did not match the unlocked driver."
-                ),
+                message="Ignition denied: the unlock changed during the scan.",
+            )
+            return
+        # Any authorized driver may start the engine.  A dashboard scan still
+        # verifies the signed-in user's own face; a button scan has no
+        # expected user and accepts any enrolled face with access.
+        driver_matches = expected_user is None or (
+            candidate.casefold() == expected_user.casefold()
+            and (
+                not self._authorization.required
+                or matched_user_id == session.get("expected_user_id")
+            )
+        )
+        if not driver_matches:
+            self._finish(
+                session_id,
+                "denied",
+                user=candidate,
+                score=score,
+                message="Ignition denied: face did not match the signed-in user.",
             )
             return
         try:
@@ -1765,6 +1757,7 @@ class PiRuntime:
             ignition_stop_seconds=safety_settings.ignition_stop_seconds,
             closed=False,
             expected_generation=actuation.generation,
+            user_id=matched_user_id,
             actor_user_id=session.get("user_id"),
             actor_kind="user" if session.get("user_id") else "system",
             start_command="AUTHORIZED" if hardware else "START",
