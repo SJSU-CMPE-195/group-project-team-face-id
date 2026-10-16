@@ -26,7 +26,6 @@ export default function TopBar({
   online,
   simulatedActuators,
   actuatorControlAvailable,
-  physicalStateConfirmed,
   busy,
   onRefresh,
   user,
@@ -44,7 +43,6 @@ export default function TopBar({
     ignitionOn,
     simulatedActuators,
     actuatorControlAvailable,
-    physicalStateConfirmed,
   });
 
   return (
@@ -71,9 +69,7 @@ export default function TopBar({
               <span aria-hidden="true">·</span>
               <span
                 className={
-                  simulatedActuators || physicalStateConfirmed
-                    ? "text-slate-400"
-                    : "text-amber-300"
+                  online ? "text-slate-400" : "text-amber-300"
                 }
               >
                 {online && actuatorControlAvailable
@@ -91,20 +87,12 @@ export default function TopBar({
           <StatPill
             label="State"
             value={labels.lockShort}
-            accent={
-              simulatedActuators || physicalStateConfirmed
-                ? "text-slate-300"
-                : "text-amber-300"
-            }
+            accent={online ? "text-slate-300" : "text-amber-300"}
           />
           <StatPill
             label="Ignition"
             value={labels.ignitionShort}
-            accent={
-              simulatedActuators || physicalStateConfirmed
-                ? "text-slate-300"
-                : "text-amber-300"
-            }
+            accent={online ? "text-slate-300" : "text-amber-300"}
           />
           <StatPill
             label="Control"

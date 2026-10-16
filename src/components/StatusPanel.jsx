@@ -11,7 +11,6 @@ export default function StatusPanel({
   status,
   simulatedActuators,
   actuatorControlAvailable,
-  physicalStateConfirmed,
 }) {
   const battery = status?.battery ?? 0;
   const signal = status?.signal ?? 0;
@@ -22,7 +21,6 @@ export default function StatusPanel({
     ignitionOn: status?.ignitionOn === true,
     simulatedActuators,
     actuatorControlAvailable,
-    physicalStateConfirmed,
   });
 
   return (

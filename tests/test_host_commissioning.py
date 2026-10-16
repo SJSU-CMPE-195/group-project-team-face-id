@@ -1,6 +1,7 @@
 """Exercise the composed product/developer boundary with isolated SQLite data."""
 
 from dataclasses import replace
+import os
 from pathlib import Path
 import secrets
 import tempfile
@@ -33,6 +34,9 @@ class HostCommissioningTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(mock.patch.object(db, "DB_PATH", str(self.root / "faceid.db")))
+        self.enterContext(
+            mock.patch.dict(os.environ, {"FACEID_DB_PATH": db.DB_PATH})
+        )
         self.enterContext(mock.patch("wireless.security.PIN_ITERATIONS", 1000))
         db.init_db()
         self.config_path = self.root / "device.json"

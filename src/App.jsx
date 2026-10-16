@@ -55,7 +55,6 @@ export default function App({ onHardwareReset }) {
   const {
     simulatedActuators,
     actuatorControlAvailable,
-    physicalStateConfirmed,
     livenessAvailable,
   } = resolveRuntimeCapabilities({
     mode: state.mode,
@@ -93,7 +92,6 @@ export default function App({ onHardwareReset }) {
           online={online}
           simulatedActuators={simulatedActuators}
           actuatorControlAvailable={localActuatorControlAvailable}
-          physicalStateConfirmed={physicalStateConfirmed}
           busy={state.busy}
           onRefresh={
             state.tab === "hardware"
@@ -138,7 +136,6 @@ export default function App({ onHardwareReset }) {
                 ignitionOn={ignitionOn}
                 simulatedActuators={simulatedActuators}
                 actuatorControlAvailable={localActuatorControlAvailable}
-                physicalStateConfirmed={physicalStateConfirmed}
                 promptAutoLockSeconds={
                   typeof state.settings?.promptAutoLockSeconds === "number"
                     ? state.settings.promptAutoLockSeconds
@@ -163,7 +160,6 @@ export default function App({ onHardwareReset }) {
                   status={state.status}
                   simulatedActuators={simulatedActuators}
                   actuatorControlAvailable={localActuatorControlAvailable}
-                  physicalStateConfirmed={physicalStateConfirmed}
                 />
               </div>
             </div>

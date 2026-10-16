@@ -17,11 +17,6 @@ export function resolveRuntimeCapabilities({
     actuatorControlAvailable:
       localSimulation ||
       runtimeFlag(runtime, capabilities, "actuator_control_available"),
-    physicalStateConfirmed: runtimeFlag(
-      runtime,
-      capabilities,
-      "physical_state_confirmed",
-    ),
     livenessAvailable: runtimeFlag(
       runtime,
       capabilities,
@@ -36,7 +31,6 @@ export function actuatorLabels({
   ignitionOn,
   simulatedActuators,
   actuatorControlAvailable,
-  physicalStateConfirmed,
 }) {
   if (!online) {
     return {
@@ -68,23 +62,12 @@ export function actuatorLabels({
     };
   }
 
-  if (physicalStateConfirmed) {
-    return {
-      control,
-      ignitionLong: ignitionOn ? "Ignition on" : "Ignition off",
-      ignitionShort: ignitionOn ? "On" : "Off",
-      lockLong: locked ? "Locked" : "Unlocked",
-      lockPanel: locked ? "Locked" : "Unlocked",
-      lockShort: locked ? "Locked" : "Unlocked",
-    };
-  }
-
   return {
     control,
-    ignitionLong: "Ignition state unconfirmed",
-    ignitionShort: "Unconfirmed",
-    lockLong: "Physical state unconfirmed",
-    lockPanel: "Physical state unconfirmed",
-    lockShort: "Unconfirmed",
+    ignitionLong: ignitionOn ? "Ignition on" : "Ignition off",
+    ignitionShort: ignitionOn ? "On" : "Off",
+    lockLong: locked ? "Locked" : "Unlocked",
+    lockPanel: locked ? "Locked" : "Unlocked",
+    lockShort: locked ? "Locked" : "Unlocked",
   };
 }
