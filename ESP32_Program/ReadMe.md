@@ -86,7 +86,7 @@ Open Serial Monitor at **115200 baud** with line ending set to **Newline**.
 | `lock` | Move lock to the locked position (no-op if already locked) |
 | `unlock` | Move lock to the unlocked position (no-op if already unlocked) |
 
-The lock uses absolute stepper positions, so sending `lock` or `unlock` twice does not over-rotate. The sketch assumes the lock is in the unlocked position at power-up.
+The lock uses absolute stepper positions, so sending `lock` or `unlock` twice does not over-rotate. The last completed lock position is saved in the ESP32's flash (`Preferences`, namespace `carlock`) and restored at boot without moving, so a reset, a replug, or the Pi opening the port doesn't move the lock. On the very first boot after flashing nothing is saved yet and the sketch assumes unlocked, so place the stepper in the unlocked position (or type `unlock` once) before then. If power is cut mid-move, the ESP32 restores the last completed position.
 
 ## Status
 

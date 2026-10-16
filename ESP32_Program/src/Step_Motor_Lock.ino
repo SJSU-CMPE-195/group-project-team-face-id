@@ -1,4 +1,5 @@
 #include <AccelStepper.h>
+#include <Preferences.h>
 
 // =============================================
 // ESP32 Motor Control — Car Security System
@@ -36,6 +37,9 @@ const unsigned long FAIL_BLINK_MS = 1500;
 
 AccelStepper lockMotor(AccelStepper::HALF4WIRE, STEP_IN1, STEP_IN3, STEP_IN2, STEP_IN4);
 
+// Lock state saved in flash so a reset or power loss doesn't forget where the lock is
+Preferences lockStore;
+
 int currentSpeed = 200;
 bool motorRunning = false;
 bool locked = false;
@@ -67,6 +71,11 @@ void setup() {
   lockMotor.setMaxSpeed(800);
   lockMotor.setAcceleration(400);
 
+  // Restore the last completed lock position without moving (first boot: unlocked)
+  lockStore.begin("carlock", false);
+  locked = lockStore.getBool("locked", false);
+  lockMotor.setCurrentPosition(locked ? LOCKED_POSITION : UNLOCKED_POSITION);
+
   // Trigger button and status LED
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(STATUS_LED, OUTPUT);
@@ -80,6 +89,7 @@ void setup() {
   Serial.println("  lock       - lock car");
   Serial.println("  unlock     - unlock car");
   Serial.println("Button press sends START_AUTH UNLOCK or START_AUTH IGNITION");
+  Serial.println(locked ? "Restored state: Locked" : "Restored state: Unlocked");
 }
 
 void engineOn() {
@@ -260,6 +270,7 @@ void loop() {
     if (lockMotor.distanceToGo() == 0) {
       stepperMoving = false;
       releaseStepper();
+      lockStore.putBool("locked", locked);
       Serial.println(locked ? "Locked" : "Unlocked");
     }
   }
