@@ -1207,7 +1207,9 @@ class PiRuntime:
         if state == "error":
             self._send_command("ERROR", connect=False)
         elif state in {"denied", "timeout"}:
-            self._send_command("DENIED", connect=False)
+            # UNAUTHORIZED: a face was seen but didn't match an allowed user.
+            reply = "UNAUTHORIZED" if mismatch_observed else "DENIED"
+            self._send_command(reply, connect=False)
         if state == "granted":
             with self._lock:
                 self._hardware_denials = 0

@@ -13,7 +13,9 @@ from typing import Any
 
 
 START_AUTH = "START_AUTH"
-AUTH_REPLIES = frozenset(("AUTH_PENDING", "AUTHORIZED", "DENIED", "BUSY", "ERROR"))
+AUTH_REPLIES = frozenset(
+    ("AUTH_PENDING", "AUTHORIZED", "UNAUTHORIZED", "DENIED", "BUSY", "ERROR")
+)
 _PURPOSES = {"UNLOCK": "unlock", "IGNITION": "ignition"}
 
 DEFAULT_RETRY_SECONDS = 1.0
