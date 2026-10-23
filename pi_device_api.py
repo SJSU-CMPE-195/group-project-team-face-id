@@ -276,9 +276,6 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
         commissioning = app.extensions.get("bass_commissioning")
         owner_id = commissioning.status().get("owner_user_id") if commissioning else None
         users = [{**user, "is_owner": user["id"] == owner_id} for user in users]
-        actor = g.get("principal")
-        if actor and not actor.is_admin:
-            users = [user for user in users if user["id"] == actor.user_id]
         security = app.extensions.get("bass_security")
         if security:
             for user in users:

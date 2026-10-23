@@ -11,8 +11,7 @@ from .security_credentials import LOCAL_CONTROL_ACTIONS
 
 
 _ADMIN_ENDPOINTS = {"api_add_user", "api_delete_user", "api_set_access",
-                    "api_settings", "api_enroll_start", "api_enroll_request",
-                    "pairing_invite", "device_list",
+                    "api_settings", "pairing_invite", "device_list",
                     "device_revoke", "user_pin", "user_role"}
 _ACTIONS = {
     "api_add_user": "user.create", "api_delete_user": "user.delete",

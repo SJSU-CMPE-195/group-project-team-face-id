@@ -121,7 +121,7 @@ class _SimulatedFaceEngine:
             users = []
         for user in users:
             name = (user.get("name") or "").strip()
-            if name and user.get("face_access", user.get("faceAccess", 1)):
+            if name:
                 database.setdefault(name, [{"identity": name}])
         return database
 

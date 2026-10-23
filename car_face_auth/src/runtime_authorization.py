@@ -68,6 +68,7 @@ class RuntimeAuthorization:
         *,
         expected_user_id: str | None,
         require_admin: bool = False,
+        require_admin_or_self: bool = False,
     ) -> dict[str, Any]:
         if self._store is None:
             if principal is not None:
@@ -96,6 +97,14 @@ class RuntimeAuthorization:
                     raise AuthorizationRejected("authorization is no longer valid")
                 if require_admin and not is_admin:
                     raise AuthorizationRejected("administrator authorization is required")
+                if (
+                    require_admin_or_self
+                    and not is_admin
+                    and expected_user_id != user_id
+                ):
+                    raise AuthorizationRejected(
+                        "authorization must target the authenticated user"
+                    )
                 target_version = self._store.user_auth_version(expected_user_id)
                 if target_version is None:
                     raise AuthorizationRejected("target user is no longer active")
@@ -171,6 +180,7 @@ class RuntimeAuthorization:
         session: dict[str, Any],
         *,
         require_admin: bool = False,
+        require_admin_or_self: bool = False,
         require_target: bool = False,
         require_face_access: bool = False,
     ) -> bool:
@@ -188,6 +198,11 @@ class RuntimeAuthorization:
                 or session.get("user_id") != user_id
                 or session.get("auth_version") != auth_version
                 or (require_admin and not is_admin)
+                or (
+                    require_admin_or_self
+                    and not is_admin
+                    and session.get("expected_user_id") != user_id
+                )
                 or not self._store.still_authorized(principal)
             ):
                 return False

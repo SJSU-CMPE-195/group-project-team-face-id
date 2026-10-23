@@ -15,6 +15,7 @@
     <string name="action_forget_device">Sign out</string>
     <string name="action_cancel_scan">Cancel scan</string>
     <string name="action_enroll_face">Enroll face</string>
+    <string name="action_replace_face">Replace face</string>
     <string name="action_add_user">Add user</string>
 
     <string name="forget_device_title">Sign out on this phone?</string>
@@ -89,6 +90,7 @@
     <string name="users_new_pin">New user’s 6-digit PIN</string>
     <string name="users_admin">Administrator</string>
     <string name="users_owner">Owner</string>
+    <string name="users_user">User</string>
     <string name="users_make_admin">Make administrator (replaces current)</string>
     <string name="users_remove_admin">Remove administrator</string>
     <string name="users_people_title">People &amp; access</string>
@@ -117,8 +119,11 @@
 
     <string name="logs_title">Event log</string>
     <string name="logs_empty">No events.</string>
-    <string name="logs_ok">OK</string>
-    <string name="logs_failed">FAIL</string>
+    <string name="logs_success">Success</string>
+    <string name="logs_denied">Denied</string>
+    <string name="logs_cancelled">Cancelled</string>
+    <string name="logs_error">Error</string>
+    <string name="logs_info">Info</string>
 
     <string name="export_material_title">Save security material</string>
     <string name="export_material_description">Save this recovery file in a secure place outside this phone. It contains a secret that grants access to the recovery flow.</string>
@@ -130,7 +135,7 @@
     <string name="pin_confirm_new_user_title">Confirm the new user PIN</string>
     <string name="pin_confirm_new_user_description">Re-enter the new 6-digit PIN for %1$s.</string>
     <string name="pin_login_description">Enter the paired account’s PIN.</string>
-    <string name="pin_enroll_description">Enter administrator PIN to start or replace enrollment.</string>
+    <string name="pin_enroll_description">Enter your PIN to start or replace face enrollment.</string>
     <string name="pin_unlock_description">Enter your PIN to start face verification.</string>
     <string name="pin_ignition_description">Enter your PIN to verify your face and start ignition.</string>
     <string name="pin_user_admin_description">Enter administrator PIN.</string>

@@ -75,6 +75,20 @@ export function scanLabel(state) {
   return "Scanning";
 }
 
+export function enrollmentLabel(state) {
+  if (state === "completed") return "Completed";
+  if (state === "cancelled") return "Cancelled";
+  if (state === "error") return "Error";
+  if (state === "interrupted") return "Interrupted";
+  if (state === "timeout") return "Timeout";
+  if (state === "cancelling" || state === "cancel_pending") {
+    return "Cancelling";
+  }
+  if (state === "starting" || state === "accepted") return "Starting";
+  if (state === "capturing") return "Enrolling";
+  return "Enrolling";
+}
+
 export function confirmedCancellation(raw, purpose) {
   const cancelledScan = normalizeScan(raw, purpose);
   if (!cancelledScan.ok || cancelledScan.state !== "cancelled") {

@@ -217,7 +217,6 @@ class HardwareFreePiRuntime(PiRuntime):
         database = {
             user["name"]: []
             for user in self._db.get_all_users()
-            if user.get("face_access", 1)
         }
         self.authorization_loaded.set()
         return database
@@ -948,6 +947,36 @@ class PiRuntimeBehaviorTests(unittest.TestCase):
             )
             self.assertTrue(enrollment["session_id"].startswith("enroll_"))
 
+    def test_active_enrollment_rejects_scan_without_unlocking(self):
+        fixture, admin, target = self.configure_enrollment()
+        self.runtime.capture_gate = Event()
+        face_engine = FakeFaceEngine([admin.name] * 6)
+        with patch(
+            "car_face_auth.src.pi_runtime.importlib.import_module",
+            return_value=face_engine,
+        ):
+            reservation = self.reserve_enrollment(fixture, admin, target["id"])
+            enrollment = self.runtime.start_enrollment(
+                target["id"],
+                authorization=admin,
+                enrollment_reservation=reservation,
+            )
+            self.assertTrue(self.runtime.capture_started.wait(timeout=1))
+
+            with self.assertRaisesRegex(RuntimeError, "busy"):
+                self.runtime.start_scan(
+                    expected_user=admin.name,
+                    authorization=admin,
+                )
+
+            self.assertEqual(self.runtime.commands, [])
+            self.assertEqual(self.db.unlock_reasons, [])
+            self.assertEqual(
+                self.runtime.status()["active_session"]["kind"], "enroll"
+            )
+            self.runtime.cancel_enrollment(enrollment["session_id"])
+            self.runtime.capture_gate.set()
+
     def test_esp_failure_finishes_scan_as_error_not_granted(self):
         self.runtime.fail_commands.add("UNLOCK")
         face_engine = FakeFaceEngine(["Ada"] * 6)
@@ -1058,12 +1087,12 @@ class DatabaseContractTests(unittest.TestCase):
         self.assertFalse(real_db_api.set_user_access("missing", True)["ok"])
         self.assertFalse(real_db_api.set_user_embedding("missing", b"blob")["ok"])
 
-    def test_face_access_filters_recognition_rows(self):
+    def test_disabled_face_access_keeps_recognition_rows(self):
         user = real_db_api.add_user("Ada")
         self.assertTrue(real_db_api.set_user_embedding(user["id"], b"placeholder")["ok"])
         self.assertEqual([row["name"] for row in real_db_api.get_all_face_encodings()], ["Ada"])
         self.assertTrue(real_db_api.set_user_access(user["id"], False)["ok"])
-        self.assertEqual(real_db_api.get_all_face_encodings(), [])
+        self.assertEqual([row["name"] for row in real_db_api.get_all_face_encodings()], ["Ada"])
 
     def test_lock_state_and_audit_are_committed_together(self):
         real_db_api.set_unlock("contract_test")

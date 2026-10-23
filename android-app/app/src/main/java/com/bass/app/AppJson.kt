@@ -90,13 +90,53 @@ internal fun JSONObject.sessionIdentity(): SessionIdentity {
 
 internal fun JSONArray.logs(): List<LogEntry> =
     objects().map { row ->
+        val type = row.optString("type")
+        val ok = row.optBoolean("ok")
+        val outcome = row.optString("outcome").logOutcome(ok)
         LogEntry(
             id = row.optString("id"),
             timestampMillis = row.optLong("ts"),
-            type = row.optString("type"),
-            ok = row.optBoolean("ok"),
+            type = type,
+            ok = ok,
             detail = row.optString("detail"),
+            title = row.optString("title").trim().ifEmpty { type.logTitle() },
+            summary =
+                row.optString("summary").trim().ifEmpty {
+                    when (outcome) {
+                        LogOutcome.SUCCESS -> "The action completed."
+                        LogOutcome.DENIED -> "Permission was denied."
+                        LogOutcome.CANCELLED -> "The action was cancelled."
+                        LogOutcome.ERROR -> "The action failed."
+                        LogOutcome.INFO -> "Event recorded."
+                    }
+                },
+            outcome = outcome,
         )
+    }
+
+private fun String.logOutcome(ok: Boolean): LogOutcome =
+    when (lowercase()) {
+        "success" -> LogOutcome.SUCCESS
+        "denied" -> LogOutcome.DENIED
+        "cancelled" -> LogOutcome.CANCELLED
+        "error" -> LogOutcome.ERROR
+        "info" -> LogOutcome.INFO
+        else -> if (ok) LogOutcome.SUCCESS else LogOutcome.ERROR
+    }
+
+private fun String.logTitle(): String =
+    when (lowercase()) {
+        "face_scan", "scan_timing" -> "Face verification"
+        "enroll", "enrollment", "enroll_embedding" -> "Face enrollment"
+        "access_change" -> "Access changed"
+        "delete_user" -> "Account removed"
+        "unlock" -> "Unlock request"
+        "lock" -> "Lock request"
+        "ignition", "ignition_start", "ignition_stop" -> "Ignition request"
+        "settings" -> "Settings updated"
+        "session_login" -> "Sign-in"
+        "operation_authorization" -> "PIN authorization"
+        else -> "Device event"
     }
 
 internal fun JSONObject.settings() =

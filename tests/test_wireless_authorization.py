@@ -11,6 +11,7 @@ from unittest import mock
 from pi_device_api import create_app
 from security_fixtures import temporary_security, AuthorizedFakeRuntime
 from wireless.api import secure_wireless_app
+from wireless.commissioning import CommissioningStore
 from wireless.config import load_or_create_device_config
 from wireless.security import PAIRING_INVITE_SECONDS, SecurityError
 
@@ -83,8 +84,11 @@ class WirelessAuthorizationTests(unittest.TestCase):
         }, headers={"Authorization": f"Onboarding {self.config.pairing_key}"})
         self.assertNotEqual(response.status_code, 201)
         headers = {"Authorization": f"Bearer {token}"}
-        self.assertEqual(self.client.get("/api/users", headers=headers).json[0]["id"], user["id"])
-        self.assertEqual(len(self.client.get("/api/users", headers=headers).json), 1)
+        directory = self.client.get("/api/users", headers=headers).json
+        self.assertEqual(
+            {row["id"] for row in directory},
+            {user["id"], self.fixture.admin.user_id},
+        )
         self.fixture.db.log_event(
             "regular_scope",
             "ok",
@@ -108,7 +112,7 @@ class WirelessAuthorizationTests(unittest.TestCase):
         self.assertNotIn("admin_scope", log_types)
         self.assertEqual(self.client.get("/api/settings", headers=headers).status_code, 200)
         self.assertEqual(self.client.post("/api/enroll/start", json={"name": "Regular"},
-                                         headers=headers).status_code, 403)
+                                         headers=headers).status_code, 400)
         self.assertEqual(self.runtime.calls, [])
 
     def test_pairing_invite_qr_preserves_authorization_and_secret_boundaries(self):
@@ -222,19 +226,54 @@ class WirelessAuthorizationTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 403, replay.json)
         self.assertEqual(self.fixture.db.get_settings_for_ui()["autoRelockSeconds"], 12)
 
-    def test_user_list_keeps_roles_and_regular_user_scope(self):
+    def test_user_list_shares_directory_and_roles_with_regular_users(self):
         user, token, _ = self.pair_user()
-        response = self.client.get("/api/users", headers=self.fixture.headers())
-        self.assertEqual(response.status_code, 200)
-        roles = {row["id"]: row["is_admin"] for row in response.json}
-        self.assertTrue(roles[self.fixture.admin.user_id])
-        self.assertFalse(roles[user["id"]])
-        own = self.client.get(
-            "/api/users", headers={"Authorization": f"Bearer {token}"}
+        owner_id = self.fixture.admin.user_id
+        with self.fixture.db.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO commissioning_state "
+                "(id,ownership,owner_user_id,generation,activation_secret,"
+                "activation_hash,recovery_hash,updated_at) "
+                "VALUES (1,'claimed',?,1,NULL,NULL,?,1)",
+                (owner_id, b"r" * 32),
+            )
+        self.app.extensions["bass_commissioning"] = CommissioningStore(
+            self.security, self.config, None
         )
-        self.assertEqual(own.status_code, 200)
-        self.assertEqual([row["id"] for row in own.json], [user["id"]])
-        self.assertFalse(own.json[0]["is_admin"])
+        owner = self.fixture.principal()
+        admin_user = self.security.create_user(owner, "Administrator", "777777")
+        self.security.set_role(owner, admin_user["id"], True)
+        invite = self.security.issue_invite(owner, admin_user["id"])
+        paired = self.security.pair(
+            invite["invite_token"], "777777", "Administrator phone"
+        )
+        expected_roles = {
+            owner_id: (True, True),
+            admin_user["id"]: (True, False),
+            user["id"]: (False, False),
+        }
+
+        for role, credential in (
+            ("Owner", self.fixture.token),
+            ("Administrator", paired["device_token"]),
+            ("User", token),
+        ):
+            with self.subTest(role=role):
+                directory = self.client.get(
+                    "/api/users",
+                    headers={"Authorization": f"Bearer {credential}"},
+                )
+                self.assertEqual(directory.status_code, 200)
+                self.assertEqual(
+                    {
+                        row["id"]: (row["is_admin"], row["is_owner"])
+                        for row in directory.json
+                    },
+                    expected_roles,
+                )
+                for row in directory.json:
+                    self.assertTrue(row["faceAccess"])
+                    self.assertFalse(row["faceEnrolled"])
 
     def test_control_grant_accepts_empty_target_and_requires_pin(self):
         body = {

@@ -143,6 +143,7 @@ fun UsersScreen(
             UserCard(
                 user = user,
                 busy = state.busy,
+                actorId = actor?.id,
                 isAdmin = isAdmin,
                 isOwner = isOwner,
                 onAccessChange = { viewModel.setUserAccess(user.id, it) },
@@ -328,6 +329,7 @@ private fun EnrollmentCard(state: BassState, onCancel: () -> Unit) {
 private fun UserCard(
     user: User,
     busy: Boolean,
+    actorId: String?,
     isAdmin: Boolean,
     isOwner: Boolean,
     onAccessChange: (Boolean) -> Unit,
@@ -339,6 +341,7 @@ private fun UserCard(
     val context = LocalContext.current
     val added = DateUtils.getRelativeTimeSpanString(context, user.createdAtMillis, false).toString()
     val canManage = isAdmin && (!user.isOwner || isOwner)
+    val canEnroll = user.id == actorId || canManage
     BassCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -361,11 +364,7 @@ private fun UserCard(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (user.isOwner) {
-                    RoleBadge(isOwner = true)
-                } else if (user.isAdmin) {
-                    RoleBadge(isOwner = false)
-                }
+                RoleBadge(user)
                 StatusChip(
                     stringResource(
                         if (user.faceEnrolled) R.string.status_enrolled
@@ -390,6 +389,16 @@ private fun UserCard(
                 Switch(checked = user.faceAccess, enabled = !busy, onCheckedChange = onAccessChange)
             }
         }
+        if (canEnroll) {
+            Button(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = onEnroll) {
+                Text(
+                    stringResource(
+                        if (user.faceEnrolled) R.string.action_replace_face
+                        else R.string.action_enroll_face,
+                    ),
+                )
+            }
+        }
         if (canManage) {
             OutlinedButton(
                 modifier = Modifier.fillMaxWidth(),
@@ -397,9 +406,6 @@ private fun UserCard(
                 onClick = onInvite,
             ) {
                 Text(stringResource(R.string.users_phone_invite))
-            }
-            Button(modifier = Modifier.fillMaxWidth(), enabled = !busy, onClick = onEnroll) {
-                Text(stringResource(R.string.action_enroll_face))
             }
             if (isOwner && !user.isOwner) {
                 OutlinedButton(
@@ -432,25 +438,55 @@ private fun UserCard(
 }
 
 @Composable
-private fun RoleBadge(isOwner: Boolean) {
+private fun RoleBadge(user: User) {
     val colors = MaterialTheme.colorScheme
     val label =
         stringResource(
-            if (isOwner) R.string.users_owner else R.string.users_admin,
+            when {
+                user.isOwner -> R.string.users_owner
+                user.isAdmin -> R.string.users_admin
+                else -> R.string.users_user
+            },
         )
+    val containerColor =
+        when {
+            user.isOwner -> colors.primaryContainer
+            user.isAdmin -> colors.secondaryContainer
+            else -> colors.surfaceVariant
+        }
+    val contentColor =
+        when {
+            user.isOwner -> colors.onPrimaryContainer
+            user.isAdmin -> colors.onSecondaryContainer
+            else -> colors.onSurfaceVariant
+        }
     Surface(
-        color = if (isOwner) colors.primaryContainer else colors.secondaryContainer,
-        contentColor = if (isOwner) colors.onPrimaryContainer else colors.onSecondaryContainer,
+        color = containerColor,
+        contentColor = contentColor,
         shape = CircleShape,
     ) {
-        Icon(
-            painter =
-                painterResource(
-                    if (isOwner) R.drawable.ic_role_owner else R.drawable.ic_role_admin,
-                ),
-            contentDescription = label,
-            modifier = Modifier.padding(6.dp).size(16.dp),
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (user.isOwner || user.isAdmin) {
+                Icon(
+                    painter =
+                        painterResource(
+                            if (user.isOwner) R.drawable.ic_role_owner
+                            else R.drawable.ic_role_admin,
+                        ),
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 

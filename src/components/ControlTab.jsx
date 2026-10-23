@@ -9,6 +9,7 @@ import { actuatorLabels } from "../utils/actuatorStatus.js";
 import {
   cameraLabel,
   confirmedCancellation,
+  enrollmentLabel,
   FINAL_SCAN_STATES,
   normalizeScan,
   scanBadge,
@@ -682,7 +683,9 @@ export default function ControlTab({
           </div>
           <div className="mt-4 min-w-0 max-w-lg">
             <div className="text-lg font-semibold tracking-tight text-slate-100">
-              {activeCameraLabel} face scan
+              {isEnrollment
+                ? `${activeCameraLabel} face enrollment`
+                : `${activeCameraLabel} face scan`}
             </div>
           </div>
         </div>
@@ -720,7 +723,9 @@ export default function ControlTab({
           <div className="flex flex-wrap items-center justify-center gap-2">
             <Badge variant={scanBadge(displayedSession?.state || "idle")}>
               {displayedSession
-                ? scanLabel(displayedSession.state)
+                ? isEnrollment
+                  ? enrollmentLabel(displayedSession.state)
+                  : scanLabel(displayedSession.state)
                 : !online
                   ? "Offline"
                   : actuatorControlAvailable

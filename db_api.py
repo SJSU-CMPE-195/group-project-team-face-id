@@ -2,6 +2,7 @@ import uuid
 import time
 import sqlite3
 from db import get_conn
+from event_log import format_event
 from safety_policy import BOOLEAN_SETTINGS, INTEGER_SETTING_RANGES
 
 # ── Device status (face-ui /api/status) ─────────────────────────────────────────
@@ -220,11 +221,11 @@ def set_user_embedding(user_id: str, blob: bytes):
     return {"ok": True}
 
 def get_all_face_encodings():
-    """Returns all active users with their face encodings — used by ML partner."""
+    """Return unambiguous templates for recognizing active accounts."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT u.id, u.name, u.face_encoding FROM users AS u "
-            "WHERE u.active=1 AND u.face_access=1 AND u.face_encoding IS NOT NULL "
+            "WHERE u.active=1 AND u.face_encoding IS NOT NULL "
             "AND (SELECT COUNT(*) FROM users AS same "
             "     WHERE same.active=1 "
             "       AND lower(trim(same.name))=lower(trim(u.name)))=1"
@@ -270,35 +271,48 @@ def _result_ok(result: str) -> bool:
 def list_logs_for_ui(limit: int = 80, *, principal=None):
     where = ""
     params = []
-    if principal is not None and not getattr(principal, "is_owner", False):
-        user_id = getattr(principal, "user_id", None)
-        if not user_id:
-            return []
-        if getattr(principal, "is_admin", False):
-            with get_conn() as conn:
+    with get_conn() as conn:
+        if principal is not None and not getattr(principal, "is_owner", False):
+            user_id = getattr(principal, "user_id", None)
+            if not user_id:
+                return []
+            if getattr(principal, "is_admin", False):
                 owner = conn.execute(
                     "SELECT owner_user_id FROM commissioning_state "
                     "WHERE id=1 AND ownership='claimed'"
                 ).fetchone()
-            owner_id = owner["owner_user_id"] if owner else None
-            where = (
-                "WHERE actor_kind != 'legacy' "
-                "AND (? IS NULL OR actor_user_id IS NULL OR actor_user_id != ?) "
-                "AND (? IS NULL OR user_id IS NULL OR user_id != ?) "
-            )
-            params.extend((owner_id, owner_id, owner_id, owner_id))
-        else:
-            where = (
-                "WHERE actor_kind != 'legacy' "
-                "AND (actor_user_id = ? OR user_id = ?) "
-            )
-            params.extend((user_id, user_id))
+                owner_id = owner["owner_user_id"] if owner else None
+                where = (
+                    "WHERE actor_kind != 'legacy' "
+                    "AND (? IS NULL OR actor_user_id IS NULL OR actor_user_id != ?) "
+                    "AND (? IS NULL OR user_id IS NULL OR user_id != ?) "
+                )
+                params.extend((owner_id, owner_id, owner_id, owner_id))
+            else:
+                where = (
+                    "WHERE actor_kind != 'legacy' "
+                    "AND (actor_user_id = ? OR user_id = ?) "
+                )
+                params.extend((user_id, user_id))
 
-    with get_conn() as conn:
         rows = conn.execute(
             f"SELECT * FROM auth_logs {where}ORDER BY ts DESC LIMIT ?",
             (*params, limit),
         ).fetchall()
+        referenced_user_ids = {
+            user_id
+            for row in rows
+            for user_id in (row["actor_user_id"], row["user_id"])
+            if user_id
+        }
+        user_names = {}
+        if referenced_user_ids:
+            placeholders = ",".join("?" for _ in referenced_user_ids)
+            user_rows = conn.execute(
+                f"SELECT id,name FROM users WHERE id IN ({placeholders})",
+                tuple(referenced_user_ids),
+            ).fetchall()
+            user_names = {row["id"]: row["name"] for row in user_rows}
 
     out = []
     for row in rows:
@@ -308,6 +322,13 @@ def list_logs_for_ui(limit: int = 80, *, principal=None):
         detail = row["detail"] or ""
         if principal is not None and not getattr(principal, "is_owner", False):
             detail = f"{row['stage']}: {row['result']}"
+        display = format_event(
+            row["stage"],
+            row["result"],
+            row["detail"] or "",
+            actor_name=user_names.get(row["actor_user_id"]),
+            subject_name=user_names.get(row["user_id"]),
+        )
         out.append(
             {
                 "id": row["id"],
@@ -315,6 +336,7 @@ def list_logs_for_ui(limit: int = 80, *, principal=None):
                 "type": row["stage"],
                 "ok": _result_ok(row["result"]),
                 "detail": detail,
+                **display,
             }
         )
     return out
