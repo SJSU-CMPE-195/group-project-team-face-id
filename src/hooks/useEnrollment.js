@@ -516,6 +516,17 @@ export default function useEnrollment({
       ) {
         return;
       }
+      const canManageTarget =
+        currentUser.is_admin && (!user.is_owner || currentUser.is_owner);
+      const canEnrollSelf = user.id === currentUser.id;
+      if (!canManageTarget && !canEnrollSelf) {
+        popToast(
+          "err",
+          "Enrollment not allowed",
+          "You can enroll only your own face.",
+        );
+        return;
+      }
       if (user.is_owner && !currentUser.is_owner) {
         popToast(
           "err",
@@ -635,6 +646,8 @@ export default function useEnrollment({
       busy,
       cameraLabel,
       currentUser.is_owner,
+      currentUser.id,
+      currentUser.is_admin,
       isCurrent,
       popToast,
       requestGrant,

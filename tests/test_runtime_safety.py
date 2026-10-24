@@ -300,6 +300,10 @@ class RuntimeSafetyTests(unittest.TestCase):
         session_id = "enroll_liveness"
         reservation = {
             "created": True,
+            "actor_user_id": admin.user_id,
+            "actor_device_id": admin.device_id,
+            "actor_auth_version": admin.auth_version,
+            "target_user_id": "u1",
             "request_id": request_id,
             "session_id": session_id,
             "response": {

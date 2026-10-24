@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Crown, ShieldCheck } from "lucide-react";
 import Badge from "./Badge";
 import Btn from "./Btn";
@@ -49,13 +49,7 @@ export default function UsersTab({
     setDeviceUsers,
   });
 
-  const users = useMemo(
-    () =>
-      currentUser.is_admin
-        ? deviceUsers
-        : deviceUsers.filter((user) => user.id === currentUser.id),
-    [currentUser.id, currentUser.is_admin, deviceUsers],
-  );
+  const users = deviceUsers;
 
   useEffect(() => {
     const accountRole = `${currentUser.id}:${!!currentUser.is_owner}:${!!currentUser.is_admin}`;
@@ -430,6 +424,14 @@ function UserRow({
 }) {
   const ownerProtected = user.is_owner && !currentUser.is_owner;
   const hasFace = user.faceEnrolled === true;
+  const role = user.is_owner
+    ? "Owner"
+    : user.is_admin
+      ? "Administrator"
+      : "User";
+  const canEnroll = currentUser.is_admin
+    ? !ownerProtected
+    : user.id === currentUser.id;
 
   return (
     <div className="rounded-xl border border-white/[0.06] bg-dna-bg p-4">
@@ -456,18 +458,27 @@ function UserRow({
             ) : null}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
+            <Badge
+              variant={
+                user.is_owner ? "warn" : user.is_admin ? "info" : "default"
+              }
+            >
+              {role}
+            </Badge>
             <Badge variant={hasFace ? "ok" : "warn"}>
               {hasFace ? "Face enrolled" : "Face pending"}
             </Badge>
-            {user.faceAccess === false ? (
-              <Badge variant="warn">Access blocked</Badge>
-            ) : null}
+            <Badge variant={user.faceAccess === false ? "warn" : "ok"}>
+              {user.faceAccess === false
+                ? "Face access blocked"
+                : "Face access allowed"}
+            </Badge>
           </div>
         </div>
-        {currentUser.is_admin ? (
+        {canEnroll ? (
           <Btn
             variant="secondary"
-            disabled={!!enrollment || ownerProtected}
+            disabled={!!enrollment}
             onClick={onEnroll}
           >
             {hasFace ? "Replace face" : "Enroll face"}

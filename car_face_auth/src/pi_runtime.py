@@ -496,6 +496,19 @@ class PiRuntime:
         enrollment_reservation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         reservation = self._enrollment_reservation(enrollment_reservation)
+        if reservation.get("target_user_id") != user_id:
+            raise RuntimeRequestError("enrollment target does not match the request", 403)
+        if self._authorization.required and (
+            reservation.get("actor_user_id") != getattr(authorization, "user_id", None)
+            or reservation.get("actor_device_id")
+            != getattr(authorization, "device_id", None)
+            or reservation.get("actor_auth_version")
+            != getattr(authorization, "auth_version", None)
+        ):
+            raise RuntimeRequestError(
+                "enrollment request belongs to another authorization",
+                403,
+            )
         receipt_session = {
             "id": reservation["session_id"],
             "request_id": reservation["request_id"],
@@ -595,7 +608,7 @@ class PiRuntime:
             return self._authorization.bind(
                 authorization,
                 expected_user_id=expected_user_id,
-                require_admin=True,
+                require_admin_or_self=True,
             )
         except AuthorizationRejected as exc:
             raise RuntimeRequestError(str(exc), 403) from exc
@@ -653,7 +666,7 @@ class PiRuntime:
                 return True
         return self._authorization.session_is_current(
             session,
-            require_admin=kind == "enroll",
+            require_admin_or_self=kind == "enroll",
             require_target=self._authorization.required,
             require_face_access=kind == "scan",
         )
@@ -1279,7 +1292,7 @@ class PiRuntime:
             frame_id = capture.frame_id
             database = self._load_authorized_database(face_engine)
             if not database:
-                raise RuntimeError("No enrolled face with access enabled")
+                raise RuntimeError("No enrolled face is available for recognition.")
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if cancel_event.is_set():
@@ -1504,7 +1517,7 @@ class PiRuntime:
                 self._safety_settings()
                 if not self._authorization.session_is_current(
                     session,
-                    require_admin=True,
+                    require_admin_or_self=True,
                     require_target=True,
                 ):
                     self._finish(
@@ -1560,7 +1573,7 @@ class PiRuntime:
                 session_id,
                 "denied",
                 score=score,
-                message="No authorized user matched the rolling window.",
+                message="No enrolled user matched the rolling window.",
             )
             return
 
@@ -1574,20 +1587,19 @@ class PiRuntime:
             if not session or cancel_event.is_set() or shutting_down:
                 return
             try:
-                authorized_rows = [
+                matched_rows = [
                     row
                     for row in self._db.get_all_users()
                     if row.get("name") == candidate
-                    and self._face_access_allowed(row)
                 ]
-                if len(authorized_rows) != 1:
+                if len(matched_rows) != 1:
                     self._finish(
                         session_id,
                         "denied",
                         user=candidate,
                         score=score,
                         message=(
-                            "Access was revoked before the scan completed."
+                            "The recognized account is no longer available."
                         ),
                     )
                     return
@@ -1599,7 +1611,9 @@ class PiRuntime:
                 )
                 return
 
-            matched_user_id = authorized_rows[0].get("id")
+            matched_user = matched_rows[0]
+            matched_user_id = matched_user.get("id")
+            self._update(session_id, recognized_user_id=matched_user_id)
             hardware = bool(session.get("hardware_trigger"))
             try:
                 safety_settings = self._safety_settings()
@@ -1609,21 +1623,31 @@ class PiRuntime:
                 self._finish(session_id, "error", message=str(exc))
                 return
 
-            if self._authorization.required and not hardware and (
+            wrong_user = self._authorization.required and not hardware and (
                 not matched_user_id
                 or matched_user_id != session.get("user_id")
                 or matched_user_id != session.get("expected_user_id")
-            ):
-                if safety_settings.fail_lockout:
-                    try:
-                        self._record_face_result(
-                            session_id,
-                            matched=False,
-                            limit=safety_settings.lockout_after,
-                        )
-                    except RuntimeError as exc:
-                        self._finish(session_id, "error", message=str(exc))
-                        return
+            )
+            if wrong_user and safety_settings.fail_lockout:
+                try:
+                    self._record_face_result(
+                        session_id,
+                        matched=False,
+                        limit=safety_settings.lockout_after,
+                    )
+                except RuntimeError as exc:
+                    self._finish(session_id, "error", message=str(exc))
+                    return
+            if not self._face_access_allowed(matched_user):
+                self._finish(
+                    session_id,
+                    "denied",
+                    user=candidate,
+                    score=score,
+                    message="Access denied: face access is disabled.",
+                )
+                return
+            if wrong_user:
                 self._finish(
                     session_id,
                     "denied",
@@ -2271,7 +2295,9 @@ class PiRuntime:
                 session["timing_recorded"] = True
             session.update(state=state, updated_at=self._now_ms(), **updates)
             log_kind = session.get("kind")
-            log_user_id = session.get("expected_user_id")
+            log_user_id = (
+                session.get("recognized_user_id") or session.get("expected_user_id")
+            )
             log_actor_user_id = session.get("user_id")
             self._stop_camera_capture_now_locked(session_id)
             if state == "error":
@@ -2482,13 +2508,14 @@ class PiRuntime:
     # ── Recognition and timers ───────────────────────────────────────────────
 
     def _load_authorized_database(self, face_engine: Any) -> dict[str, Any]:
+        # Identification includes blocked faces; actuation checks access again.
         database = face_engine.load_database()
-        allowed = {
-            row["name"]
-            for row in self._db.get_all_users()
-            if row.get("face_access", 1)
+        active_names = {row["name"] for row in self._db.get_all_users()}
+        return {
+            name: embeddings
+            for name, embeddings in database.items()
+            if name in active_names
         }
-        return {name: embeddings for name, embeddings in database.items() if name in allowed}
 
     def _capture_bgr(self, camera: Any) -> Any:
         cv2 = self._load_modules()["cv2"]

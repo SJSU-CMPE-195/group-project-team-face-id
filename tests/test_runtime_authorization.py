@@ -251,6 +251,37 @@ class RuntimeAuthorizationTests(unittest.TestCase):
         self.assertEqual(self.runtime.commands, [])
         self.assertEqual(self.db.unlocks, [])
 
+    def test_blocked_face_is_named_and_logged_without_unlocking(self):
+        self.db.users[2]["face_access"] = 0
+        self.store.face_access["u2"] = False
+        session = self.start_scan()
+
+        result = self.grant(session, "Bob")
+
+        self.assertEqual(result["state"], "denied")
+        self.assertEqual(result["user"], "Bob")
+        self.assertEqual(
+            result["message"], "Access denied: face access is disabled."
+        )
+        self.assertEqual(result["recognized_user_id"], "u2")
+        self.assertEqual(self.runtime.commands, [])
+        self.assertEqual(self.db.unlocks, [])
+        scan_log = next(row for row in self.db.logs if row[0] == "face_scan")
+        self.assertEqual(scan_log[1], "fail")
+        self.assertEqual(scan_log[3], "u2")
+
+    def test_blocked_actor_cannot_start_scan(self):
+        self.db.users[1]["face_access"] = 0
+        self.store.face_access["u1"] = False
+
+        with self.assertRaises(RuntimeRequestError) as raised:
+            self.start_scan()
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(self.runtime.spawned_sessions, [])
+        self.assertEqual(self.runtime.commands, [])
+        self.assertEqual(self.db.unlocks, [])
+
     def test_revocation_before_final_grant_has_no_side_effect(self):
         session = self.start_scan()
         self.store.revoke("u1")
@@ -477,24 +508,22 @@ class RuntimeEnrollmentAuthorizationTests(unittest.TestCase):
             ).fetchone()
         return row["face_encoding"]
 
-    def test_non_admin_cannot_start_enrollment(self):
+    def test_enrollment_rejects_another_actors_reservation(self):
         reservation = self.reserve()
 
-        result = self.runtime.start_enrollment(
-            self.target["id"],
-            authorization=self.member,
-            enrollment_reservation=reservation,
-        )
-
-        self.assertEqual(result["state"], "error")
-        self.assertIn("administrator", result["message"])
+        with self.assertRaisesRegex(RuntimeRequestError, "another authorization"):
+            self.runtime.start_enrollment(
+                self.target["id"],
+                authorization=self.member,
+                enrollment_reservation=reservation,
+            )
         self.assertEqual(self.runtime.spawned_sessions, [])
         self.assertEqual(
             self.security.enrollment.query(
                 self.admin,
                 reservation["request_id"],
             )["state"],
-            "failed",
+            "accepted",
         )
         self.assertIsNone(self.face_template())
 

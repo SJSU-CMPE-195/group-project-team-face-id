@@ -5,7 +5,7 @@ import Card from "./Card.jsx";
 function accountRole(user) {
   if (user.is_owner) return "Owner";
   if (user.is_admin) return "Administrator";
-  return "Member";
+  return "User";
 }
 
 export default function RemotePiPanel({ user, setTab }) {
@@ -29,11 +29,11 @@ export default function RemotePiPanel({ user, setTab }) {
       <p className="mt-3 text-sm leading-relaxed text-slate-400">
         {canManageUsers
           ? "Manage users and enroll faces using the Pi camera."
-          : "View your account and activity logs. An administrator manages users and face enrollment."}
+          : "View the user directory and activity logs, or enroll your own face using the Pi camera."}
       </p>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row">
         <Btn className="flex-1" onClick={() => setTab("users")}>
-          {canManageUsers ? "Users & face enrollment" : "Your account"}
+          Users & face enrollment
         </Btn>
         <Btn
           variant="secondary"

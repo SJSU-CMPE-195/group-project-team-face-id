@@ -17,6 +17,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.bass.app.LogEntry
+import com.bass.app.LogOutcome
 import com.bass.app.R
 import com.bass.app.ui.components.BassCard
 import com.bass.app.ui.components.ChipTone
@@ -82,7 +83,7 @@ private fun LogCard(entry: LogEntry) {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
-                    text = entry.type,
+                    text = entry.title,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -93,19 +94,37 @@ private fun LogCard(entry: LogEntry) {
                 )
             }
             StatusChip(
-                text = stringResource(
-                    if (entry.ok) R.string.logs_ok else R.string.logs_failed,
-                ),
-                tone = if (entry.ok) ChipTone.SUCCESS else ChipTone.ERROR,
+                text = entry.outcome.label(),
+                tone = entry.outcome.tone(),
             )
         }
-        if (entry.detail.isNotBlank()) {
+        if (entry.summary.isNotBlank()) {
             Text(
-                text = entry.detail,
+                text = entry.summary,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
     }
 }
+
+@Composable
+private fun LogOutcome.label(): String =
+    stringResource(
+        when (this) {
+            LogOutcome.SUCCESS -> R.string.logs_success
+            LogOutcome.DENIED -> R.string.logs_denied
+            LogOutcome.CANCELLED -> R.string.logs_cancelled
+            LogOutcome.ERROR -> R.string.logs_error
+            LogOutcome.INFO -> R.string.logs_info
+        },
+    )
+
+private fun LogOutcome.tone(): ChipTone =
+    when (this) {
+        LogOutcome.SUCCESS -> ChipTone.SUCCESS
+        LogOutcome.DENIED, LogOutcome.CANCELLED -> ChipTone.WARNING
+        LogOutcome.ERROR -> ChipTone.ERROR
+        LogOutcome.INFO -> ChipTone.INFO
+    }
 

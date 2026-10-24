@@ -1404,15 +1404,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startEnrollment(userId: String) {
-        if (state.value.identity?.user?.isAdmin != true) return
+        val actor = state.value.identity?.user ?: return
+        val target = state.value.users.singleOrNull { it.id == userId } ?: return
+        val canEnroll =
+            actor.id == target.id ||
+                (actor.isAdmin && (!target.isOwner || actor.isOwner))
+        if (!canEnroll) return
         pendingEnrollment?.takeIf { it.unresolved }?.let {
             val client = api ?: return
             val epoch = generation
             viewModelScope.launch { recoverPendingEnrollment(client, epoch) }
             return
         }
-        val target = state.value.users.singleOrNull { it.id == userId } ?: return
-        if (target.isOwner && state.value.identity?.user?.isOwner != true) return
         if (!state.value.capabilities.deviceCamera) return
         val owner = state.value.identity ?: return
         val pending =

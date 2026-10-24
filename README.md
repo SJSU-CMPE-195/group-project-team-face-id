@@ -85,9 +85,10 @@ face, then start Unlock from the local dashboard.
 The PC captures its webcam and unlocks only after a successful match. Its
 actuator output remains simulated. See [host setup](docs/android-wireless.md).
 
-Sign in to the host dashboard as an administrator and keep its Control tab open
-to see the camera view when Android starts host-camera enrollment. Regular users can preview
-only sessions started on their own device. See [watch phone-triggered enrollment](docs/android-wireless.md#watch-phone-triggered-enrollment-on-the-host).
+Sign in to the host dashboard and keep its Control tab open to see the camera
+view when Android starts host-camera enrollment. Administrators can preview
+sessions from other devices; regular users can preview only sessions started on
+their own device. See [watch phone-triggered enrollment](docs/android-wireless.md#watch-phone-triggered-enrollment-on-the-host).
 
 ### Hardware Simulator tab on the current PC host
 
@@ -214,9 +215,11 @@ the initial owner. After the first successful sign-in with a name and PIN,
 the browser remembers that account and needs only its PIN when the session
 expires. Explicit sign-out clears the account selection. The browser keeps its
 15-minute session in an HTTP-only cookie and asks for the signed-in user's PIN before each
-sensitive operation; it does not store the PIN. Administrators manage users,
-access, PIN resets, phone invites, paired devices, logs, and settings. Ordinary
-users can operate only as themselves and cannot open administrator controls.
+sensitive operation; it does not store the PIN. Every signed-in account can see
+the active account directory, including role, face-enrollment and face-access
+status. Administrators manage accounts, access, PIN resets, phone invites,
+paired devices, logs, and settings. Ordinary users may enroll or replace only
+their own face and cannot open administrator controls.
 
 ### Retired standalone Face API
 
@@ -361,7 +364,7 @@ Use the [wireless host setup](docs/android-wireless.md) on the PC or Pi:
    The dashboard displays a five-minute invitation QR.
 4. Scan that invitation in BASS Android and enter the user's six-digit host PIN.
    The phone receives its own revocable credential for this backend.
-5. Select **Refresh** to load new phone enrollments in **Users**.
+5. Select **Refresh** to load account or enrollment changes in **Users**.
 
 No backend address or Connect action is needed. For local frontend development,
 `http://localhost:5173` uses the same host through Vite's proxy to port 5057.
@@ -372,25 +375,30 @@ binds only to loopback and does not grant local dashboard privileges.
 
 ## Enrolling a user
 
-1. Sign in as an administrator and open **Users**.
-2. Create the account with a display name and six-digit PIN. Approve with your
-   administrator PIN, then confirm the new user's PIN. Creation does not start
-   enrollment; the account shows **Face not enrolled**.
-3. Select that existing account's **Enroll face** action and approve it with a
-   fresh administrator PIN. Look at the Pi camera while it captures samples.
-   The PC development host uses its webcam and is labeled as development.
+1. Sign in and open **Users**. The directory shows every active account's role,
+   face-enrollment state and face-access state.
+2. An administrator may create an account with a display name and six-digit PIN.
+   Creation does not start enrollment; the account shows **Face not enrolled**.
+3. Select **Enroll face** or **Replace face**. An ordinary user can select only
+   their own account; an administrator can select a permitted non-Owner account,
+   and the Owner can select any account. Approve with the signed-in user's fresh
+   PIN, then look at the Pi camera while it captures samples. The PC development
+   host uses its webcam and is labeled as development.
 4. Wait for completion, or cancel and retry later from the same account.
 
 Android can start host-camera enrollment and show progress. Phone and browser
 images are not accepted. Failed or cancelled enrollment retains the account
-and any previously saved template. An account without a face may sign in and
-pair a phone, but cannot pass face verification.
+and any previously saved template. A blocked account may update its own template,
+but enrollment does not restore face access. An account without a face may sign
+in and pair a phone, but cannot pass face verification.
 
 Only the super administrator can appoint or replace the single ordinary
 administrator. Ordinary administrators cannot change the owner's account,
-PIN, face, access, or phones. Users see only their own account and logs;
-ordinary administrators see logs excluding owner involvement; the owner sees
-all logs. Historical unattributed logs remain owner-only.
+PIN, face, access, or phones. Every authenticated user sees the full active
+account directory, but management controls remain role-protected. Ordinary
+users see only their own logs; ordinary administrators see logs excluding owner
+involvement; the owner sees all logs. Historical unattributed logs remain
+owner-only.
 
 Resetting a PIN requires administrator authorization and confirmation of the
 replacement PIN. It revokes that user's phones and invitations; pair again.
@@ -409,6 +417,12 @@ compiler evidence and the pending Pi migration/manual acceptance boundaries.
 4. PC records simulated actuation. Pi sends real ESP32 commands after successful
    face verification; physical motor and lock state remain unconfirmed. A PIN
    alone or uploaded browser/phone verification frames cannot grant access.
+
+Identification and authorization are separate. The host can identify an active
+account whose face access is blocked and report that person's name with
+**Access denied**, but it does not issue an unlock command. A blocked account
+cannot start a scan, every scan remains bound to the signed-in account, and the
+runtime checks access again before actuation.
 
 The current runtime reports that presentation-attack detection is unavailable.
 With the persisted liveness setting enabled by default, verification fails
@@ -588,7 +602,7 @@ current authenticated host.
 | POST | `/api/lock` | Lock the device |
 | POST | `/api/ignition/stop` | Stop ignition |
 | POST | `/api/full-reset` | Stop ignition and lock the device |
-| GET | `/api/users` | List all users for an administrator or the current user only |
+| GET | `/api/users` | List all active accounts with role, face-enrollment and face-access status |
 | POST | `/api/users` | Create a regular account without starting face enrollment |
 | DELETE | `/api/users/<id>` | Remove a user |
 | PATCH | `/api/users/<id>/access` | Enable/disable face access for a user |
@@ -607,7 +621,7 @@ current authenticated host.
 | POST | `/api/enroll/start` | Start host-camera enrollment for an existing account |
 | GET | `/api/enroll/status?session_id=<id>` | Read enrollment progress/result |
 | POST | `/api/enroll/cancel` | Cancel a running enrollment |
-| GET | `/api/logs` | Retrieve logs filtered by owner/admin/user permission |
+| GET | `/api/logs` | Retrieve readable logs filtered by owner/admin/user permission |
 | GET | `/api/settings` | Get device settings |
 | POST | `/api/settings` | Save device settings |
 | GET | `/health` | Process liveness and runtime details |
@@ -628,6 +642,13 @@ Client image enrollment is retired: `/api/enroll/sample` and
 `/api/enroll/finish` return 410. Oversized input remains rejected before a
 data-changing operation. Client requests to
 `POST /api/verify-log` return 410 and cannot create an authoritative event.
+
+Log rows retain the compatible `id`, `ts`, `type`, `ok` and `detail` fields and
+add `title`, `summary` and `outcome`. `outcome` is one of `success`, `denied`,
+`cancelled`, `error` or `info`. The readable fields describe who acted, what
+happened and the result without making raw diagnostic JSON the primary text.
+Raw detail remains persisted and follows the existing role-based visibility
+rules.
 
 The fixed QR supplies TLS-pinned onboarding information only. Pairing also
 requires a short-lived administrator-issued invite and the target user's
@@ -947,9 +968,11 @@ establish production or anti-spoofing safety.
 ### A user exists but has no face template
 
 Creating an account and capturing a face are separate steps. In **Users**, select
-the existing account's face-enrollment action and authorize with an administrator
-PIN. The host camera captures the face. Cancellation or failure retains the
-account and any previously enrolled template.
+the existing account's face-enrollment action. An ordinary user can enroll only
+their own account; administrators retain their permitted account-management
+scope. Authorize with the signed-in user's fresh PIN. The host camera captures
+the face. Cancellation or failure retains the account and any previously
+enrolled template. Re-enrolling a blocked account does not restore access.
 
 ### "Start face unlock" is greyed out
 

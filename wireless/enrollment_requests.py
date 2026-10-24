@@ -39,9 +39,20 @@ class EnrollmentRequestStore:
         with self.security.synchronized(), self.security.get_connection() as conn:
             self.security._begin(conn)
             current = principal_from_row(
-                self.security._require_admin(conn, principal, now)
+                self.security._require_principal(conn, principal, now)
             )
             values = self._request_values(body)
+            self.security._require_admin_or_self_target(
+                current,
+                _ACTION,
+                values["user_id"],
+            )
+            self.security._require_owner_target_control(
+                conn,
+                current,
+                _ACTION,
+                values["user_id"],
+            )
             digest = self._request_digest(values)
             generation = self._generation(conn)
             existing = self._owned_row(
@@ -107,7 +118,7 @@ class EnrollmentRequestStore:
         now = self._now()
         with self.security.synchronized(), self.security.get_connection() as conn:
             current = principal_from_row(
-                self.security._require_admin(conn, principal, now)
+                self.security._require_principal(conn, principal, now)
             )
             canonical_id = self._canonical_request_id(request_id)
             row = self._owned_row(
@@ -117,6 +128,12 @@ class EnrollmentRequestStore:
                 canonical_id,
             )
             if row is None:
+                raise SecurityError(
+                    "enrollment_request_not_found",
+                    404,
+                    "Enrollment request was not found.",
+                )
+            if row["actor_user_id"] != current.user_id:
                 raise SecurityError(
                     "enrollment_request_not_found",
                     404,
@@ -251,7 +268,6 @@ class EnrollmentRequestStore:
         if (
             actor_row is None
             or not principal_row_active(actor_row, now)
-            or not bool(actor_row["is_admin"])
             or int(actor_row["auth_version"])
             != int(receipt["actor_auth_version"])
         ):
@@ -264,6 +280,11 @@ class EnrollmentRequestStore:
             != int(receipt["target_auth_version"])
         ):
             self._authorization_expired()
+        self.security._require_admin_or_self_target(
+            current,
+            _ACTION,
+            receipt["target_user_id"],
+        )
         self.security._require_owner_target_control(
             conn,
             current,
@@ -421,6 +442,10 @@ class EnrollmentRequestStore:
             "created": created,
             "request_id": row["request_id"],
             "session_id": row["session_id"],
+            "actor_user_id": row["actor_user_id"],
+            "actor_device_id": row["device_id"],
+            "actor_auth_version": row["actor_auth_version"],
+            "target_user_id": row["target_user_id"],
             "response": json.loads(row["response_json"]),
         }
 

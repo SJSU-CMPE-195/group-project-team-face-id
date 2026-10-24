@@ -12,6 +12,15 @@ Camera permission is used only for QR scanning. Names, Bluetooth addresses and
 bonds are discovery hints; the saved certificate pin and host UUID authenticate
 the host before any PIN or credential is sent.
 
+The account-directory, self-enrollment, blocked-face denial and readable-log
+behavior described below is implemented in the current source. The October 23
+isolated publication candidate passed 249 Python tests, 4 web state-helper tests,
+the PWA check, before/after Python compiler, Vite build and ESLint checks, and
+Android `assembleDebug`/`lintDebug`; see the [publication validation snapshot](roles-pi-delivery.md#october-23-publication-validation-snapshot).
+No dependency or database migration was added. Browser automation, Pi deployment,
+manual authenticated phone/Pi flows and physical hardware acceptance are
+**NOT RUN** for this update.
+
 ## Windows quick start
 
 1. Windows provides the local development dashboard, a BLE diagnostic, and a
@@ -77,9 +86,11 @@ account and confirms their administrator PIN. Scan the displayed invitation QR
 in BASS Android and enter the invited account's PIN. This single scan supplies
 the device identity, TLS pin and invitation; the PIN stays separate. The host
 returns a distinct revocable credential for that phone. The dashboard and phone
-then share the host's scoped users, logs and vehicle status. Phones have no
-vehicle controls or Settings tab; administrators can start host-camera enrollment. Open **Users**, then select **Refresh** to load a new phone
-enrollment.
+then share the host's users, scoped logs and vehicle status. Phones have no
+vehicle controls or Settings tab. Every signed-in user can view the active
+account directory and can start host-camera enrollment for their own account;
+administrators retain their permitted account-management scope. Open **Users**,
+then select **Refresh** to load an account or enrollment change.
 Switching to a different Pi requires scanning that Pi's QR; proximity does not
 change the pairing. The version 3 public QR carries the device identity and
 TLS certificate fingerprint, with no authorization secret. BLE discovery selects
@@ -227,11 +238,10 @@ claim that either has been performed on a real Pi.
 ## Watch phone-triggered enrollment on the host
 
 Open the dashboard on the backend computer at `http://localhost:5057` (or
-`http://localhost:5173` during development). Sign in as an administrator and
-leave its **Control** tab open. Administrators can preview sessions started on
-other devices. Regular users can view only sessions they started on their own
-device. Preview permission does not allow cancelling or changing another
-device's session.
+`http://localhost:5173` during development). Sign in and leave its **Control**
+tab open. Administrators can preview sessions started on other devices. Regular
+users can view only sessions they started on their own device. Preview permission
+does not allow cancelling or changing another device's session.
 Starting enrollment from the phone displays the host camera in the existing
 Control viewport. Unlock and ignition start only from the local dashboard.
 
@@ -359,10 +369,13 @@ templates, PIN verifiers, other phones, or the fixed QR. An administrator can
 separately revoke a phone from the device list.
 
 Phone camera is available for QR scanning only. Android exposes Status, Users
-and Logs. Administrators can add name/PIN accounts and later start host-camera
-enrollment, issue invitations and revoke phones. The owner alone can replace
-the one ordinary administrator. Ordinary users receive only their own account
-and logs; ordinary administrators receive logs excluding owner involvement.
+and Logs. Every authenticated user sees all active accounts with their role,
+face-enrollment state and face-access state. Ordinary users may start or replace
+host-camera enrollment only for themselves after a fresh PIN check.
+Administrators can add name/PIN accounts, enroll permitted accounts, issue
+invitations and revoke phones. The owner alone can replace the one ordinary
+administrator. Ordinary users still receive only their own logs; ordinary
+administrators receive logs excluding owner involvement.
 
 Vehicle operations are available only through the trusted local dashboard.
 Production face capture uses Pi; PC webcam and simulated actuators are explicitly
@@ -480,6 +493,18 @@ Owner-only `PATCH /api/users/<id>/role` atomically replaces or revokes the
 ordinary administrator and requires a `user.role` operation grant.
 Android never grants face authorization itself.
 
+Authenticated `GET /api/users` returns the complete active account directory,
+including name, Owner/Administrator/User role, face-enrollment state and
+face-access state. Read access does not grant account-management access: write
+routes and operation grants continue to enforce the caller's role and target.
+
+`GET /api/logs` retains `id`, `ts`, `type`, `ok` and `detail` for compatible
+clients and adds `title`, `summary` and `outcome`. `outcome` is `success`,
+`denied`, `cancelled`, `error` or `info`. The new fields provide readable actor,
+action and result text; raw diagnostic detail remains stored and follows the
+same Owner/admin/user visibility filters. Legacy unattributed rows remain
+Owner-only.
+
 `POST /api/verify-log` is retired and returns 410 without writing an event.
 Clients cannot submit an authoritative verification result.
 
@@ -509,7 +534,7 @@ report `physical_state_confirmed: false`.
 `command_sent: true` means the serial write completed, not that the firmware
 completed the action or a motor reached its position. Incomplete writes and
 serial errors fail the operation. Set `ESP32_SERIAL_PORT` when automatic port
-detection fails. Enrollment and administrator data tasks remain available,
+detection fails. Enrollment and authorized data tasks remain available,
 subject to the liveness policy. PC controls remain labelled simulated.
 
 `GET /api/camera/status` returns the camera source, latest visible host-camera
@@ -555,7 +580,12 @@ for receipt `state`, current `session` projection and stored terminal `result`.
 The same authorized device and request ID with identical inputs receive the
 same acceptance response without another camera start or grant consumption.
 Different input under the same ID returns 422; another device cannot read it.
-Current authentication and administrator checks still precede receipt replay.
+Authentication and the admin-or-self target rule still precede receipt replay.
+An ordinary user may enroll only their own account. An administrator may enroll
+a permitted non-Owner target, and the Owner may enroll any target. A fresh PIN
+grant remains bound to the actor, device, target and authorization versions.
+Blocked accounts may replace their own face template, but enrollment never
+changes `face_access`; they remain unable to start a face scan.
 Receipts survive session cleanup and service restart. A restart marks unfinished
 requests interrupted; it never restarts capture. Face data, audit and completion
 receipt commit atomically. Only explicit product reset removes receipt history.
@@ -600,11 +630,19 @@ Liveness/PAD is maintained separately and its existing policy is unchanged.
   and ensure cancellation/network failures retain the pairing.
 - As owner, appoint, replace and demote the one ordinary administrator. Refresh
   the affected phone and verify restricted data and pending actions are cleared.
-- Check owner/all, admin/non-owner, user/self log visibility; check ordinary users
-  cannot obtain another user's row. Non-owner log details must contain no raw IDs.
-- Create a name/PIN account without opening a camera. Later enroll with the Pi
-  camera, cancel/retry and retain previous templates on failure. Phone camera
-  must be used only by QR scanning.
+- Check that every role sees the same active account directory and its role,
+  enrollment and access states. Verify that write controls still follow the
+  Owner/admin/user target rules.
+- Check owner/all, admin/non-owner and user/self log visibility. Verify readable
+  title, summary and outcome fields, and that non-Owner summaries disclose no
+  raw IDs or diagnostic JSON.
+- Create a name/PIN account without opening a camera. Enroll an ordinary user's
+  own account from that phone with a fresh PIN; reject another-user targets.
+  Cancel/retry and retain previous templates on failure. Re-enroll a blocked
+  account and verify it remains blocked. Phone camera must be used only for QR
+  scanning.
+- During another authorized scan, present a blocked enrolled face. Verify the
+  result names the account and denies access without sending an actuator command.
 - Revoke a phone, including the current phone. Its next authenticated request
   must fail; other phones remain paired. Ordinary admin cannot revoke owner phones.
 - Phones have Status, Users and Logs only. No lock/unlock/ignition/reset or Settings
@@ -711,8 +749,9 @@ database; it does not replace face templates or create a second database.
 `auth_logs.actor_user_id` and `actor_kind` are additive schema changes. Existing
 unattributed logs are classified `legacy` and shown only to the owner. SQL
 filters trustworthy actor/subject rows before the log limit; non-owner API
-details are safe stage/result summaries. The Pi installer runs the additive
-migration before starting the service.
+details are safe summaries. Readable log projection fields do not add a database
+column or migration; raw stored detail and existing visibility rules remain.
+The Pi installer runs the existing additive migration before starting the service.
 
 ### September 19, 2026 staged migration (historical)
 

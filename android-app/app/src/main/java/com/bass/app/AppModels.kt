@@ -148,12 +148,23 @@ data class SessionIdentity(
 
 data class FaceStatus(val enrolledNames: List<String> = emptyList(), val count: Int = 0)
 
+enum class LogOutcome {
+    SUCCESS,
+    DENIED,
+    CANCELLED,
+    ERROR,
+    INFO,
+}
+
 data class LogEntry(
     val id: String,
     val timestampMillis: Long,
     val type: String,
     val ok: Boolean,
     val detail: String,
+    val title: String,
+    val summary: String,
+    val outcome: LogOutcome,
 )
 
 data class AppSettings(

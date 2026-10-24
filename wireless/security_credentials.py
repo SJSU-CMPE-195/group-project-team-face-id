@@ -21,7 +21,6 @@ ADMIN_ACTIONS = frozenset(
         "user.create",
         "user.delete",
         "user.access",
-        "enrollment.start",
         "settings.update",
         "device.revoke",
         "pairing.invite",
@@ -29,6 +28,7 @@ ADMIN_ACTIONS = frozenset(
         "user.role",
     }
 )
+ADMIN_OR_SELF_ACTIONS = frozenset({"enrollment.start"})
 OWNER_ACTIONS = frozenset({"user.role"})
 LOCAL_CONTROL_ACTIONS = frozenset(
     {
@@ -48,7 +48,7 @@ OWN_USER_ACTIONS = frozenset(
         "device.reset",
     }
 )
-ALLOWED_ACTIONS = ADMIN_ACTIONS | OWN_USER_ACTIONS
+ALLOWED_ACTIONS = ADMIN_ACTIONS | ADMIN_OR_SELF_ACTIONS | OWN_USER_ACTIONS
 
 
 @dataclass(frozen=True)

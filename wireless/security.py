@@ -13,6 +13,7 @@ import uuid
 
 from .security_credentials import (
     ADMIN_ACTIONS,
+    ADMIN_OR_SELF_ACTIONS,
     OWNER_ACTIONS,
     OWN_USER_ACTIONS,
     PIN_ITERATIONS,
@@ -1029,6 +1030,11 @@ class SecurityStore:
                     403,
                     "only the product owner can authorize this operation",
                 )
+            self._require_admin_or_self_target(
+                current,
+                action,
+                target,
+            )
             self._require_owner_target_control(
                 conn,
                 current,
@@ -1188,6 +1194,7 @@ class SecurityStore:
                 403,
                 "only the product owner can perform this operation",
             )
+        self._require_admin_or_self_target(current, action, target)
         self._require_owner_target_control(conn, current, action, target)
         grant = conn.execute(
             "SELECT 1 FROM operation_grants "
@@ -1341,6 +1348,27 @@ class SecurityStore:
                 "owner_required",
                 403,
                 "only the product owner can modify the owner account",
+            )
+
+    @staticmethod
+    def _require_admin_or_self_target(
+        principal: Principal,
+        action: str,
+        target: str | None,
+    ) -> None:
+        if action not in ADMIN_OR_SELF_ACTIONS:
+            return
+        if target is None:
+            raise SecurityError(
+                "invalid_target",
+                400,
+                "operation target is required",
+            )
+        if not principal.is_admin and target != principal.user_id:
+            raise SecurityError(
+                "target_not_allowed",
+                403,
+                "operation must target the authenticated user",
             )
 
     @staticmethod

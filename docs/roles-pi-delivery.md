@@ -9,7 +9,110 @@ The two upstream commits are retained, including wiring/CAN documentation,
 serial motor control and the face-engine threshold change. CAN remains a design
 proposal. This delivery does not deploy to Pi or confirm physical motor movement.
 
-## Implemented behavior
+## Current source amendment: October 22, 2026
+
+The current checkout supersedes the October 8 directory and enrollment policy
+described in the historical snapshot below:
+
+- Every authenticated account sees the full active account directory, including
+  name, Owner/Administrator/User role, face-enrollment state and face-access
+  state. Read access does not grant write access; existing role and Owner target
+  protections still govern account management.
+- An ordinary user can start or replace host-camera enrollment only for their
+  own account after a fresh PIN check. Administrators retain their permitted
+  target scope. Phone/browser image enrollment remains retired with HTTP 410.
+- A blocked account may replace its template without restoring access and still
+  cannot start a scan. During another authorized, actor-bound scan, the host can
+  identify a blocked enrolled face by name and deny access before actuation.
+- Log responses keep `id`, `ts`, `type`, `ok` and `detail` and add readable
+  `title`, `summary` and `outcome` (`success`, `denied`, `cancelled`, `error` or
+  `info`). Stored diagnostic detail and the existing log visibility scopes are
+  unchanged.
+
+These changes add no dependency or database migration. Browser automation,
+Pi deployment, manual authenticated phone/Pi flows and hardware acceptance
+are **NOT RUN** for this amendment. The October 8 compiler, APK and runtime evidence
+applies only to the earlier delivery and must not be used as acceptance of the
+October 22 changes. Current local automated results are recorded below.
+
+October 22 local checks, compared with the pre-change checkout:
+
+| Check | Before | After |
+| --- | --- | --- |
+| Project-local Vite build | PASS | PASS |
+| Project-local ESLint | PASS | PASS |
+| Wireless-environment Python compileall | PASS | PASS |
+| Android compileDebugKotlin / assembleDebug | PASS | PASS |
+| Android lintDebug | 0 errors, 19 warnings | Same 19 warnings |
+
+Evidence is saved locally under `.cache/team-feedback/`. Vite retains the same
+outdated Browserslist-data notice. The final log-title copy adjustment was
+rebuilt and checked with targeted ESLint after the full lint pass. Existing
+test assertions/fixtures were updated for the new policies and receipt binding.
+
+### October 22 automated test follow-up
+
+Source: the local uncommitted checkout based on `main` at `ac38bc0`, after the
+user requested the reported scenarios be tested. Tests used temporary SQLite
+databases, fake camera/actuator interfaces and local test servers. No production
+code fix was needed by this run.
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Full Python suite | `.venv-wireless/Scripts/python.exe -B -m unittest discover -s tests -v` | PASS: 249 tests, 48.614 s, no failures or skips |
+| Web enrollment/scan state helpers | `node --test .cache/team-feedback/scan-state.test.mjs` | PASS: 4 tests |
+| PWA shell and API caching boundary | `node scripts/check-pwa.mjs` | PASS |
+| Python compiler comparison | `compileall` over product Python modules and `tests` | PASS before/after, no compiler output |
+| Diff whitespace | `git diff --check` | PASS |
+
+The Python total includes 17 new regression cases; targeted runs are subsets
+and must not be added to that total. The existing directory test now checks
+Owner, Administrator and User viewers against the same three-role directory.
+
+| Reported behavior | Observed automated coverage |
+| --- | --- |
+| Enrollment appears as scanning | Web helpers preserve enrollment kind/sample progress and use enrollment labels; runtime rejects scan/enrollment conflicts in both directions. Rendered UI is not tested. |
+| Blocked faces should be named and denied | Blocked templates remain available for identification; confirmed blocked matches return the name and denial, retain the recognized audit subject and send no unlock command. Blocked actors cannot initiate scans. |
+| Phone can start own enrollment | A paired ordinary bearer obtains a fresh PIN grant, starts host enrollment and queries its receipt through the real Flask routes. The physical phone and BLE transport are not exercised. |
+| Complete user directory and roles | All three roles receive the full active directory and correct Owner/admin flags, enrollment and access fields. |
+| Readable logs and safe self-enrollment | Event projection, legacy fields, malformed detail, raw-detail suppression and role visibility pass. Self replacement, blocked access preservation, target rejection, cancellation, revocation and receipt replay pass. |
+
+Evidence is in `.cache/team-feedback/full-python-tests.txt`,
+`scan-state-tests.txt`, `tests-pwa.txt` and the corresponding targeted test logs.
+The full suite emitted third-party Cheroot/PyOpenSSL deprecation warnings;
+these did not fail the run. New test fixture mistakes were corrected before
+the full run; no production behavior was weakened to satisfy assertions.
+
+This is local software evidence. Live camera recognition, Android rendering,
+BLE reconnection, physical lock/ignition response and user acceptance remain
+unverified. The previous compiler/build/lint results remain applicable because
+the test follow-up changed only tests and documentation.
+
+### October 23 publication validation snapshot
+
+Source: the isolated publication candidate based on `main` at `ac38bc0`, with
+only the team-feedback repair applied. USB and emulator work are excluded. Local
+evidence is under `.cache/publish-team-feedback-20261023/`; it is private
+validation evidence rather than a repository artifact.
+
+| Check | Result |
+| --- | --- |
+| Python compileall comparison | PASS before/after, no compiler output |
+| Full Python suite | PASS: 249 tests, 62.479 s |
+| Project-local Vite build | PASS before/after |
+| Project-local ESLint | PASS before/after |
+| PWA shell and API caching boundary | PASS |
+| Web enrollment/scan state helpers | PASS: 4 tests |
+| Android `assembleDebug` / `lintDebug` | PASS: BUILD SUCCESSFUL in 1m19s, 48 tasks; lint 0 errors and the same 19 warnings as baseline |
+
+Android evidence is in `final-android.txt`, `final-android-lint.xml` and
+`android-lint-comparison.json`. The baseline/final issue ID, severity and
+message comparison found no differences. No dependency or database migration
+was added.
+Browser automation, Pi deployment, manual authenticated phone/Pi flows and
+physical hardware acceptance are **NOT RUN**.
+
+## October 8 implemented behavior (historical)
 
 - Successful one-use activation QR/name/PIN setup creates the sole Owner without
   a physical button. Exact request retries recover the committed response.
@@ -42,7 +145,7 @@ proposal. This delivery does not deploy to Pi or confirm physical motor movement
   reuses verified backups, durable reset receipts and interruption recovery,
   clearing product data while preserving device and TLS identity.
 
-## Verification
+## October 8 verification (historical)
 
 Outputs for publication are under `.cache/push-20261008/`; original implementation
 and UI comparisons remain under `.cache/roles-pi-flow/`, `.cache/power-recovery/`
