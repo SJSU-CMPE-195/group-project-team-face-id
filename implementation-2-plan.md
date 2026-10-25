@@ -4,10 +4,9 @@
 
 Prepare the repository deliverables in the Implementation 2 assignment dated
 October 25, 2026. The video and Canvas submission are outside this change.
-Publish only the assignment deliverables; preserve unrelated Android, USB and
-BLE working-tree changes. The user authorized commit/push, remaining software
-verification and the `impl2-v1` tag, and separately requested removal of local
-Android emulator support. Do not flash a board or change the installed host/database.
+Publish the assignment deliverables with software verification and the `impl2-v1`
+tag. Preserve unrelated working-tree changes. Do not flash a board or change the
+installed host/database.
 
 The current checkout already contains the host, dashboard, Android client,
 firmware, simulated Device API, and automated checks. The missing work is a
@@ -38,7 +37,8 @@ software compilation and scripted simulation.
 3. **Files: `mock_pi_device_api.py`, `README.md`.** Give the standalone fixture
    its own `.cache/simulated_faceid.db`; the old default collides with the real
    PC host database. Document explicit liveness configuration for scripted
-   frames without changing the normal host's safety defaults or existing data.
+   frames, and disable account lockout only in this unauthenticated fixture.
+   Keep the normal host's safety defaults and existing data unchanged.
 4. **Files: `ESP32_Program/ESP32_Program.ino`,
    `ESP32_Program/src/Step_Motor_Lock.ino`, `ESP32_Program/sketch.yaml`,
    `ESP32_Program/ReadMe.md`.** Move the unchanged sketch to Arduino's required
@@ -54,9 +54,6 @@ software compilation and scripted simulation.
    build and existing tests in Linux, the documented mock HTTP flow, and an
    Android debug build. Record failures and verification boundaries, push the
    selected changes, then publish `impl2-v1` on the final submission commit.
-7. **Files: local emulator bridge, emulator Android source set, emulator guides,
-   and emulator branches in Android build/connection scripts.** Remove the
-   emulator-only work while retaining the unpublished USB and BLE changes.
 
 ## Verification
 
@@ -69,8 +66,7 @@ software compilation and scripted simulation.
   relative links, ignore rules, and the final diff.
 - The initial baseline used Vite directly. The authorized completion now also
   runs `npm run build` (including the PWA check) and the existing Python suite.
-- Compare the Android compiler before and after removing emulator branches.
-  Build the separate assignment-only source snapshot as well.
+- Build and lint the separate assignment-only Android source snapshot.
 - Do not run browser automation or claim phone/Pi/ESP32 acceptance from software
   checks. Report clean-container results and remote publication only after they
   are observed.

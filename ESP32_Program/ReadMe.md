@@ -180,6 +180,5 @@ The lock uses absolute stepper positions, so sending `lock` or `unlock` twice do
 - [x] DC motor on/off control
 - [x] Lock/unlock motor mechanism
 - [x] Face ID integration (Pi-driven commands)
-- [x] Button-triggered authentication (ESP32 side)
 - [x] HC-SR04 presence trigger and 1602A LCD status
 - [ ] Full system integration

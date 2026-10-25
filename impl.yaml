@@ -5,8 +5,9 @@ impl_claim: >-
   lock/ignition commands, with a React host dashboard and Android BLE client.
   Without hardware, the standalone Device API runs the production scan workers
   with scripted face/camera/serial seams: an allowed matching Demo Driver can
-  unlock after the documented mock-only liveness override, while rejected scans
-  do not grant access. Simulated results do not establish physical motor position.
+  unlock after the documented mock-only liveness and account-lockout overrides,
+  while rejected scans do not grant access. Simulated results do not establish
+  physical motor position.
 languages: ["python", "javascript", "kotlin", "c++"]
 hardware_required: true
 
@@ -54,7 +55,8 @@ notes: >-
   the same fixture; start only one instance. It listens only on 127.0.0.1:5055;
   access it from inside the
   same container, not a remote browser. README.md documents the mock-only
-  liveness override, scripted unlock and status/command inspection. Its database
+  liveness and account-lockout overrides, scripted unlock and status/command
+  inspection. Its database
   is .cache/simulated_faceid.db, separate from the PC host. No camera, paid
   service, recognition model or private credential is required for this path.
   The normal dashboard and Android app do not connect to this fixture. The real
@@ -70,5 +72,6 @@ notes: >-
   SDK platform 36 and build-tools 35.0.0. The Python firmware test uses a host
   C++17 harness and skips if g++/clang++/zig is missing; it is not an ESP32 build.
   Local verification and unrun checks are recorded in
-  docs/implementation-2-verification.md. The video, graded commit/tag and Canvas
-  submission remain pending; an empty video field is not a completed demo.
+  docs/implementation-2-verification.md. The graded source uses tag impl2-v1.
+  The video and Canvas submission remain pending; an empty video field is not
+  a completed demo.

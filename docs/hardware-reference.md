@@ -27,6 +27,7 @@ below summarize the current serial bench setup; CAN parts are future work.
 | MCP2515 CAN module (planned) | Future CAN controller for the Pi | Not required for the current serial prototype |
 | SN65HVD230 (planned) | Future CAN transceiver for the ESP32 | Pin allocation must be revised before connecting |
 | External 12 V supply | Motor power | Never power motors from the ESP32 |
+| Regulated 5 V supply | Stepper power | Size for the motor's rated current; share ground with the controller |
 
 ### ESP32 GPIO allocation
 
@@ -79,9 +80,14 @@ motor, `LOW`/`LOW` lets it coast to a stop.
 
 | ULN2003 | Connects to |
 |---|---|
-| `+5V` | 5 V supply — the L298N's onboard 5 V regulator can provide this |
+| `+5V` | Separate regulated 5 V supply rated for the stepper's current |
 | `GND` | Common ground |
 | 5-pin socket | 28BYJ-48 keyed connector |
+
+Use a common ground for the supply, ULN2003 and ESP32. Check the actual motor
+and module ratings; do not assume an L298N module's logic regulator can power
+the stepper. Driver references: [ST L298](https://www.st.com/resource/en/datasheet/l298.pdf)
+and [TI ULN2003A](https://www.ti.com/product/ULN2003A).
 
 The firmware constructs the stepper like this:
 

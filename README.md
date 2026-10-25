@@ -78,7 +78,7 @@ Run from the repository root. Use a separate Python environment for grading.
    cd group-project-team-face-id
    ```
 
-   For grading, check out `impl2-v1` after the team publishes it.
+   For grading: `git checkout impl2-v1`.
 
 2. Create and activate the environment:
 
@@ -142,7 +142,7 @@ In another Bash terminal (Git Bash on Windows):
 ```bash
 curl --fail-with-body http://127.0.0.1:5055/health
 curl --fail-with-body -X POST http://127.0.0.1:5055/api/settings \
-  -H 'Content-Type: application/json' -d '{"liveness":false}'
+  -H 'Content-Type: application/json' -d '{"liveness":false,"failLockout":false}'
 curl --fail-with-body -X PUT http://127.0.0.1:5055/sim/scenario \
   -H 'Content-Type: application/json' \
   -d '{"frames":[{"identity":"Demo Driver","face_count":1,"score":0.91}]}'
@@ -160,8 +160,10 @@ curl --fail-with-body http://127.0.0.1:5055/sim/commands
 
 Expected: `granted` and a simulated `UNLOCK`; the default timer relocks after
 10 seconds. Unknown faces do not grant access. Ctrl+C stops the server.
-The liveness override applies only to this fixture. It does not verify a real
-face or exercise the normal dashboard/Android connection.
+These two overrides apply only to this loopback fixture: scripted frames cannot
+prove liveness, and the fixture has no account authorization policy for lockout.
+This flow does not verify a real face or exercise the normal dashboard/Android
+connection. Keep the normal host's account lockout enabled.
 
 ### Real host
 
@@ -237,5 +239,5 @@ validate the Pi/phone/ESP32 journey and recovery, and finish Android release
 signing. [CAN](docs/hardware-reference.md#can-bus-migration-planned-not-yet-implemented)
 remains optional; its proposed RX pin conflicts with the LCD.
 
-Before submission: add the video, publish the reviewed commit as `impl2-v1`,
-and submit both links on Canvas. See [submission status](docs/implementation-2-verification.md#submission-status).
+Before submission: add the video and submit both links on Canvas.
+The graded source is tagged `impl2-v1`; see [submission status](docs/implementation-2-verification.md#submission-status).
