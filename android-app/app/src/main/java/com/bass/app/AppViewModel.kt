@@ -1067,7 +1067,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         val grantContextCurrent =
                             mayRequestGrant &&
                                 foreground &&
-                                generation == epoch &&
+                                this@AppViewModel.generation == epoch &&
                                 api === client &&
                                 client.generation == apiGeneration &&
                                 pairing == owner &&
@@ -1094,7 +1094,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         val mutationContextCurrent =
                             connectionReusable &&
                                 foreground &&
-                                generation == epoch &&
+                                this@AppViewModel.generation == epoch &&
                                 api === client &&
                                 client.generation == apiGeneration &&
                                 pairing == owner &&

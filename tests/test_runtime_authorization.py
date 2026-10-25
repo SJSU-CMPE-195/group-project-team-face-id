@@ -306,7 +306,7 @@ class RuntimeAuthorizationTests(unittest.TestCase):
         self.assertEqual(self.runtime.commands, [])
         self.assertEqual(self.db.unlocks, [])
 
-    def test_ignition_owner_is_bound_to_stable_user_id(self):
+    def test_any_authorized_driver_can_start_ignition_after_unlock(self):
         unlock_session = self.start_scan()
         result = self.grant(unlock_session, "Ada")
         self.assertEqual(result["state"], "granted")
@@ -316,13 +316,32 @@ class RuntimeAuthorizationTests(unittest.TestCase):
         )
         self.runtime._release_session(unlock_session["id"])
 
-        with self.assertRaises(RuntimeRequestError):
-            self.runtime.start_scan(
-                purpose="ignition",
-                expected_user="Bob",
-                authorization=self.bob,
-            )
+        started = self.runtime.start_scan(
+            purpose="ignition",
+            expected_user="Bob",
+            authorization=self.bob,
+        )
+        ignition_session = self.runtime._session(started["session_id"])
+        self.assertEqual(ignition_session["expected_user_id"], "u2")
 
+        result = self.grant(ignition_session, "Bob")
+
+        self.assertEqual(result["state"], "granted")
+        self.assertIn("START", self.runtime.commands)
+
+    def test_ignition_still_verifies_the_signed_in_driver(self):
+        unlock_session = self.start_scan()
+        self.assertEqual(self.grant(unlock_session, "Ada")["state"], "granted")
+        self.runtime._release_session(unlock_session["id"])
+
+        started = self.runtime.start_scan(
+            purpose="ignition",
+            expected_user="Bob",
+            authorization=self.bob,
+        )
+        result = self.grant(self.runtime._session(started["session_id"]), "Ada")
+
+        self.assertEqual(result["state"], "denied")
         self.assertNotIn("START", self.runtime.commands)
 
     def test_revoked_stream_stops_before_waiting_for_another_frame(self):

@@ -365,6 +365,11 @@ def _run(arguments: argparse.Namespace) -> int:
             transfer_handler=None,
             recovery_handler=lifecycle.recover_owner,
         )
+        if (
+            arguments.mode == "pi"
+            and os.environ.get("ESP32_TRIGGER_ENABLED", "1") != "0"
+        ):
+            runtime.start_esp32_link()
         with wireless_servers(
             app,
             host=arguments.host,

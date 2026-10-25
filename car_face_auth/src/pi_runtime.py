@@ -22,6 +22,7 @@ from .camera_capture import (
     CapturedFrame,
     SessionCameraCapture,
 )
+from .esp32_link import AUTH_REPLIES, AuthRequest, Esp32Link, valid_request_id
 from .runtime_authorization import AuthorizationRejected, RuntimeAuthorization
 from .runtime_actuation import RuntimeActuation
 from .runtime_safety import (
@@ -41,6 +42,7 @@ PREVIEW_MAX_WIDTH = 640
 PREVIEW_JPEG_QUALITY = 75
 SESSION_TTL_SECONDS = 300
 ESP_KEYWORDS = ("CP210", "CH340", "CH341", "FTDI", "USB-SERIAL", "USB Serial", "Silicon Labs")
+HARDWARE_COOLDOWN_SECONDS = 60
 
 
 class RuntimeRequestError(RuntimeError):
@@ -88,6 +90,9 @@ class PiRuntime:
         self._model_error: str | None = None
         self._camera_error: str | None = None
         self._serial_error: str | None = None
+        self._esp32_link: Esp32Link | None = None
+        self._hardware_denials = 0
+        self._hardware_cooldown_until = 0.0
         self._settings_error: str | None = None
         self._authorization = RuntimeAuthorization()
         self._actuation = RuntimeActuation(
@@ -207,6 +212,30 @@ class PiRuntime:
             source=self.camera_source,
             authorization=authorization,
         )
+        self._spawn(session["id"], self._run_scan)
+        return self._scan_view(session)
+
+    def start_hardware_scan(self, request: AuthRequest) -> dict[str, Any]:
+        """Start a host-camera scan bound to the controller request and connection.
+
+        Nobody is signed in, so the face itself is the credential: any enrolled
+        user with face access may unlock or start ignition after a face-verified
+        unlock. A successful grant requires the controller's matching ACK.
+        """
+
+        session = self._start_scan_session(
+            request.purpose,
+            None,
+            source=self.camera_source,
+            hardware_request=request,
+        )
+        # The ESP32 must see AUTH_PENDING before the scan can answer.
+        if not self._reply_hardware_session(session, "AUTH_PENDING"):
+            self._finish(
+                session["id"], "error", message="ESP32 request disconnected."
+            )
+            self._release_session(session["id"])
+            raise RuntimeRequestError("ESP32 request disconnected.", 503)
         self._spawn(session["id"], self._run_scan)
         return self._scan_view(session)
 
@@ -355,7 +384,9 @@ class PiRuntime:
         *,
         source: str,
         authorization: Any | None = None,
+        hardware_request: AuthRequest | None = None,
     ) -> dict[str, Any]:
+        hardware = hardware_request is not None
         purpose = (purpose or "unlock").strip().lower()
         if purpose not in ("unlock", "ignition"):
             raise RuntimeRequestError("purpose must be unlock or ignition", 400)
@@ -363,7 +394,7 @@ class PiRuntime:
             raise RuntimeRequestError(self.actuator_block_reason, 503)
         expected_user = (expected_user or "").strip() or None
         expected_user_id = None
-        if self._authorization.required:
+        if self._authorization.required and not hardware:
             principal_user_id = getattr(authorization, "user_id", None)
             if not isinstance(principal_user_id, str) or not principal_user_id:
                 raise RuntimeRequestError("authenticated authorization is required", 403)
@@ -382,19 +413,10 @@ class PiRuntime:
             expected_user_id = principal_user.get("id")
         actuation = self._actuation.snapshot()
         if purpose == "ignition":
-            unlock_owner = actuation.unlock_owner
-            unlock_owner_id = actuation.unlock_owner_id
-            if not unlock_owner:
+            # Any authorized driver may start the engine once the car has been
+            # unlocked by a face scan; it need not be the person who unlocked.
+            if not actuation.unlock_owner:
                 raise RuntimeRequestError("a face-verified unlock is required before ignition", 409)
-            if expected_user and expected_user.casefold() != unlock_owner.casefold():
-                raise RuntimeRequestError("expected_user does not match the active unlock", 409)
-            if self._authorization.required and expected_user_id != unlock_owner_id:
-                raise RuntimeRequestError(
-                    "authorized user does not own the active unlock",
-                    403,
-                )
-            expected_user = unlock_owner
-            expected_user_id = unlock_owner_id
             try:
                 if self._db.get_status().get("lockState") == "locked":
                     raise RuntimeRequestError("device is locked", 409)
@@ -403,20 +425,35 @@ class PiRuntime:
             except Exception as exc:
                 raise RuntimeRequestError(f"could not read device state: {exc}", 503) from exc
 
-        try:
-            authorization_values = self._authorization.bind(
-                authorization,
-                expected_user_id=expected_user_id,
-            )
-        except AuthorizationRejected as exc:
-            raise RuntimeRequestError(str(exc), exc.status_code) from exc
+        if hardware:
+            # No signed-in user: the sensor cooldown replaces per-user lockout.
+            self._require_safety_settings()
+            authorization_values = {
+                "actor_device_id": None,
+                "user_id": None,
+                "auth_version": None,
+                "actor_is_admin": False,
+                "expected_user_id": expected_user_id,
+                "expected_user_auth_version": None,
+                "_authorization_principal": None,
+                "hardware_trigger": True,
+                "hardware_request": hardware_request,
+            }
+        else:
+            try:
+                authorization_values = self._authorization.bind(
+                    authorization,
+                    expected_user_id=expected_user_id,
+                )
+            except AuthorizationRejected as exc:
+                raise RuntimeRequestError(str(exc), exc.status_code) from exc
 
-        try:
-            safety_settings = self._require_safety_settings()
-            if safety_settings.fail_lockout:
-                self._authorization.check_face_attempt(authorization_values)
-        except AuthorizationRejected as exc:
-            raise RuntimeRequestError(str(exc), exc.status_code) from exc
+            try:
+                safety_settings = self._require_safety_settings()
+                if safety_settings.fail_lockout:
+                    self._authorization.check_face_attempt(authorization_values)
+            except AuthorizationRejected as exc:
+                raise RuntimeRequestError(str(exc), exc.status_code) from exc
 
         session = self._new_session(
             "scan",
@@ -631,6 +668,8 @@ class PiRuntime:
             if not session:
                 return False
             kind = session.get("kind")
+            if session.get("hardware_trigger"):
+                return True
         return self._authorization.session_is_current(
             session,
             require_admin_or_self=kind == "enroll",
@@ -919,6 +958,9 @@ class PiRuntime:
                 return
             self._closed = True
             had_hardware = self._serial is not None or self._modules is not None
+            esp32_link = self._esp32_link
+        if esp32_link is not None:
+            esp32_link.stop()
         self._cancel_all_sessions()
         self._actuation.shutdown(had_hardware)
         self._close_camera()
@@ -1059,18 +1101,42 @@ class PiRuntime:
             return connection
 
     def _send_command(self, command: str, connect: bool = True) -> bool:
-        if not self.actuator_control_available:
-            self._record_error(self.actuator_block_reason, "serial")
-            return False
         if command not in {"UNLOCK", "LOCK", "START", "STOP"}:
             self._record_error("Unknown actuator command", "serial")
             return False
+        return self._write_serial(command, connect=connect)
+
+    def send_esp32_reply(self, reply: str, request: AuthRequest) -> bool:
+        if reply not in AUTH_REPLIES or not valid_request_id(request.request_id):
+            return False
+        return self._write_serial(
+            f"{reply} {request.request_id}",
+            connect=False,
+            expected_connection=request.connection,
+        )
+
+    def _write_serial(
+        self,
+        command: str,
+        *,
+        connect: bool,
+        expected_connection: Any | None = None,
+    ) -> bool:
+        if not self.actuator_control_available:
+            self._record_error(self.actuator_block_reason, "serial")
+            return False
+        connection = None
         try:
             connection = self._ensure_serial() if connect else self._serial
             if connection is None:
                 raise RuntimeError("ESP32 serial device is not connected")
             payload = (command + "\n").encode("ascii")
             with self._serial_lock:
+                if connection is not self._serial or (
+                    expected_connection is not None
+                    and connection is not expected_connection
+                ):
+                    return False
                 if connection.write(payload) != len(payload):
                     raise RuntimeError("incomplete ESP32 serial write")
                 connection.flush()
@@ -1080,12 +1146,18 @@ class PiRuntime:
             return True
         except Exception as exc:
             self._record_error(f"ESP32 command {command} failed: {exc}", "serial")
-            self._close_serial()
+            if connection is not None:
+                self._close_serial(expected_connection=connection)
             return False
 
-    def _close_serial(self) -> None:
+    def _close_serial(self, expected_connection: Any | None = None) -> None:
         with self._serial_lock:
             connection = self._serial
+            if (
+                expected_connection is not None
+                and connection is not expected_connection
+            ):
+                return
             self._serial = None
             self._serial_port = None
             if connection is not None:
@@ -1093,6 +1165,180 @@ class PiRuntime:
                     connection.close()
                 except Exception:
                     pass
+        if self._esp32_link is not None:
+            self._esp32_link.connection_lost(connection)
+
+    # ── ESP32 trigger link ───────────────────────────────────────────────────
+
+    def start_esp32_link(self) -> None:
+        """Start listening for button-triggered authentication requests."""
+
+        with self._lock:
+            if self._closed or self._esp32_link is not None:
+                return
+            self._esp32_link = Esp32Link(self)
+            link = self._esp32_link
+        link.start()
+
+    def esp32_link_connection(self) -> Any | None:
+        """Return the open ESP32 port for reading, or None while unavailable."""
+
+        with self._lock:
+            if self._closed or self._paused:
+                return None
+        return self._ensure_serial()
+
+    def esp32_link_failed(self, connection: Any | None, exc: Exception) -> None:
+        self._record_error(f"ESP32 link failed: {exc}", "serial")
+        with self._lock:
+            current = connection is not None and connection is self._serial
+        if current:
+            self._close_serial()
+
+    def sync_esp32_state(self) -> None:
+        """Invalidate pre-reset work and resume from a stopped, locked state."""
+
+        self._cancel_all_sessions()
+        result = self._actuation.reset_connection()
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error") or "ESP32 reconnect failed")
+
+    def _reply_hardware_session(self, session: dict[str, Any], reply: str) -> bool:
+        request = session.get("hardware_request")
+        link = self._esp32_link
+        return bool(
+            request is not None and link is not None and link.reply(request, reply)
+        )
+
+    def _authorize_hardware_scan(self, session: dict[str, Any]) -> bool:
+        request = session.get("hardware_request")
+        link = self._esp32_link
+        if request is None or link is None or session["cancel_event"].is_set():
+            return False
+        if link.authorize(request) and not session["cancel_event"].is_set():
+            return True
+        # A missing ACK is ambiguous: the controller may have acted. Never retry
+        # that grant; stop/lock and keep this scan unsuccessful.
+        result = self._actuation.reset_connection("esp32_authorization_unconfirmed")
+        message = "ESP32 did not acknowledge the current face request"
+        if not result.get("ok"):
+            message += f"; fail-safe stop/lock failed: {result.get('error')}"
+        self._record_error(message, "serial")
+        return False
+
+    def cancel_esp32_scan(self, request_id: str, connection: Any) -> None:
+        with self._lock:
+            session = self._sessions.get(self._active_session_id or "")
+            request = session.get("hardware_request") if session else None
+        if (
+            request is not None
+            and request.request_id == request_id
+            and request.connection is connection
+        ):
+            session["cancel_event"].set()
+            result = self._cancel(
+                session["id"],
+                "scan",
+                message="ESP32 expired or cancelled the request.",
+            )
+            if result["state"] == "cancelled":
+                self._finish_hardware_scan(
+                    session, "cancelled", bool(session.get("face_mismatch_observed"))
+                )
+
+    def handle_esp32_trigger(self, request: AuthRequest) -> None:
+        """Start a face scan for a request from the ESP32 presence sensor."""
+
+        with self._lock:
+            cooldown_left = self._hardware_cooldown_until - time.monotonic()
+        if cooldown_left > 0:
+            self._reply_esp32_trigger(
+                request,
+                "DENIED",
+                f"sensor cooldown, {int(cooldown_left) + 1}s left",
+            )
+            return
+        try:
+            self.start_hardware_scan(request)
+        except RuntimeBusyError:
+            self._reply_esp32_trigger(
+                request,
+                "BUSY",
+                "another scan or enrollment is running",
+            )
+            return
+        except RuntimeRequestError as exc:
+            # 409 = the car isn't in a state for this request (e.g. ignition
+            # without a face-verified unlock); anything else is a fault.
+            reply = "DENIED" if exc.status_code == 409 else "ERROR"
+            self._reply_esp32_trigger(request, reply, str(exc))
+            return
+        except Exception as exc:
+            self._reply_esp32_trigger(
+                request,
+                "ERROR",
+                str(exc) or exc.__class__.__name__,
+            )
+            return
+        self._log(
+            "esp32_trigger", "ok",
+            f"START_AUTH {request.purpose.upper()} {request.request_id}; face scan started",
+        )
+
+    def _reply_esp32_trigger(
+        self, request: AuthRequest, reply: str, reason: str
+    ) -> None:
+        self._log(
+            "esp32_trigger",
+            "fail",
+            f"START_AUTH {request.purpose.upper()} {request.request_id}; "
+            f"replied {reply} ({reason})",
+        )
+        if self._esp32_link is not None:
+            self._esp32_link.reply(request, reply)
+
+    def _finish_hardware_scan(
+        self, session: dict[str, Any], state: str, mismatch_observed: bool
+    ) -> None:
+        """Answer the ESP32 and apply the sensor's wrong-face lockout."""
+
+        with self._lock:
+            if session.get("hardware_result_recorded"):
+                return
+            session["hardware_result_recorded"] = True
+        # A granted scan already received its matching controller acknowledgement.
+        if state == "error":
+            self._reply_hardware_session(session, "ERROR")
+        elif state in {"denied", "timeout"}:
+            # UNAUTHORIZED: a face was seen but didn't match an allowed user.
+            reply = "UNAUTHORIZED" if mismatch_observed else "DENIED"
+            self._reply_hardware_session(session, reply)
+        if state == "granted":
+            with self._lock:
+                self._hardware_denials = 0
+            return
+        if not mismatch_observed:
+            return
+        try:
+            settings = self._safety_settings()
+        except Exception:
+            return
+        if not settings.fail_lockout:
+            return
+        with self._lock:
+            self._hardware_denials += 1
+            if self._hardware_denials < settings.lockout_after:
+                return
+            self._hardware_denials = 0
+            self._hardware_cooldown_until = (
+                time.monotonic() + HARDWARE_COOLDOWN_SECONDS
+            )
+        self._log(
+            "esp32_trigger",
+            "fail",
+            f"{settings.lockout_after} wrong-face sensor scans in a row; "
+            f"sensor locked for {HARDWARE_COOLDOWN_SECONDS} seconds",
+        )
 
     # ── Background workers ───────────────────────────────────────────────────
 
@@ -1112,7 +1358,8 @@ class PiRuntime:
                     message="Authorization expired before scanning.",
                 )
                 return
-            if safety_settings.fail_lockout:
+            hardware = bool(session.get("hardware_trigger"))
+            if safety_settings.fail_lockout and not hardware:
                 self._check_face_attempt(session_id)
             self._update(
                 session_id,
@@ -1129,6 +1376,10 @@ class PiRuntime:
             if cancel_event.is_set():
                 return
             capture = self._start_camera_capture(session_id, camera)
+            if hardware:
+                # The 20 s scan clock starts now; restart the ESP32's wait too.
+                if not self._reply_hardware_session(session, "AUTH_PENDING"):
+                    raise RuntimeError("ESP32 request disconnected before scanning")
             frame_id = capture.frame_id
             database = self._load_authorized_database(face_engine)
             if not database:
@@ -1214,6 +1465,7 @@ class PiRuntime:
                 session = self._session(session_id)
                 if (
                     safety_settings.fail_lockout
+                    and not hardware
                     and session
                     and session.get("face_mismatch_observed")
                 ):
@@ -1453,15 +1705,16 @@ class PiRuntime:
             matched_user = matched_rows[0]
             matched_user_id = matched_user.get("id")
             self._update(session_id, recognized_user_id=matched_user_id)
+            hardware = bool(session.get("hardware_trigger"))
             try:
                 safety_settings = self._safety_settings()
-                if safety_settings.fail_lockout:
+                if safety_settings.fail_lockout and not hardware:
                     self._check_face_attempt(session_id)
             except RuntimeError as exc:
                 self._finish(session_id, "error", message=str(exc))
                 return
 
-            wrong_user = self._authorization.required and (
+            wrong_user = self._authorization.required and not hardware and (
                 not matched_user_id
                 or matched_user_id != session.get("user_id")
                 or matched_user_id != session.get("expected_user_id")
@@ -1532,30 +1785,35 @@ class PiRuntime:
         session_id = session["id"]
         expected_user = session.get("expected_user")
         actuation = self._actuation.snapshot()
-        authorization_is_current = (
-            actuation.unlock_owner is not None
-            and expected_user is not None
-            and candidate.casefold()
-            == expected_user.casefold()
-            == actuation.unlock_owner.casefold()
-            and (
-                not self._authorization.required
-                or matched_user_id
-                == session.get("expected_user_id")
-                == actuation.unlock_owner_id
-            )
-            and session.get("authorization_generation")
-            == actuation.generation
-        )
-        if not authorization_is_current:
+        if (
+            actuation.unlock_owner is None
+            or session.get("authorization_generation") != actuation.generation
+        ):
             self._finish(
                 session_id,
                 "denied",
                 user=candidate,
                 score=score,
-                message=(
-                    "Ignition denied: face did not match the unlocked driver."
-                ),
+                message="Ignition denied: the unlock changed during the scan.",
+            )
+            return
+        # Any authorized driver may start the engine.  A dashboard scan still
+        # verifies the signed-in user's own face; a sensor scan has no
+        # expected user and accepts any enrolled face with access.
+        driver_matches = expected_user is None or (
+            candidate.casefold() == expected_user.casefold()
+            and (
+                not self._authorization.required
+                or matched_user_id == session.get("expected_user_id")
+            )
+        )
+        if not driver_matches:
+            self._finish(
+                session_id,
+                "denied",
+                user=candidate,
+                score=score,
+                message="Ignition denied: face did not match the signed-in user.",
             )
             return
         try:
@@ -1590,7 +1848,8 @@ class PiRuntime:
                 message="Ignition scan expired before actuation.",
             )
             return
-        if not self._authorization.session_is_current(
+        hardware = bool(session.get("hardware_trigger"))
+        if not hardware and not self._authorization.session_is_current(
             session,
             require_target=True,
             require_face_access=True,
@@ -1603,7 +1862,7 @@ class PiRuntime:
                 message="Authorization was revoked before ignition.",
             )
             return
-        if not self._record_successful_face_result(
+        if not hardware and not self._record_successful_face_result(
             session_id,
             safety_settings,
         ):
@@ -1615,8 +1874,12 @@ class PiRuntime:
             ignition_stop_seconds=safety_settings.ignition_stop_seconds,
             closed=False,
             expected_generation=actuation.generation,
+            user_id=matched_user_id,
             actor_user_id=session.get("user_id"),
             actor_kind="user" if session.get("user_id") else "system",
+            authorize=(
+                (lambda: self._authorize_hardware_scan(session)) if hardware else None
+            ),
         )
         if not result.get("ok"):
             self._finish(
@@ -1670,7 +1933,8 @@ class PiRuntime:
                 message="Unlock scan expired before actuation.",
             )
             return
-        if not self._authorization.session_is_current(
+        hardware = bool(session.get("hardware_trigger"))
+        if not hardware and not self._authorization.session_is_current(
             session,
             require_target=True,
             require_face_access=True,
@@ -1693,7 +1957,7 @@ class PiRuntime:
                 message="Lock state changed before unlock.",
             )
             return
-        if not self._record_successful_face_result(
+        if not hardware and not self._record_successful_face_result(
             session_id,
             safety_settings,
         ):
@@ -1707,6 +1971,9 @@ class PiRuntime:
             expected_generation=generation,
             actor_user_id=session.get("user_id"),
             actor_kind="user" if session.get("user_id") else "system",
+            authorize=(
+                (lambda: self._authorize_hardware_scan(session)) if hardware else None
+            ),
         )
         if not result.get("ok"):
             self._finish(
@@ -1861,6 +2128,7 @@ class PiRuntime:
             )
         cancel_message = message or f"{kind.capitalize()} cancelled."
         cancelled = False
+        hardware_scan = False
         log_user_id = None
         log_actor_user_id = None
         with self._actuation.synchronized():
@@ -1877,6 +2145,7 @@ class PiRuntime:
                         updated_at=self._now_ms(),
                     )
                     self._stop_camera_capture_now_locked(session_id)
+                    hardware_scan = bool(session.get("hardware_trigger"))
                 log_user_id = session.get("expected_user_id")
                 log_actor_user_id = session.get("user_id")
                 view = (
@@ -1884,6 +2153,8 @@ class PiRuntime:
                     if kind == "scan"
                     else self._enroll_view(session)
                 )
+        if hardware_scan:
+            self._reply_hardware_session(session, "DENIED")
         if cancelled:
             self._log(
                 f"{kind}_cancelled",
@@ -2091,10 +2362,14 @@ class PiRuntime:
         log_kind = None
         log_user_id = None
         log_actor_user_id = None
+        hardware_scan = False
+        mismatch_observed = False
         with self._lock:
             session = self._sessions.get(session_id)
             if not session or session["state"] == "cancelled":
                 return
+            hardware_scan = bool(session.get("hardware_trigger"))
+            mismatch_observed = bool(session.get("face_mismatch_observed"))
             if session["kind"] == "scan" and not session.get("timing_recorded"):
                 # Includes camera startup, matching and command dispatch, but
                 # not phone/network latency or physical actuator completion.
@@ -2126,6 +2401,8 @@ class PiRuntime:
             elif state in {"granted", "denied", "timeout", "completed"}:
                 session["ok"] = True
                 log_failure = session.get("kind") == "scan" and state in {"denied", "timeout"}
+        if hardware_scan:
+            self._finish_hardware_scan(session, state, mismatch_observed)
         if log_failure:
             self._log(
                 "face_scan",
