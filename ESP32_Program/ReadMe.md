@@ -65,6 +65,44 @@ LCD contrast (V0) goes to the wiper of a 10k pot between 5V and GND. If RS reads
 
 ESP32 powered via USB from the Raspberry Pi.
 
+## Build
+
+Install [Arduino CLI 1.5.1](https://docs.arduino.cc/arduino-cli/installation/).
+For a clean Linux x86-64 checkout, these commands install the verified CLI under
+the ignored `.cache/` directory:
+
+```bash
+mkdir -p .cache/arduino-cli
+curl -fsSL https://downloads.arduino.cc/arduino-cli/arduino-cli_1.5.1_Linux_64bit.tar.gz \
+  -o .cache/arduino-cli/arduino-cli.tar.gz
+echo "28a8e119c498a25607821c36cb2dc49e8463941b261a0d99091baa7bc692dd2b  .cache/arduino-cli/arduino-cli.tar.gz" \
+  | sha256sum -c -
+tar -xzf .cache/arduino-cli/arduino-cli.tar.gz \
+  -C .cache/arduino-cli arduino-cli
+```
+
+The official Windows x86-64 ZIP is
+`https://downloads.arduino.cc/arduino-cli/arduino-cli_1.5.1_Windows_64bit.zip`
+with SHA-256
+`fabe42e0eb04d00e776a66178299ff95a46c623dbc260f997e58fd514853dd40`.
+Arduino publishes the complete checksum list with the
+[1.5.1 release](https://github.com/arduino/arduino-cli/releases/tag/v1.5.1).
+
+Then compile from the repository root:
+
+```bash
+.cache/arduino-cli/arduino-cli compile --profile impl2 ESP32_Program
+# Or, when Arduino CLI is on PATH:
+arduino-cli compile --profile impl2 ESP32_Program
+```
+
+The `impl2` [build profile](https://docs.arduino.cc/arduino-cli/sketch-project-file)
+pins the generic ESP32 board platform and both direct library dependencies.
+Arduino CLI downloads missing profile resources into an isolated cache, so
+installed global cores and libraries do not affect the build.
+This command compiles the firmware only; it does not flash a board or prove that
+the connected motors, sensor, LCD, serial link, or physical lock work.
+
 ## Presence Sensor
 
 | Rule | Behaviour |

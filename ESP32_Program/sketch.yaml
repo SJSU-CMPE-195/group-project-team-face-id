@@ -1,0 +1,12 @@
+profiles:
+  impl2:
+    notes: Reproducible Implementation 2 firmware build for the generic ESP32 board.
+    fqbn: esp32:esp32:esp32
+    platforms:
+      - platform: esp32:esp32 (3.3.12)
+        platform_index_url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+    libraries:
+      - AccelStepper (1.64.0)
+      - LiquidCrystal (1.0.7)
+
+default_profile: impl2

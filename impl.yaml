@@ -1,0 +1,74 @@
+project_name: "Biometric Automobile Security System (B.A.S.S.)"
+project_type: "hybrid"
+impl_claim: >-
+  BASS connects host-camera face recognition and SQLite access rules to ESP32
+  lock/ignition commands, with a React host dashboard and Android BLE client.
+  Without hardware, the standalone Device API runs the production scan workers
+  with scripted face/camera/serial seams: an allowed matching Demo Driver can
+  unlock after the documented mock-only liveness override, while rejected scans
+  do not grant access. Simulated results do not establish physical motor position.
+languages: ["python", "javascript", "kotlin", "c++"]
+hardware_required: true
+
+# Linux x86_64 grading prerequisites: Node 22.12+, Python 3.11, npm, curl,
+# tar, sha256sum and internet access. The CLI is installed locally below.
+# Use an activated virtual environment; each command starts at the repo root.
+setup:
+  - "npm ci"
+  - "python -m pip install -r requirements-http.txt numpy opencv-python-headless"
+  - "mkdir -p .cache/arduino-cli"
+  - >-
+    curl --fail --location --output .cache/arduino-cli/arduino-cli.tar.gz
+    https://downloads.arduino.cc/arduino-cli/arduino-cli_1.5.1_Linux_64bit.tar.gz
+  - >-
+    echo '28a8e119c498a25607821c36cb2dc49e8463941b261a0d99091baa7bc692dd2b  .cache/arduino-cli/arduino-cli.tar.gz'
+    | sha256sum --check -
+  - "tar -xzf .cache/arduino-cli/arduino-cli.tar.gz -C .cache/arduino-cli arduino-cli"
+build:
+  - "npm run build"
+  - >-
+    python -m compileall -q db.py db_api.py safety_policy.py pi_device_api.py
+    mock_pi_device_api.py bass_wireless.py wireless car_face_auth/src scripts
+  - ".cache/arduino-cli/arduino-cli compile --profile impl2 ESP32_Program"
+test:
+  - "npm run lint"
+  - "python -B -m unittest discover -s tests -v"
+
+# Default automated run is the safe hardware-free profile. The full Pi service
+# and its provisioning commands are documented in README.md.
+run:
+  - "python mock_pi_device_api.py"
+mock_mode:
+  available: true
+  commands:
+    - "python mock_pi_device_api.py"
+
+demo:
+  # Pending: the team supplies the public video URL before submission.
+  video: ""
+  screenshots: []
+notes: >-
+  setup/build/test target a Linux x86_64 hardware-free grading environment;
+  the CLI archive in setup is specific to that OS/architecture. They do not
+  install the full Pi recognition stack or Android SDK. run and mock_mode use
+  the same fixture; start only one instance. It listens only on 127.0.0.1:5055;
+  access it from inside the
+  same container, not a remote browser. README.md documents the mock-only
+  liveness override, scripted unlock and status/command inspection. Its database
+  is .cache/simulated_faceid.db, separate from the PC host. No camera, paid
+  service, recognition model or private credential is required for this path.
+  The normal dashboard and Android app do not connect to this fixture. The real
+  Pi commands in README.md need the Pi installer, requirements-wireless.txt, Picamera2,
+  OpenSSL, BlueZ, downloaded InsightFace model, first-owner activation and real
+  hardware. Activate the installer's venv and export the installed service's
+  FACEID_DB_PATH and BASS_DEVICE_CONFIG first; do not start it alongside systemd.
+  setup downloads and verifies Arduino CLI 1.5.1 under ignored .cache/.
+  ESP32_Program/sketch.yaml pins its platform and libraries, downloaded over the
+  network on first use; allow several GB of disk space. Windows/manual
+  installation instructions are in ESP32_Program/ReadMe.md.
+  No board is needed for compilation. Android build instructions require JDK 17,
+  SDK platform 36 and build-tools 35.0.0. The Python firmware test uses a host
+  C++17 harness and skips if g++/clang++/zig is missing; it is not an ESP32 build.
+  Local verification and unrun checks are recorded in
+  docs/implementation-2-verification.md. The video, graded commit/tag and Canvas
+  submission remain pending; an empty video field is not a completed demo.

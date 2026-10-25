@@ -4,7 +4,8 @@ Run from the repository root::
 
     python mock_pi_device_api.py
 
-Then point the dashboard Device API Base URL at ``http://127.0.0.1:5055``.
+Use the standalone API at ``http://127.0.0.1:5055``. The normal dashboard and
+Android app use the authenticated host, not this developer fixture.
 
 The production routes are registered by :func:`pi_device_api.create_app`.
 Only the ``/sim/*`` routes below are mock-only controls for deterministic
@@ -31,7 +32,8 @@ from car_face_auth.src.simulated_runtime import SimulatedPiRuntime  # noqa: E402
 from pi_device_api import create_app  # noqa: E402
 
 
-MOCK_DB_PATH = (REPO_ROOT / ".cache" / "mock_faceid.db").resolve()
+# The PC host owns mock_faceid.db; the unauthenticated fixture must not share it.
+MOCK_DB_PATH = (REPO_ROOT / ".cache" / "simulated_faceid.db").resolve()
 
 
 def _error(message: str, status: int = 400):

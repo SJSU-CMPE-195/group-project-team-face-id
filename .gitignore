@@ -32,6 +32,8 @@ server/
 .env
 .env.local
 .env.*.local
+.env.*
+!.env.example
 
 # Build / cache
 build
@@ -39,8 +41,28 @@ coverage
 .cache
 .vite
 .venv-wireless/
+.venv/
+.venv-grader/
 *.tls.pem
 *.auth.key
+
+# Private runtime state and signing material
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+device.json
+bass-pairing*.png
+bass-pairing*.html
+bass-activation.*
+.codex-remote-attachments/
 
 # System files
 Thumbs.db
