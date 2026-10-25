@@ -1,6 +1,7 @@
 #include <AccelStepper.h>
 #include <LiquidCrystal.h>
 #include <Preferences.h>
+#include <esp_system.h>
 
 // =============================================
 // ESP32 Motor Control — Car Security System
@@ -75,6 +76,9 @@ enum AuthPurpose { PURPOSE_UNLOCK, PURPOSE_IGNITION };
 AuthState authState = IDLE;
 AuthPurpose pendingPurpose = PURPOSE_UNLOCK;
 unsigned long authStartedAt = 0;
+uint32_t authBootNonce = 0;
+uint32_t authRequestCounter = 0;
+char pendingRequestId[17] = "";
 
 // Presence sensor
 bool personPresent = false;
@@ -94,6 +98,7 @@ unsigned long resultShownAt = 0;
 
 void setup() {
   Serial.begin(115200);
+  authBootNonce = esp_random();
 
   // DC Motor
   pinMode(IN1, OUTPUT);
@@ -133,7 +138,7 @@ void setup() {
   Serial.println("  speed X    - set engine speed 0-255");
   Serial.println("  lock       - lock car");
   Serial.println("  unlock     - unlock car");
-  Serial.println("Walking up to the sensor sends START_AUTH UNLOCK or START_AUTH IGNITION");
+  Serial.println("Walking up sends START_AUTH <purpose> <request_id>");
   Serial.println(locked ? "Restored state: Locked" : "Restored state: Unlocked");
   updateLcd();
 }
@@ -303,6 +308,49 @@ void pollSensor() {
 
 // ── Authentication flow ──────────────────────────────────────────────────
 
+void sendAuthMessage(const char* command, const char* requestId) {
+  Serial.print(command);
+  Serial.print(" ");
+  Serial.println(requestId);
+}
+
+void invalidateAuthRequest() {
+  authState = IDLE;
+  pendingRequestId[0] = '\0';
+}
+
+bool authRequestExpired() {
+  return authState == WAITING_AUTH
+      && millis() - authStartedAt >= AUTH_TIMEOUT_MS;
+}
+
+void cancelPendingAuth(const char* reason) {
+  if (authState != WAITING_AUTH) {
+    return;
+  }
+  sendAuthMessage("AUTH_CANCEL", pendingRequestId);
+  Serial.print("Authentication cancelled: ");
+  Serial.println(reason);
+  invalidateAuthRequest();
+}
+
+void expireAuthRequest() {
+  cancelPendingAuth("timeout");
+  disarmSensor();
+  showResult("Denied");
+}
+
+void createRequestId() {
+  authRequestCounter++;
+  snprintf(
+    pendingRequestId,
+    sizeof(pendingRequestId),
+    "%08lX%08lX",
+    static_cast<unsigned long>(authBootNonce),
+    static_cast<unsigned long>(authRequestCounter)
+  );
+}
+
 void requestAuth() {
   if (authState != IDLE) {
     return;
@@ -314,38 +362,75 @@ void requestAuth() {
   pendingPurpose = locked ? PURPOSE_UNLOCK : PURPOSE_IGNITION;
   authState = WAITING_AUTH;
   authStartedAt = millis();
+  createRequestId();
   resultText = nullptr;
-  Serial.println(pendingPurpose == PURPOSE_UNLOCK ? "START_AUTH UNLOCK" : "START_AUTH IGNITION");
+  Serial.print(
+    pendingPurpose == PURPOSE_UNLOCK
+      ? "START_AUTH UNLOCK "
+      : "START_AUTH IGNITION "
+  );
+  Serial.println(pendingRequestId);
 }
 
-void finishAuth(bool authorized, const char* lcdText) {
-  authState = IDLE;
+void finishDeniedAuth(const char* lcdText) {
+  invalidateAuthRequest();
   disarmSensor();
-  if (!authorized) {
-    showResult(lcdText);
-    return;
-  }
+  showResult(lcdText);
+}
+
+void acceptAuthorizedReply() {
+  char requestId[17];
+  strcpy(requestId, pendingRequestId);
+
   if (pendingPurpose == PURPOSE_UNLOCK) {
-    showResult(lcdText);
-    unlockCar();
+    if (!unlockCar()) {
+      sendAuthMessage("AUTH_CANCEL", requestId);
+      finishDeniedAuth("Error");
+      return;
+    }
+    sendAuthMessage("AUTH_ACK", requestId);
+    invalidateAuthRequest();
+    disarmSensor();
+    showResult("Authorized");
     autoIgnitionPending = true;
     autoIgnitionFrom = millis();
-  } else if (locked) {
+    return;
+  }
+
+  if (locked) {
     // Car was relocked while the ignition scan ran
     Serial.println("Car is locked; ignition not started");
-    showResult("Car locked");
-  } else {
-    showResult(lcdText);
-    engineOn();
-    Serial.println("Engine ON");
+    sendAuthMessage("AUTH_CANCEL", requestId);
+    finishDeniedAuth("Car locked");
+    return;
   }
+
+  engineOn();
+  sendAuthMessage("AUTH_ACK", requestId);
+  invalidateAuthRequest();
+  disarmSensor();
+  showResult("Authorized");
+  Serial.println("Engine ON");
 }
 
-void handleAuthReply(const String& cmd) {
+void handleAuthReply(const String& cmd, const String& requestId) {
   if (authState != WAITING_AUTH) {
     Serial.print("Ignored ");
     Serial.print(cmd);
     Serial.println(": no authentication pending");
+    return;
+  }
+  // A reply at or after the deadline cannot revive an expired request.
+  if (authRequestExpired()) {
+    expireAuthRequest();
+    Serial.print("Ignored expired reply: ");
+    Serial.println(cmd);
+    return;
+  }
+  if (requestId != pendingRequestId) {
+    Serial.print("Ignored ");
+    Serial.print(cmd);
+    Serial.println(": request ID does not match");
     return;
   }
   if (cmd == "AUTH_PENDING") {
@@ -353,7 +438,7 @@ void handleAuthReply(const String& cmd) {
     Serial.println("Pi is scanning...");
   } else if (cmd == "AUTHORIZED") {
     Serial.println("Access granted");
-    finishAuth(true, "Authorized");
+    acceptAuthorizedReply();
   } else {
     Serial.print("Access not granted: ");
     Serial.println(cmd);
@@ -361,18 +446,57 @@ void handleAuthReply(const String& cmd) {
     if (cmd == "UNAUTHORIZED") text = "Unauthorized";
     else if (cmd == "DENIED") text = "Denied";
     else if (cmd == "BUSY") text = "Busy";
-    finishAuth(false, text);
+    finishDeniedAuth(text);
   }
 }
 
 void checkAuthTimeout() {
-  if (authState == WAITING_AUTH && millis() - authStartedAt > AUTH_TIMEOUT_MS) {
+  if (authRequestExpired()) {
     Serial.println("No reply from Pi; authentication timed out");
-    finishAuth(false, "Denied");
+    expireAuthRequest();
   }
 }
 
 // ── Serial commands ──────────────────────────────────────────────────────
+
+bool isAuthReplyCommand(const String& command) {
+  return command == "AUTH_PENDING" || command == "AUTHORIZED"
+      || command == "UNAUTHORIZED" || command == "DENIED"
+      || command == "BUSY" || command == "ERROR";
+}
+
+bool isRequestId(const String& requestId) {
+  if (requestId.length() != 16) {
+    return false;
+  }
+  for (size_t i = 0; i < requestId.length(); i++) {
+    char value = requestId.charAt(i);
+    if (!isDigit(value) && (value < 'A' || value > 'F')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool parseAuthReply(
+  const String& line,
+  String& command,
+  String& requestId
+) {
+  int separator = line.indexOf(' ');
+  if (separator <= 0 || line.indexOf(' ', separator + 1) != -1) {
+    return false;
+  }
+  command = line.substring(0, separator);
+  requestId = line.substring(separator + 1);
+  return isAuthReplyCommand(command) && isRequestId(requestId);
+}
+
+bool startsWithAuthReply(const String& line) {
+  int separator = line.indexOf(' ');
+  String command = separator < 0 ? line : line.substring(0, separator);
+  return isAuthReplyCommand(command);
+}
 
 void handleLine(String cmd) {
   cmd.trim();
@@ -386,6 +510,8 @@ void handleLine(String cmd) {
     Serial.println("Engine ON");
 
   } else if (cmd == "STOP" || cmd == "OFF") {
+    cancelPendingAuth("manual STOP");
+    autoIgnitionPending = false;
     engineOff();
     // Someone still standing there shouldn't immediately get another ignition scan
     disarmSensor();
@@ -403,17 +529,28 @@ void handleLine(String cmd) {
     }
 
   } else if (cmd == "LOCK") {
-    if (lockCar()) disarmSensor();
+    cancelPendingAuth("manual LOCK");
+    autoIgnitionPending = false;
+    lockCar();
+    disarmSensor();
 
   } else if (cmd == "UNLOCK") {
-    if (unlockCar()) disarmSensor();
-
-  } else if (cmd == "AUTH_PENDING" || cmd == "AUTHORIZED" || cmd == "UNAUTHORIZED"
-             || cmd == "DENIED" || cmd == "BUSY" || cmd == "ERROR") {
-    handleAuthReply(cmd);
+    cancelPendingAuth("manual UNLOCK");
+    autoIgnitionPending = false;
+    unlockCar();
+    disarmSensor();
 
   } else {
-    Serial.println("Unknown command. Use: START, STOP, SPEED X, LOCK, UNLOCK");
+    String authCommand;
+    String requestId;
+    if (parseAuthReply(cmd, authCommand, requestId)) {
+      handleAuthReply(authCommand, requestId);
+    } else if (startsWithAuthReply(cmd)) {
+      Serial.println("Ignored authentication reply: expected command plus request ID");
+    } else {
+      Serial.println("Unknown command. Use: START, STOP, SPEED X, LOCK, UNLOCK");
+    }
+
   }
 }
 

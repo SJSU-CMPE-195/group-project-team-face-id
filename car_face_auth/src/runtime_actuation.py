@@ -72,7 +72,7 @@ class RuntimeActuation:
         user_id: str | None = None,
         actor_user_id: str | None = None,
         actor_kind: str = "system",
-        start_command: str = "START",
+        authorize: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         running = bool(running)
         with self._lock:
@@ -99,6 +99,8 @@ class RuntimeActuation:
                 except Exception as exc:
                     return self._error(f"could not read device state: {exc}")
                 if self._ignition_on:
+                    if authorize is not None:
+                        return self._error("ignition is already running")
                     return {
                         "ok": True,
                         "ignitionOn": True,
@@ -106,14 +108,30 @@ class RuntimeActuation:
                         "physical_state_confirmed": False,
                     }
                 try:
-                    self._arm_ignition_stop(ignition_stop_seconds)
+                    self._arm_ignition_stop(
+                        ignition_stop_seconds,
+                        user_id=event_user_id,
+                    )
                 except RuntimeError as exc:
                     return self._error(str(exc))
 
-            command = start_command if running else "STOP"
-            if not self._send_command(command):
+            command = "START" if running else "STOP"
+            if authorize is not None:
+                try:
+                    command_sent = bool(authorize())
+                except Exception as exc:
+                    if running:
+                        self._cancel_ignition_stop()
+                    return self._error(f"hardware authorization failed: {exc}")
+            else:
+                command_sent = self._send_command(command)
+            if not command_sent:
                 if running:
                     self._cancel_ignition_stop()
+                if authorize is not None:
+                    return self._error(
+                        "hardware authorization was not acknowledged"
+                    )
                 return self._error(f"{command} command was not sent")
 
             self._ignition_on = running
@@ -145,7 +163,7 @@ class RuntimeActuation:
         expected_generation: int,
         actor_user_id: str | None = None,
         actor_kind: str = "system",
-        command: str = "UNLOCK",
+        authorize: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             if self._maintenance_requested.is_set() or self._maintenance:
@@ -159,9 +177,21 @@ class RuntimeActuation:
                 )
             except RuntimeError as exc:
                 return self._error(str(exc))
-            if not self._send_command(command):
+            if authorize is not None:
+                try:
+                    command_sent = bool(authorize())
+                except Exception as exc:
+                    self._cancel_auto_relock()
+                    return self._error(f"hardware authorization failed: {exc}")
+            else:
+                command_sent = self._send_command("UNLOCK")
+            if not command_sent:
                 self._cancel_auto_relock()
-                return self._error(f"{command} command was not sent")
+                if authorize is not None:
+                    return self._error(
+                        "hardware authorization was not acknowledged"
+                    )
+                return self._error("UNLOCK command was not sent")
             try:
                 self._db.set_unlock(
                     reason=reason,
@@ -229,6 +259,18 @@ class RuntimeActuation:
                 actor_user_id=actor_user_id,
                 actor_kind=actor_kind,
             )
+
+    def reset_connection(
+        self,
+        reason: str = "esp32_reconnected",
+    ) -> dict[str, Any]:
+        """Discard stale authorization and restore a safe ESP32 baseline."""
+
+        with self._lock:
+            self._cancel_auto_relock()
+            self._cancel_ignition_stop()
+            self._mark_locked()
+            return self._force_lock(reason)
 
     def quiesce(self, reason: str, timeout: float) -> dict[str, Any]:
         """Stop safety timers and leave actuation locked in maintenance."""
@@ -414,12 +456,16 @@ class RuntimeActuation:
         if previous_timer:
             previous_timer.cancel()
 
-    def _arm_ignition_stop(self, seconds: int) -> None:
+    def _arm_ignition_stop(
+        self,
+        seconds: int,
+        *,
+        user_id: str | None,
+    ) -> None:
         if seconds <= 0:
             self._cancel_ignition_stop()
             return
         previous_timer = self._ignition_stop_timer
-        user_id = self._unlock_owner_id
         timer = None
 
         def stop_if_current() -> None:

@@ -11,11 +11,15 @@ The complete project uses face recognition for two separate actions:
 
 The sensor steps through these:
 
-| Car state when someone walks up | ESP32 sends | On `AUTHORIZED` |
+| Car state when someone walks up | ESP32 sends | On `AUTHORIZED <request_id>` |
 |---|---|---|
-| Locked | `START_AUTH UNLOCK` | Unlock (stepper) |
-| Unlocked, engine off | `START_AUTH IGNITION` | Engine on (DC motor) |
+| Locked | `START_AUTH UNLOCK <request_id>` | Unlock (stepper) |
+| Unlocked, engine off | `START_AUTH IGNITION <request_id>` | Engine on (DC motor) |
 | Engine running | nothing (sensor ignored) | — |
+
+Any enrolled driver with face access may start the engine after a face-verified
+unlock. The ignition scan verifies the driver who is currently present; it does
+not require the same person who unlocked the car.
 
 ## Hardware
 
@@ -68,11 +72,13 @@ ESP32 powered via USB from the Raspberry Pi.
 | Present | Closer than 20 cm for 3 readings in a row (one reading every 100 ms) |
 | Gone | 30 cm or farther, or no echo, for 3 readings in a row (20–30 cm keeps the current state) |
 | Trigger | Present and armed → `requestAuth()` |
-| After an authorized unlock | If the person is still present 5 s later and the engine is off, `START_AUTH IGNITION` is sent automatically |
+| After an authorized unlock | If the person is still present 5 s later and the engine is off, `START_AUTH IGNITION <request_id>` is sent automatically |
 | After any other result | No new scan until the person leaves or 10 s pass, so someone standing there doesn't loop scans |
 | Paused | While the stepper moves, a scan is pending, or the engine runs |
 
-The Pi's `STOP`, `LOCK` and `UNLOCK` commands also start the 10 s wait, so a person still standing there isn't scanned straight away.
+The Pi's `STOP`, `LOCK` and `UNLOCK` commands cancel any pending authentication
+and automatic ignition schedule. They also start the 10 s wait, so a person
+still standing there is not scanned straight away.
 
 ## LCD
 
@@ -85,19 +91,37 @@ The display only rewrites a line when its text changes.
 
 ## Serial Protocol
 
-115200 baud, one command per line, newline-terminated, case-insensitive.
+115200 baud, one command per line and newline-terminated. Command names are
+case-insensitive. The ESP32 generates each request ID as exactly 16 uppercase
+hexadecimal characters: an 8-character random boot nonce followed by an
+8-character counter. The Pi must echo that ID unchanged.
 
 | Direction | Line | Meaning |
 |---|---|---|
-| ESP32 → Pi | `START_AUTH UNLOCK` / `START_AUTH IGNITION` | Person detected; run face recognition |
-| Pi → ESP32 | `AUTH_PENDING` | Scan started; restarts the 30 s wait timer |
-| Pi → ESP32 | `AUTHORIZED` | Face authorized; ESP32 unlocks or starts the engine |
-| Pi → ESP32 | `UNAUTHORIZED` | A face was seen but didn't match an allowed user; nothing moves |
-| Pi → ESP32 | `DENIED` | Refused without a match (no face, lockout, cooldown); nothing moves |
-| Pi → ESP32 | `BUSY` | Pi is already running another scan |
-| Pi → ESP32 | `ERROR` | Pi could not run the scan |
+| ESP32 → Pi | `START_AUTH UNLOCK <request_id>` / `START_AUTH IGNITION <request_id>` | Person detected; run face recognition |
+| Pi → ESP32 | `AUTH_PENDING <request_id>` | Scan started; restarts the 30 s wait timer |
+| Pi → ESP32 | `AUTHORIZED <request_id>` | Face authorized; ESP32 accepts the requested action |
+| Pi → ESP32 | `UNAUTHORIZED <request_id>` | A face was seen but did not match an allowed user; nothing moves |
+| Pi → ESP32 | `DENIED <request_id>` | Refused without a match (no face, lockout, cooldown); nothing moves |
+| Pi → ESP32 | `BUSY <request_id>` | Pi is already running another scan |
+| Pi → ESP32 | `ERROR <request_id>` | Pi could not run the scan |
+| ESP32 → Pi | `AUTH_ACK <request_id>` | Matching `AUTHORIZED` was accepted and the action was started |
+| ESP32 → Pi | `AUTH_CANCEL <request_id>` | Request expired or was cancelled before authorization was accepted |
 
-Authentication replies are ignored unless a scan request is waiting for one. If the Pi does not answer within 30 seconds the ESP32 gives up and shows `Denied`.
+The firmware accepts a reply only while the matching request is waiting and has
+not expired. Untagged replies, stale IDs and late authorization are ignored.
+There is no legacy untagged fallback and no automatic retry of a grant.
+
+If the Pi does not answer within 30 seconds, the ESP32 sends `AUTH_CANCEL`,
+invalidates the request and shows `Denied`. This also happens when the Pi scan
+timeout is configured longer than the controller timeout. `STOP`, `LOCK` and
+`UNLOCK` cancel a pending request the same way.
+
+`AUTH_ACK` confirms only that the controller accepted the command. It does not
+confirm physical lock position or completed motor movement. The Pi and ESP32
+firmware must be updated together because this protocol is not compatible with
+the previous untagged messages. Raw `START`, `STOP`, `LOCK` and `UNLOCK`
+commands remain supported.
 
 ## Serial Monitor Commands
 
