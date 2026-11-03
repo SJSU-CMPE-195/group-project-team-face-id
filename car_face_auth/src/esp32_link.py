@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 import threading
+import time
 from typing import Any
 
 
@@ -17,6 +18,9 @@ _REQUEST_ID = re.compile(r"[0-9A-F]{16}\Z")
 DEFAULT_RETRY_SECONDS = 1.0
 MAX_RETRY_SECONDS = 10.0
 AUTH_ACK_TIMEOUT_SECONDS = 2.0
+STATUS_INTERVAL_SECONDS = 3.0
+STATUS_STALE_SECONDS = 9.0
+_LOCK_STATES = frozenset(("LOCKED", "UNLOCKED", "LOCKING", "UNLOCKING"))
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,35 @@ def parse_line(raw: bytes) -> tuple[str, str, str | None] | None:
     return None
 
 
+def parse_state(raw: bytes) -> tuple[str, str] | None:
+    """Read controller output state, not physical actuator feedback."""
+
+    if not isinstance(raw, bytes) or not raw.endswith(b"\n"):
+        return None
+    try:
+        parts = raw.decode("ascii").strip().split()
+    except UnicodeDecodeError:
+        return None
+    if (
+        len(parts) != 4
+        or parts[:2] != ["STATE", "1"]
+        or parts[2] not in _LOCK_STATES
+        or parts[3] not in {"ON", "OFF"}
+    ):
+        return None
+    return parts[2].lower(), parts[3].lower()
+
+
+def unknown_controller_state() -> dict[str, str | bool | int | None]:
+    return {
+        "lock": "unknown",
+        "ignition": "unknown",
+        "moving": None,
+        "fresh": False,
+        "age_ms": None,
+    }
+
+
 class Esp32Link:
     """Keep the reader free to receive ACKs while a scan worker waits for one."""
 
@@ -77,6 +110,31 @@ class Esp32Link:
         self._connection: Any = None
         self._pending: PendingAck | None = None
         self._cancelled_request_id: str | None = None
+        self._controller_state: tuple[str, str] | None = None
+        self._controller_received_at: float | None = None
+
+    def controller_status(self) -> dict[str, str | bool | int | None]:
+        with self._lock:
+            status = unknown_controller_state()
+            if self._controller_received_at is None:
+                return status
+            age = max(0.0, time.monotonic() - self._controller_received_at)
+            status["age_ms"] = int(age * 1000)
+            if (
+                self._connection is None
+                or self._stop.is_set()
+                or self._controller_state is None
+                or age >= STATUS_STALE_SECONDS
+            ):
+                return status
+            lock, ignition = self._controller_state
+            status.update(
+                lock=lock,
+                ignition=ignition,
+                moving=lock in {"locking", "unlocking"},
+                fresh=True,
+            )
+            return status
 
     def start(self) -> None:
         if self._thread is not None:
@@ -101,6 +159,8 @@ class Esp32Link:
                 return
             self._connection = None
             self._cancelled_request_id = None
+            self._controller_state = None
+            self._controller_received_at = None
             if self._pending is not None:
                 self._pending.accepted = False
                 self._pending.done.set()
@@ -157,6 +217,7 @@ class Esp32Link:
 
     def _run(self) -> None:
         delay = self._retry_seconds
+        next_status_at = 0.0
         while not self._stop.is_set():
             connection = None
             try:
@@ -174,7 +235,20 @@ class Esp32Link:
                     with self._lock:
                         self._connection = connection
                     self._runtime.sync_esp32_state()
+                    next_status_at = 0.0
+                now = time.monotonic()
+                if now >= next_status_at:
+                    if not self._runtime.request_esp32_status(connection):
+                        raise RuntimeError("ESP32 status query failed")
+                    next_status_at = now + STATUS_INTERVAL_SECONDS
                 raw = connection.readline()
+                state = parse_state(raw)
+                if state is not None:
+                    with self._lock:
+                        if connection is self._connection and not self._stop.is_set():
+                            self._controller_state = state
+                            self._controller_received_at = time.monotonic()
+                    continue
                 message = parse_line(raw)
                 if message is None or self._stop.is_set():
                     continue

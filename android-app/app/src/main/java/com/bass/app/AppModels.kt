@@ -90,6 +90,43 @@ data class DeviceInfo(
     val protocolVersion: Int = 4,
 )
 
+enum class ControllerLockState {
+    LOCKED,
+    UNLOCKED,
+    LOCKING,
+    UNLOCKING,
+    UNKNOWN,
+}
+
+enum class ControllerIgnitionState {
+    ON,
+    OFF,
+    UNKNOWN,
+}
+
+data class ControllerState(
+    val lock: ControllerLockState = ControllerLockState.UNKNOWN,
+    val ignition: ControllerIgnitionState = ControllerIgnitionState.UNKNOWN,
+    val moving: Boolean? = null,
+    val fresh: Boolean = false,
+    val ageMillis: Long? = null,
+    val requestedAtElapsedMillis: Long? = null,
+) {
+    fun freshnessRemainingAt(nowElapsedMillis: Long): Long {
+        val serverAge = ageMillis ?: return 0L
+        val requestedAt = requestedAtElapsedMillis ?: return 0L
+        if (!fresh || nowElapsedMillis < requestedAt) return 0L
+        val localAge = nowElapsedMillis - requestedAt
+        if (serverAge >= CONTROLLER_STATUS_STALE_MILLIS) return 0L
+        return (CONTROLLER_STATUS_STALE_MILLIS - serverAge - localAge).coerceAtLeast(0L)
+    }
+
+    fun isFreshAt(nowElapsedMillis: Long): Boolean =
+        freshnessRemainingAt(nowElapsedMillis) > 0L
+}
+
+private const val CONTROLLER_STATUS_STALE_MILLIS = 9_000L
+
 data class DeviceStatus(
     val locked: Boolean = true,
     val ignitionOn: Boolean = false,
@@ -102,6 +139,7 @@ data class DeviceStatus(
     val physicalStateConfirmed: Boolean = false,
     val cameraSource: String = "unknown",
     val localControls: Boolean = false,
+    val controller: ControllerState = ControllerState(),
 )
 
 data class Capabilities(

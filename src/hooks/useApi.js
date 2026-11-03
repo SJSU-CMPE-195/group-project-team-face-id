@@ -65,6 +65,8 @@ export default function useApi(baseUrl) {
       });
 
     return {
+      pairingQr: (signal) =>
+        fetchJson("/local/pairing-qr", { signal }, expireSession),
       status: () => get("/api/status"),
       deviceInfo: () => get("/api/device-info"),
       me: () => get("/api/me"),

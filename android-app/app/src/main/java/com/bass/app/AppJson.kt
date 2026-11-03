@@ -3,7 +3,10 @@ package com.bass.app
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal fun JSONObject.deviceStatus(capabilities: Capabilities): DeviceStatus {
+internal fun JSONObject.deviceStatus(
+    capabilities: Capabilities,
+    requestedAtElapsedMillis: Long,
+): DeviceStatus {
     val runtime = optJSONObject("runtime")
     return DeviceStatus(
         locked = optString("lockState") == "locked",
@@ -28,6 +31,57 @@ internal fun JSONObject.deviceStatus(capabilities: Capabilities): DeviceStatus {
         localControls =
             runtime?.optBoolean("local_controls", capabilities.localControls)
                 ?: capabilities.localControls,
+        controller =
+            runtime?.controllerState(requestedAtElapsedMillis) ?: ControllerState(),
+    )
+}
+
+private fun JSONObject.controllerState(requestedAtElapsedMillis: Long): ControllerState {
+    val raw = optJSONObject("controller_state") ?: return ControllerState()
+    val lock =
+        when (raw.opt("lock")) {
+            "locked" -> ControllerLockState.LOCKED
+            "unlocked" -> ControllerLockState.UNLOCKED
+            "locking" -> ControllerLockState.LOCKING
+            "unlocking" -> ControllerLockState.UNLOCKING
+            "unknown" -> ControllerLockState.UNKNOWN
+            else -> return ControllerState()
+        }
+    val ignition =
+        when (raw.opt("ignition")) {
+            "on" -> ControllerIgnitionState.ON
+            "off" -> ControllerIgnitionState.OFF
+            "unknown" -> ControllerIgnitionState.UNKNOWN
+            else -> return ControllerState()
+        }
+    val moving =
+        when (val value = raw.opt("moving")) {
+            is Boolean -> value
+            null, JSONObject.NULL -> null
+            else -> return ControllerState()
+        }
+    val fresh = raw.opt("fresh") as? Boolean ?: return ControllerState()
+    val ageMillis =
+        when (val value = raw.opt("age_ms")) {
+            is Byte, is Short, is Int, is Long ->
+                (value as Number).toLong().takeIf { it >= 0L } ?: return ControllerState()
+            null, JSONObject.NULL -> null
+            else -> return ControllerState()
+        }
+    val expectedMoving =
+        when (lock) {
+            ControllerLockState.LOCKED, ControllerLockState.UNLOCKED -> false
+            ControllerLockState.LOCKING, ControllerLockState.UNLOCKING -> true
+            ControllerLockState.UNKNOWN -> null
+        }
+    if (moving != expectedMoving || (fresh && ageMillis == null)) return ControllerState()
+    return ControllerState(
+        lock = lock,
+        ignition = ignition,
+        moving = moving,
+        fresh = fresh,
+        ageMillis = ageMillis,
+        requestedAtElapsedMillis = requestedAtElapsedMillis,
     )
 }
 

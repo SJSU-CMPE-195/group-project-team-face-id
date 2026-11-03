@@ -110,7 +110,7 @@ the connected motors, sensor, LCD, serial link, or physical lock work.
 | Present | Closer than 20 cm for 3 readings in a row (one reading every 100 ms) |
 | Gone | 30 cm or farther, or no echo, for 3 readings in a row (20–30 cm keeps the current state) |
 | Trigger | Present and armed → `requestAuth()` |
-| After an authorized unlock | If the person is still present 5 s later and the engine is off, `START_AUTH IGNITION <request_id>` is sent automatically |
+| After an authorized unlock | Once the 5 s delay has elapsed and lock movement has finished, exactly one `START_AUTH IGNITION <request_id>` is sent automatically, even if the person has left sensor range |
 | After any other result | No new scan until the person leaves or 10 s pass, so someone standing there doesn't loop scans |
 | Paused | While the stepper moves, a scan is pending, or the engine runs |
 
@@ -145,6 +145,8 @@ hexadecimal characters: an 8-character random boot nonce followed by an
 | Pi → ESP32 | `ERROR <request_id>` | Pi could not run the scan |
 | ESP32 → Pi | `AUTH_ACK <request_id>` | Matching `AUTHORIZED` was accepted and the action was started |
 | ESP32 → Pi | `AUTH_CANCEL <request_id>` | Request expired or was cancelled before authorization was accepted |
+| Pi → ESP32 | `STATUS` | Request the controller's current lock target/movement and ignition-output state |
+| ESP32 → Pi | `STATE 1 <lock> <ignition>` | Version 1 controller state; lock is `LOCKED`, `UNLOCKED`, `LOCKING`, or `UNLOCKING`, and ignition is `ON` or `OFF` |
 
 The firmware accepts a reply only while the matching request is waiting and has
 not expired. Untagged replies, stale IDs and late authorization are ignored.
@@ -161,6 +163,12 @@ firmware must be updated together because this protocol is not compatible with
 the previous untagged messages. Raw `START`, `STOP`, `LOCK` and `UNLOCK`
 commands remain supported.
 
+The ESP32 emits `STATE 1 ...` at boot, when actuator output state changes, when
+lock movement starts or completes, and in response to an exact `STATUS` command.
+It reports the controller's commanded state: the stepper target and movement flag
+plus the DC motor output flag. The prototype has no position or rotation sensors,
+so this status does not confirm physical lock position or motor movement.
+
 ## Serial Monitor Commands
 
 Open Serial Monitor at **115200 baud** with line ending set to **Newline**.
@@ -172,6 +180,7 @@ Open Serial Monitor at **115200 baud** with line ending set to **Newline**.
 | `speed X` | Set engine motor speed (0–255) |
 | `lock` | Move lock to the locked position (no-op if already locked) |
 | `unlock` | Move lock to the unlocked position (no-op if already unlocked) |
+| `status` | Print `STATE 1 <LOCK> <IGNITION>` for the current controller state |
 
 The lock uses absolute stepper positions, so sending `lock` or `unlock` twice does not over-rotate. The last completed lock position is saved in the ESP32's flash (`Preferences`, namespace `carlock`) and restored at boot without moving, so a reset, a replug, or the Pi opening the port doesn't move the lock. On the very first boot after flashing nothing is saved yet and the sketch assumes unlocked, so place the stepper in the unlocked position (or type `unlock` once) before then. If power is cut mid-move, the ESP32 restores the last completed position.
 

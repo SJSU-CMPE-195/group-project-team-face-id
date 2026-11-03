@@ -53,7 +53,7 @@ const unsigned long ECHO_TIMEOUT_US = 25000;
 
 // After a result, wait for the person to leave (or this long) before scanning again
 const unsigned long REARM_MS = 10000;
-// After an authorized unlock, start the ignition scan if the person is still there
+// Delay the second scan after authorized unlock, independent of presence.
 const unsigned long AUTO_IGNITION_MS = 5000;
 // How long a result stays on the LCD before going back to "Ready"
 const unsigned long RESULT_SHOW_MS = 3000;
@@ -95,6 +95,20 @@ bool lcdReady = false;
 char lcdLines[2][17] = {"", ""};
 const char* resultText = nullptr;
 unsigned long resultShownAt = 0;
+
+const char* controllerLockState() {
+  if (stepperMoving) {
+    return locked ? "LOCKING" : "UNLOCKING";
+  }
+  return locked ? "LOCKED" : "UNLOCKED";
+}
+
+void sendControllerState() {
+  Serial.print("STATE 1 ");
+  Serial.print(controllerLockState());
+  Serial.print(" ");
+  Serial.println(motorRunning ? "ON" : "OFF");
+}
 
 void setup() {
   Serial.begin(115200);
@@ -141,20 +155,29 @@ void setup() {
   Serial.println("Walking up sends START_AUTH <purpose> <request_id>");
   Serial.println(locked ? "Restored state: Locked" : "Restored state: Unlocked");
   updateLcd();
+  sendControllerState();
 }
 
 void engineOn() {
+  bool changed = !motorRunning;
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
   ledcWrite(ENA, currentSpeed);
   motorRunning = true;
+  if (changed) {
+    sendControllerState();
+  }
 }
 
 void engineOff() {
+  bool changed = motorRunning;
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
   ledcWrite(ENA, 0);
   motorRunning = false;
+  if (changed) {
+    sendControllerState();
+  }
 }
 
 void releaseStepper() {
@@ -174,6 +197,7 @@ bool lockCar() {
   lockMotor.moveTo(LOCKED_POSITION);
   locked = true;
   stepperMoving = true;
+  sendControllerState();
   return true;
 }
 
@@ -187,6 +211,7 @@ bool unlockCar() {
   lockMotor.moveTo(UNLOCKED_POSITION);
   locked = false;
   stepperMoving = true;
+  sendControllerState();
   return true;
 }
 
@@ -281,7 +306,6 @@ void pollSensor() {
     Serial.printf("Presence detected (%.0f cm)\n", cm);
   } else if (personPresent && farCount >= PRESENCE_READINGS) {
     personPresent = false;
-    autoIgnitionPending = false;
     Serial.println("Person gone");
     rearmSensor();
   }
@@ -291,8 +315,8 @@ void pollSensor() {
       return;
     }
     autoIgnitionPending = false;
-    if (personPresent && !locked) {
-      Serial.println("Still present; starting ignition scan");
+    if (!locked && !stepperMoving && !motorRunning) {
+      Serial.println("Starting scheduled ignition scan");
       requestAuth();
     }
     return;
@@ -505,7 +529,10 @@ void handleLine(String cmd) {
     return;
   }
 
-  if (cmd == "START" || cmd == "ON") {
+  if (cmd == "STATUS") {
+    sendControllerState();
+
+  } else if (cmd == "START" || cmd == "ON") {
     engineOn();
     Serial.println("Engine ON");
 
@@ -548,7 +575,7 @@ void handleLine(String cmd) {
     } else if (startsWithAuthReply(cmd)) {
       Serial.println("Ignored authentication reply: expected command plus request ID");
     } else {
-      Serial.println("Unknown command. Use: START, STOP, SPEED X, LOCK, UNLOCK");
+      Serial.println("Unknown command. Use: STATUS, START, STOP, SPEED X, LOCK, UNLOCK");
     }
 
   }
@@ -563,6 +590,7 @@ void loop() {
       releaseStepper();
       lockStore.putBool("locked", locked);
       Serial.println(locked ? "Locked" : "Unlocked");
+      sendControllerState();
     }
   }
 
