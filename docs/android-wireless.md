@@ -525,8 +525,10 @@ the current serial connection and discarded when it closes. Older firmware
 without this extension produces unknown controller status, not a fallback to
 the last host command. See the [firmware protocol](../ESP32_Program/ReadMe.md#serial-protocol).
 
-Android shows fresh controller reports on Pi and continues lightweight status
-refresh through the same serialized connection while an enrollment operation
+Android shows fresh controller reports on Pi. While connected it refreshes
+`/api/status` about every 1.5 seconds and the full snapshot (users, faces,
+devices, logs) about every 10 seconds, reading status last. Status-only refresh
+continues through the same serialized connection while an enrollment operation
 is busy. Missing, invalid, disconnected or expired reports show unknown status.
 Elapsed phone time since the status request began also ages a report, including
 request queuing, response delivery and full-snapshot assembly. A delayed request
@@ -539,6 +541,11 @@ ignition on means the output is enabled. A stalled or disconnected motor may
 therefore differ from this report. `physical_state_confirmed` remains false and
 `actuator_feedback` remains `unavailable` on Pi. Android labels the values as
 controller-reported and keeps physical confirmation explicitly unavailable.
+
+Auto re-lock pauses while ignition is on, because re-locking also stops the
+engine. When the engine stops (manually or by ignition auto-stop) and the car is
+still unlocked, the full re-lock countdown restarts. An unlock without ignition
+re-locks after the configured delay as before.
 
 ### Other authenticated APIs
 

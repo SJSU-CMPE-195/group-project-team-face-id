@@ -841,13 +841,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun pollConnected(client: DeviceApi, epoch: Long) {
+        // Lock/ignition changes can last only seconds, so poll the small status
+        // response often and the full snapshot (users, logs, ...) less often.
+        var lastSnapshotAt = SystemClock.elapsedRealtime()
         while (foreground && epoch == generation) {
-            delay(3000)
+            delay(STATUS_POLL_MILLIS)
             try {
-                if (state.value.busy) {
-                    loadDeviceStatus(client, epoch)
-                } else {
+                val now = SystemClock.elapsedRealtime()
+                if (!state.value.busy && now - lastSnapshotAt >= SNAPSHOT_POLL_MILLIS) {
                     loadSnapshot(client, epoch)
+                    lastSnapshotAt = SystemClock.elapsedRealtime()
+                } else {
+                    loadDeviceStatus(client, epoch)
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -1896,3 +1901,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
 private fun ApiException.retryDelayMillis(): Long =
     (retryAfterSeconds ?: 1L).coerceIn(1L, 60L) * 1000L
+
+private const val STATUS_POLL_MILLIS = 1_500L
+private const val SNAPSHOT_POLL_MILLIS = 10_000L

@@ -50,6 +50,9 @@ const float GONE_CM = 30.0;
 const int PRESENCE_READINGS = 3;
 const unsigned long SENSOR_INTERVAL_MS = 100;
 const unsigned long ECHO_TIMEOUT_US = 25000;
+// HC-SR04 minimum range is ~2 cm (~116 us). Shorter pulses are noise, e.g. a
+// floating ECHO line when the sensor is unplugged, not a person.
+const unsigned long MIN_ECHO_US = 116;
 
 // After a result, wait for the person to leave (or this long) before scanning again
 const unsigned long REARM_MS = 10000;
@@ -131,7 +134,8 @@ void setup() {
   // Distance sensor
   pinMode(TRIG_PIN, OUTPUT);
   digitalWrite(TRIG_PIN, LOW);
-  pinMode(ECHO_PIN, INPUT);
+  // Pull-down keeps ECHO LOW (no echo) if the sensor is unplugged instead of floating
+  pinMode(ECHO_PIN, INPUT_PULLDOWN);
 
   // RS must read HIGH here. LOW means the RS line is shorted to GND:
   // don't drive into it, and keep the car working without the LCD.
@@ -255,14 +259,17 @@ void updateLcd() {
 // ── Presence sensor ──────────────────────────────────────────────────────
 
 // Returns distance in cm, or -1 if no echo (nothing in range)
+// Returns -1 for no valid echo, which counts toward "gone"
 float readDistanceCm() {
+  // A working sensor idles ECHO LOW; HIGH before triggering means a bad or floating line
+  if (digitalRead(ECHO_PIN) == HIGH) return -1;
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
   unsigned long us = pulseIn(ECHO_PIN, HIGH, ECHO_TIMEOUT_US);
-  if (us == 0) return -1;
+  if (us < MIN_ECHO_US) return -1;  // timeout (0) or noise glitch
   return us / 58.0;
 }
 

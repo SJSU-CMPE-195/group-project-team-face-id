@@ -108,7 +108,8 @@ the connected motors, sensor, LCD, serial link, or physical lock work.
 | Rule | Behaviour |
 |---|---|
 | Present | Closer than 20 cm for 3 readings in a row (one reading every 100 ms) |
-| Gone | 30 cm or farther, or no echo, for 3 readings in a row (20–30 cm keeps the current state) |
+| Gone | 30 cm or farther, or no valid echo, for 3 readings in a row (20–30 cm keeps the current state) |
+| No valid echo | No echo within 25 ms, an echo shorter than ~2 cm (116 µs), or ECHO already HIGH before the trigger. GPIO33 uses the internal pull-down, so an unplugged sensor reads as nobody present instead of triggering scans from noise |
 | Trigger | Present and armed → `requestAuth()` |
 | After an authorized unlock | Once the 5 s delay has elapsed and lock movement has finished, exactly one `START_AUTH IGNITION <request_id>` is sent automatically, even if the person has left sensor range |
 | After any other result | No new scan until the person leaves or 10 s pass, so someone standing there doesn't loop scans |

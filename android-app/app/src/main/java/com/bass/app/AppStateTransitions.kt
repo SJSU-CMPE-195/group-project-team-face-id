@@ -135,18 +135,22 @@ internal suspend fun DeviceApi.readSnapshot(
     ) {
         throw DeviceIdentityException("Device identity mismatch")
     }
+    val faces = json("/api/face-status").faceStatus()
+    val users = array("/api/users").users(faces.enrolledNames)
+    val pairedDevices =
+        if (identity.user.isAdmin) array("/api/devices").devices() else emptyList()
+    val logs = array("/api/logs").logs()
+    // Read status last so the other requests don't age the controller report.
     val statusRequestedAtElapsedMillis = SystemClock.elapsedRealtime()
     val status = json("/api/status")
-    val faces = json("/api/face-status").faceStatus()
     return DeviceSnapshot(
         identity = identity,
         status = status,
         statusRequestedAtElapsedMillis = statusRequestedAtElapsedMillis,
         faces = faces,
-        users = array("/api/users").users(faces.enrolledNames),
-        pairedDevices =
-            if (identity.user.isAdmin) array("/api/devices").devices() else emptyList(),
-        logs = array("/api/logs").logs(),
+        users = users,
+        pairedDevices = pairedDevices,
+        logs = logs,
     )
 }
 
