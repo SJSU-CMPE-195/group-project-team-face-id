@@ -41,6 +41,10 @@ class RuntimeActuation:
         self._unlock_owner_id: str | None = None
         self._generation = 0
         self._auto_relock_timer: threading.Timer | None = None
+        # Relock delay of the current unlock, kept so it can restart after the
+        # engine stops (the timer is paused while ignition is on).
+        self._relock_seconds = 0
+        self._relock_user_id: str | None = None
         self._ignition_stop_timer: threading.Timer | None = None
         self._maintenance_requested = threading.Event()
         self._maintenance = False
@@ -135,8 +139,12 @@ class RuntimeActuation:
                 return self._error(f"{command} command was not sent")
 
             self._ignition_on = running
-            if not running:
+            if running:
+                # Never relock (which also stops the engine) while it runs.
+                self._cancel_auto_relock()
+            else:
                 self._cancel_ignition_stop()
+                self._restart_auto_relock()
             action = "start" if running else "stop"
             self._log(
                 "ignition",
@@ -425,7 +433,11 @@ class RuntimeActuation:
     ) -> None:
         if seconds <= 0:
             self._cancel_auto_relock()
+            self._relock_seconds = 0
+            self._relock_user_id = None
             return
+        self._relock_seconds = seconds
+        self._relock_user_id = user_id
         previous_timer = self._auto_relock_timer
         timer = None
 
@@ -498,6 +510,25 @@ class RuntimeActuation:
         if previous_timer:
             previous_timer.cancel()
 
+    def _restart_auto_relock(self) -> None:
+        """Restart the relock countdown paused by ignition, if still unlocked."""
+        if self._relock_seconds <= 0 or self._auto_relock_timer is not None:
+            return
+        try:
+            if self._db.get_status().get("lockState") == "locked":
+                return
+            self._arm_auto_relock(
+                self._relock_seconds,
+                user_id=self._relock_user_id,
+            )
+        except Exception as exc:
+            self._log(
+                "lock",
+                "fail",
+                f"auto-relock could not be restarted after ignition stop: {exc}",
+                self._relock_user_id,
+            )
+
     def _cancel_auto_relock(self) -> None:
         timer, self._auto_relock_timer = self._auto_relock_timer, None
         if timer:
@@ -514,6 +545,8 @@ class RuntimeActuation:
 
     def _mark_locked(self) -> None:
         self._ignition_on = False
+        self._relock_seconds = 0
+        self._relock_user_id = None
         self._clear_owner()
 
     @staticmethod

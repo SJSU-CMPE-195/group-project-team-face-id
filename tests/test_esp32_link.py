@@ -27,6 +27,11 @@ class SerialProbe:
         self.authorization_sent = threading.Event()
         self.fail_commands = set()
 
+    @property
+    def control_writes(self):
+        """Keep read-only polling out of authentication/actuation assertions."""
+        return [payload for payload in self.writes if payload != b"STATUS\n"]
+
     def readline(self):
         try:
             value = self.incoming.get(timeout=0.02)
@@ -158,7 +163,7 @@ class Esp32LinkTests(unittest.TestCase):
         self.assertEqual(self.db.lock_state, "unlocked")
         self.assertFalse(session["physical_state_confirmed"])
         self.assertEqual(
-            self.serial.writes,
+            self.serial.control_writes,
             [f"AUTH_PENDING {REQUEST_ID}\n".encode("ascii"),
              f"AUTHORIZED {REQUEST_ID}\n".encode("ascii")],
         )
@@ -279,7 +284,7 @@ class Esp32LinkTests(unittest.TestCase):
         self.assertFalse(self.link.reply(old_request, "AUTHORIZED"))
         self.assertFalse(self.link.authorize(old_request))
         self.assertFalse(self.runtime.send_esp32_reply("AUTHORIZED", old_request))
-        self.assertEqual(self.serial.writes, [])
+        self.assertEqual(self.serial.control_writes, [])
         self.assertTrue(self.serial.is_open)
 
     def test_disconnect_wakes_pending_grant_without_persisting_unlock(self):

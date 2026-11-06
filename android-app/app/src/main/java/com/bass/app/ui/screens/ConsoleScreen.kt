@@ -1,5 +1,6 @@
 package com.bass.app.ui.screens
 
+import android.os.SystemClock
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -10,6 +11,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -17,11 +23,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.bass.app.AppViewModel
 import com.bass.app.BassState
+import com.bass.app.ControllerIgnitionState
+import com.bass.app.ControllerLockState
+import com.bass.app.ControllerState
 import com.bass.app.R
 import com.bass.app.ui.components.BassCard
 import com.bass.app.ui.components.ChipTone
 import com.bass.app.ui.components.SectionTitle
 import com.bass.app.ui.components.StatusChip
+import kotlinx.coroutines.delay
 
 @Composable
 fun ConsoleScreen(
@@ -29,12 +39,26 @@ fun ConsoleScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
 ) {
+    val controller = state.status?.controller ?: ControllerState()
+    var nowElapsedMillis by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    LaunchedEffect(
+        controller.requestedAtElapsedMillis,
+        controller.ageMillis,
+        controller.fresh,
+    ) {
+        nowElapsedMillis = SystemClock.elapsedRealtime()
+        val freshForMillis = controller.freshnessRemainingAt(nowElapsedMillis)
+        if (freshForMillis > 0L) {
+            delay(freshForMillis)
+            nowElapsedMillis = SystemClock.elapsedRealtime()
+        }
+    }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { CurrentStateCard(state) }
+        item { CurrentStateCard(state, nowElapsedMillis) }
         item { StatusMetrics(state) }
         item { CameraContextCard(state) }
         item { ConnectionCard(state, viewModel::requestForgetDevice) }
@@ -42,8 +66,44 @@ fun ConsoleScreen(
 }
 
 @Composable
-private fun CurrentStateCard(state: BassState) {
+private fun CurrentStateCard(state: BassState, nowElapsedMillis: Long) {
     val status = state.status
+    val controller = status?.controller ?: ControllerState()
+    val simulated = status?.simulatedActuator == true
+    val controllerFresh = controller.isFreshAt(nowElapsedMillis)
+    val lockLabel =
+        when {
+            simulated ->
+                if (status?.locked == true) R.string.status_locked else R.string.status_unlocked
+            !controllerFresh -> R.string.console_unknown
+            else ->
+                when (controller.lock) {
+                    ControllerLockState.LOCKED -> R.string.status_locked
+                    ControllerLockState.UNLOCKED -> R.string.status_unlocked
+                    ControllerLockState.LOCKING -> R.string.status_locking
+                    ControllerLockState.UNLOCKING -> R.string.status_unlocking
+                    ControllerLockState.UNKNOWN -> R.string.console_unknown
+                }
+        }
+    val ignitionLabel =
+        when {
+            simulated ->
+                if (status?.ignitionOn == true) {
+                    R.string.status_ignition_on
+                } else {
+                    R.string.status_ignition_off
+                }
+            !controllerFresh -> R.string.status_ignition_unknown
+            else ->
+                when (controller.ignition) {
+                    ControllerIgnitionState.ON -> R.string.status_ignition_on
+                    ControllerIgnitionState.OFF -> R.string.status_ignition_off
+                    ControllerIgnitionState.UNKNOWN -> R.string.status_ignition_unknown
+                }
+        }
+    val ignitionOn =
+        if (simulated) status?.ignitionOn == true
+        else controllerFresh && controller.ignition == ControllerIgnitionState.ON
     BassCard {
         SectionTitle(
             title = stringResource(R.string.console_current_state),
@@ -54,23 +114,35 @@ private fun CurrentStateCard(state: BassState) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text =
-                    if (status?.locked != false) {
-                        stringResource(R.string.status_locked)
-                    } else {
-                        stringResource(R.string.status_unlocked)
-                    },
+                text = stringResource(lockLabel),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
             )
             StatusChip(
-                text =
-                    if (status?.ignitionOn == true) {
-                        stringResource(R.string.status_ignition_on)
-                    } else {
-                        stringResource(R.string.status_ignition_off)
+                text = stringResource(ignitionLabel),
+                tone =
+                    when {
+                        ignitionOn -> ChipTone.SUCCESS
+                        !simulated &&
+                            (!controllerFresh ||
+                                controller.ignition == ControllerIgnitionState.UNKNOWN) ->
+                            ChipTone.WARNING
+                        else -> ChipTone.DEFAULT
                     },
-                tone = if (status?.ignitionOn == true) ChipTone.SUCCESS else ChipTone.DEFAULT,
+            )
+        }
+        if (!simulated) {
+            Text(
+                text =
+                    stringResource(
+                        if (controllerFresh) {
+                            R.string.console_controller_reported
+                        } else {
+                            R.string.console_controller_unavailable
+                        }
+                    ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
             )
         }
         Text(

@@ -12,6 +12,7 @@
 constexpr int LOW = 0;
 constexpr int HIGH = 1;
 constexpr int INPUT = 0;
+constexpr int INPUT_PULLDOWN = 9;
 constexpr int OUTPUT = 1;
 constexpr int INPUT_PULLUP = 2;
 

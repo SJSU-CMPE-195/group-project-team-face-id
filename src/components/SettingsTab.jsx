@@ -3,10 +3,11 @@ import Card from "./Card";
 import Input from "./Input";
 import Switch from "./Switch";
 import Btn from "./Btn";
+import DevicePairingCard from "./DevicePairingCard.jsx";
 
 export default function SettingsTab({ settings, setSettings, busy, saveSettings, isAdmin, livenessAvailable }) {
   return (
-    <div className="max-w-2xl">
+    <div className="max-w-2xl space-y-4">
       <Card>
         <div className="text-sm font-semibold text-slate-100">Core settings</div>
 
@@ -129,6 +130,7 @@ export default function SettingsTab({ settings, setSettings, busy, saveSettings,
           </div> : null}
         </div>
       </Card>
+      {isAdmin ? <DevicePairingCard /> : null}
     </div>
   );
 }
