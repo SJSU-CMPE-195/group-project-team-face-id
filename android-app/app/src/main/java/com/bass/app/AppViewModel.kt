@@ -1,6 +1,7 @@
 package com.bass.app
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -840,21 +841,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun pollConnected(client: DeviceApi, epoch: Long) {
+        // Lock/ignition changes can last only seconds, so poll the small status
+        // response often and the full snapshot (users, logs, ...) less often.
+        var lastSnapshotAt = SystemClock.elapsedRealtime()
         while (foreground && epoch == generation) {
-            delay(3000)
-            if (!state.value.busy) {
-                try {
+            delay(STATUS_POLL_MILLIS)
+            try {
+                val now = SystemClock.elapsedRealtime()
+                if (!state.value.busy && now - lastSnapshotAt >= SNAPSHOT_POLL_MILLIS) {
                     loadSnapshot(client, epoch)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    if (error is ApiException && error.statusCode == 429) {
-                        delay(error.retryDelayMillis())
-                        continue
-                    }
-                    failConnection(error, epoch)
-                    return
+                    lastSnapshotAt = SystemClock.elapsedRealtime()
+                } else {
+                    loadDeviceStatus(client, epoch)
                 }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (error is ApiException && error.statusCode == 429) {
+                    delay(error.retryDelayMillis())
+                    continue
+                }
+                failConnection(error, epoch)
+                return
             }
         }
     }
@@ -961,6 +969,51 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             snapshotMutex.unlock()
         }
     }
+
+    private suspend fun loadDeviceStatus(client: DeviceApi, epoch: Long) {
+        val owner = pairing ?: return
+        val actorId = state.value.identity?.user?.id ?: return
+        val apiGeneration = client.generation
+        if (!isCurrentStatusContext(client, epoch, apiGeneration, owner, actorId)) return
+        if (!snapshotMutex.tryLock()) return
+        try {
+            val snapshot = ++snapshotVersion
+            val requestedAtElapsedMillis = SystemClock.elapsedRealtime()
+            val loaded = client.json("/api/status")
+            if (
+                snapshot != snapshotVersion ||
+                    !isCurrentStatusContext(client, epoch, apiGeneration, owner, actorId)
+            ) return
+            mutableState.update { current ->
+                if (
+                    isCurrentStatusContext(client, epoch, apiGeneration, owner, actorId) &&
+                        current.identity?.user?.id == actorId
+                ) {
+                    current.withDeviceStatus(loaded, requestedAtElapsedMillis)
+                } else {
+                    current
+                }
+            }
+        } finally {
+            snapshotMutex.unlock()
+        }
+    }
+
+    private fun isCurrentStatusContext(
+        client: DeviceApi,
+        epoch: Long,
+        apiGeneration: Long,
+        owner: Pairing,
+        actorId: String,
+    ): Boolean =
+        foreground &&
+            sessionLoginVerified &&
+            generation == epoch &&
+            api === client &&
+            client.generation == apiGeneration &&
+            pairing == owner &&
+            state.value.identity?.user?.id == actorId &&
+            state.value.phase == ConnectionPhase.CONNECTED
 
     private suspend fun ExclusiveDeviceApi.command(
         path: String,
@@ -1848,3 +1901,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
 private fun ApiException.retryDelayMillis(): Long =
     (retryAfterSeconds ?: 1L).coerceIn(1L, 60L) * 1000L
+
+private const val STATUS_POLL_MILLIS = 1_500L
+private const val SNAPSHOT_POLL_MILLIS = 10_000L

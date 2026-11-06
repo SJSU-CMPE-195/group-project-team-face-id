@@ -281,10 +281,18 @@ The built dashboard uses the serving backend's actual port; the development
 server forwards to its local backend. Both use that backend's loaded identity. A
 standalone `vite preview` only serves files and is not the operational dashboard.
 
-The compatibility endpoint `GET /local/pairing-qr` remains local-only and
-administrator-authenticated, but has no Settings card. A fixed public QR
-identifies a host; only successful invite-and-PIN onboarding creates a phone
-credential.
+Administrators can open **Settings → Device pairing QR → Show pairing QR**
+on the host dashboard to display the fixed public QR, device name and device ID.
+**Hide pairing QR** removes the image; a failed request or image offers **Retry**.
+The card clears when the signed-in account/session changes or the page closes.
+It uses the existing local-only, administrator-authenticated
+`GET /local/pairing-qr` endpoint. The QR remains the same across normal restarts
+while the device identity and TLS certificate are retained.
+
+A fixed public QR identifies a host; only successful invite-and-PIN onboarding
+creates a phone credential. To authorize a new phone, use **Users → Pair device**
+and scan that account's invitation. Already paired phones reuse their saved
+credentials; opening the Settings card does not issue or revoke credentials.
 
 ## Build the APK
 
@@ -404,10 +412,10 @@ application data.
 
 The on-disk `device.json` storage format remains version 1. It preserves the
 existing device ID and legacy key field, while the host emits QR protocol 3 and
-API protocol 3. The companion `device.tls.pem` stores the private key and
+API protocol 4. The companion `device.tls.pem` stores the private key and
 certificate. Restarting or updating the host does not regenerate either file.
 
-DNS-SD service `_bass._tcp` advertises the device ID and API protocol version 3,
+DNS-SD service `_bass._tcp` advertises the device ID and API protocol version 4,
 never the onboarding key or phone token. It also advertises `transport=https`.
 Android uses discovery only to find an address; it does not trust discovery as
 proof of host identity. An IP change does not require a new label.
@@ -484,6 +492,62 @@ free. `GET /api/status` reports the same actuator and liveness fields under
 feedback unavailable. PC reports available simulated controls and simulated
 feedback. `liveness_available` is currently false. The app checks identity and
 API protocol before reading state.
+
+### Controller-reported vehicle status
+
+On Pi, authenticated `GET /api/status` additionally returns
+`runtime.controller_state`. The legacy top-level `lockState` and `ignitionOn`
+remain host command state for compatible clients; they are not controller or
+physical confirmation. The new object has this shape:
+
+```json
+{
+  "lock": "unlocking",
+  "ignition": "off",
+  "moving": true,
+  "fresh": true,
+  "age_ms": 120
+}
+```
+
+`lock` is `locked`, `unlocked`, `locking`, `unlocking` or `unknown`.
+`ignition` is `on`, `off` or `unknown`. `moving` is true during lock movement,
+false at a controller-reported endpoint and null when unknown. `age_ms` is the
+elapsed time since the Pi received the report, or null before the first report
+and after a connection loss. `fresh` becomes false at nine seconds without a
+valid report; both states then become `unknown` and `moving` becomes null.
+
+The Pi queries the ESP32 with `STATUS` every three seconds using the existing
+serial writer. Firmware replies `STATE 1 <LOCK> <IGNITION>` and also reports on
+boot, lock movement start/completion and ignition output changes. Authentication
+messages and `AUTH_ACK` retain their existing meanings. Reports are scoped to
+the current serial connection and discarded when it closes. Older firmware
+without this extension produces unknown controller status, not a fallback to
+the last host command. See the [firmware protocol](../ESP32_Program/ReadMe.md#serial-protocol).
+
+Android shows fresh controller reports on Pi. While connected it refreshes
+`/api/status` about every 1.5 seconds and the full snapshot (users, faces,
+devices, logs) about every 10 seconds, reading status last. Status-only refresh
+continues through the same serialized connection while an enrollment operation
+is busy. Missing, invalid, disconnected or expired reports show unknown status.
+Elapsed phone time since the status request began also ages a report, including
+request queuing, response delivery and full-snapshot assembly. A delayed request
+therefore cannot freeze a previous value indefinitely. PC simulation continues
+to show simulated state.
+
+The stepper has no position sensor, and the ignition motor has no rotation
+sensor. Lock completion means the controller finished the requested step count;
+ignition on means the output is enabled. A stalled or disconnected motor may
+therefore differ from this report. `physical_state_confirmed` remains false and
+`actuator_feedback` remains `unavailable` on Pi. Android labels the values as
+controller-reported and keeps physical confirmation explicitly unavailable.
+
+Auto re-lock pauses while ignition is on, because re-locking also stops the
+engine. When the engine stops (manually or by ignition auto-stop) and the car is
+still unlocked, the full re-lock countdown restarts. An unlock without ignition
+re-locks after the configured delay as before.
+
+### Other authenticated APIs
 
 Existing Device API routes remain authoritative for users, permissions,
 templates, settings, logs, sessions, and local actuation. Enrollment accepts

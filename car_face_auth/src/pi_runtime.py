@@ -22,7 +22,13 @@ from .camera_capture import (
     CapturedFrame,
     SessionCameraCapture,
 )
-from .esp32_link import AUTH_REPLIES, AuthRequest, Esp32Link, valid_request_id
+from .esp32_link import (
+    AUTH_REPLIES,
+    AuthRequest,
+    Esp32Link,
+    unknown_controller_state,
+    valid_request_id,
+)
 from .runtime_authorization import AuthorizationRejected, RuntimeAuthorization
 from .runtime_actuation import RuntimeActuation
 from .runtime_safety import (
@@ -197,6 +203,11 @@ class PiRuntime:
                 "actuator_control_available": self.actuator_control_available,
                 "simulated_actuators": self.simulated_actuators,
                 "physical_state_confirmed": False,
+                "controller_state": (
+                    self._esp32_link.controller_status()
+                    if self._esp32_link is not None
+                    else unknown_controller_state()
+                ),
                 "ignitionOn": actuation.ignition_on,
                 "ignition_authorized": actuation.unlock_owner is not None,
                 "unlock_owner": actuation.unlock_owner,
@@ -1103,7 +1114,7 @@ class PiRuntime:
                 port = self._find_esp_port(self._load_modules()["list_ports"])
                 if not port:
                     raise RuntimeError("ESP32 serial device not found")
-                connection = serial_module.Serial(port, 115200, timeout=2)
+                connection = serial_module.Serial(port, 115200, timeout=1)
                 time.sleep(1)
                 reset = getattr(connection, "reset_input_buffer", None)
                 if reset:
@@ -1131,6 +1142,11 @@ class PiRuntime:
             f"{reply} {request.request_id}",
             connect=False,
             expected_connection=request.connection,
+        )
+
+    def request_esp32_status(self, connection: Any) -> bool:
+        return self._write_serial(
+            "STATUS", connect=False, expected_connection=connection,
         )
 
     def _write_serial(

@@ -159,7 +159,8 @@ curl --fail-with-body http://127.0.0.1:5055/sim/commands
 ```
 
 Expected: `granted` and a simulated `UNLOCK`; the default timer relocks after
-10 seconds. Unknown faces do not grant access. Ctrl+C stops the server.
+10 seconds (paused while ignition is on; it restarts when the engine stops).
+Unknown faces do not grant access. Ctrl+C stops the server.
 These two overrides apply only to this loopback fixture: scripted frames cannot
 prove liveness, and the fixture has no account authorization policy for lockout.
 This flow does not verify a real face or exercise the normal dashboard/Android

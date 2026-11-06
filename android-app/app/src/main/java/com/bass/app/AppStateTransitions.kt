@@ -1,5 +1,6 @@
 package com.bass.app
 
+import android.os.SystemClock
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -7,6 +8,7 @@ import org.json.JSONObject
 internal data class DeviceSnapshot(
     val identity: SessionIdentity,
     val status: JSONObject,
+    val statusRequestedAtElapsedMillis: Long,
     val faces: FaceStatus,
     val users: List<User>,
     val pairedDevices: List<PairedDevice>,
@@ -133,31 +135,48 @@ internal suspend fun DeviceApi.readSnapshot(
     ) {
         throw DeviceIdentityException("Device identity mismatch")
     }
-    val status = json("/api/status")
     val faces = json("/api/face-status").faceStatus()
+    val users = array("/api/users").users(faces.enrolledNames)
+    val pairedDevices =
+        if (identity.user.isAdmin) array("/api/devices").devices() else emptyList()
+    val logs = array("/api/logs").logs()
+    // Read status last so the other requests don't age the controller report.
+    val statusRequestedAtElapsedMillis = SystemClock.elapsedRealtime()
+    val status = json("/api/status")
     return DeviceSnapshot(
         identity = identity,
         status = status,
+        statusRequestedAtElapsedMillis = statusRequestedAtElapsedMillis,
         faces = faces,
-        users = array("/api/users").users(faces.enrolledNames),
-        pairedDevices =
-            if (identity.user.isAdmin) array("/api/devices").devices() else emptyList(),
-        logs = array("/api/logs").logs(),
+        users = users,
+        pairedDevices = pairedDevices,
+        logs = logs,
     )
 }
 
 internal fun BassState.withSnapshot(snapshot: DeviceSnapshot): BassState {
-    val runtime = snapshot.status.optJSONObject("runtime")
-    val owner = runtime?.optString("unlock_owner")?.takeIf { it.isNotBlank() && it != "null" }
-    return copy(
-        status = snapshot.status.deviceStatus(capabilities),
+    return withDeviceStatus(
+        snapshot.status,
+        snapshot.statusRequestedAtElapsedMillis,
+    ).copy(
         users = snapshot.users,
         pairedDevices = snapshot.pairedDevices,
         faceStatus = snapshot.faces,
         logs = snapshot.logs,
-        unlockOwner = owner,
         identity = snapshot.identity,
         inviteMaterial = inviteMaterial.takeIf { snapshot.identity.user.isAdmin },
+    )
+}
+
+internal fun BassState.withDeviceStatus(
+    statusJson: JSONObject,
+    requestedAtElapsedMillis: Long,
+): BassState {
+    val runtime = statusJson.optJSONObject("runtime")
+    val owner = runtime?.optString("unlock_owner")?.takeIf { it.isNotBlank() && it != "null" }
+    return copy(
+        status = statusJson.deviceStatus(capabilities, requestedAtElapsedMillis),
+        unlockOwner = owner,
     )
 }
 
