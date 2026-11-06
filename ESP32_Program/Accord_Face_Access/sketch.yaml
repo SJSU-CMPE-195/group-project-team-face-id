@@ -1,0 +1,11 @@
+profiles:
+  accord:
+    notes: 2003 Accord relay firmware for the generic ESP32 board, linked to the Pi over UART2.
+    fqbn: esp32:esp32:esp32
+    platforms:
+      - platform: esp32:esp32 (3.3.12)
+        platform_index_url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+    libraries:
+      - LiquidCrystal (1.0.7)
+
+default_profile: accord

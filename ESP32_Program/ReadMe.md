@@ -1,5 +1,9 @@
 # ESP32 Motor Control — Car Security System
 
+> **Real car (2003 Accord, relays, GPIO UART):** use
+> [Accord_Face_Access](Accord_Face_Access/ReadMe.md) instead. This page covers the
+> motor bench firmware.
+
 This sketch drives the simulated car hardware and acts as the trigger for face authentication. Walking up to the HC-SR04 distance sensor asks the Raspberry Pi to run face recognition; the Pi decides whether the face is authorized and replies; the ESP32 then moves the motors.
 
 ## Project Overview

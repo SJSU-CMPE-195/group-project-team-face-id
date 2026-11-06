@@ -42,6 +42,8 @@ PREVIEW_MAX_WIDTH = 640
 PREVIEW_JPEG_QUALITY = 75
 SESSION_TTL_SECONDS = 300
 ESP_KEYWORDS = ("CP210", "CH340", "CH341", "FTDI", "USB-SERIAL", "USB Serial", "Silicon Labs")
+# Pi 5 header UART on GPIO14/15 (dtparam=uart0=on); used when no USB ESP32 is found
+GPIO_UART_PORT = "/dev/ttyAMA0"
 HARDWARE_COOLDOWN_SECONDS = 60
 
 
@@ -67,6 +69,11 @@ class PiRuntime:
     simulated_actuators = False
     actuator_block_reason = "Actuator control is unavailable."
     liveness_available = False
+
+    @property
+    def ignition_available(self) -> bool:
+        # The Accord relay firmware has no ignition relay; set this to 0 there.
+        return os.environ.get("ESP32_IGNITION_ENABLED", "1") != "0"
 
     def __init__(self, db_api: Any, *, face_engine: Any | None = None):
         self._db = db_api
@@ -412,6 +419,8 @@ class PiRuntime:
             expected_user = canonical_name
             expected_user_id = principal_user.get("id")
         actuation = self._actuation.snapshot()
+        if purpose == "ignition" and not self.ignition_available:
+            raise RuntimeRequestError("ignition is not available on this vehicle", 409)
         if purpose == "ignition":
             # Any authorized driver may start the engine once the car has been
             # unlocked by a face scan; it need not be the person who unlocked.
@@ -768,6 +777,13 @@ class PiRuntime:
                 "command_sent": False,
                 "physical_state_confirmed": False,
             }
+        if running and not self.ignition_available:
+            return {
+                "ok": False,
+                "error": "ignition is not available on this vehicle",
+                "command_sent": False,
+                "physical_state_confirmed": False,
+            }
         if running and ignition_stop_seconds is None:
             try:
                 ignition_stop_seconds = (
@@ -1074,6 +1090,8 @@ class PiRuntime:
             desc = (getattr(port, "description", "") or "") + (getattr(port, "manufacturer", "") or "")
             if any(keyword.lower() in desc.lower() for keyword in ESP_KEYWORDS):
                 return port.device
+        if os.path.exists(GPIO_UART_PORT):
+            return GPIO_UART_PORT
         return None
 
     def _ensure_serial(self) -> Any:
