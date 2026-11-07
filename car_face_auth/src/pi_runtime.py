@@ -81,6 +81,12 @@ class PiRuntime:
         # The Accord relay firmware has no ignition relay; set this to 0 there.
         return os.environ.get("ESP32_IGNITION_ENABLED", "1") != "0"
 
+    @property
+    def lock_available(self) -> bool:
+        # On the Accord, LOCK also arms the alarm; set this to 0 so our system
+        # never locks (automatic or manual). The physical key is unaffected.
+        return os.environ.get("ESP32_LOCK_ENABLED", "1") != "0"
+
     def __init__(self, db_api: Any, *, face_engine: Any | None = None):
         self._db = db_api
         self._face_engine = face_engine
@@ -112,6 +118,7 @@ class PiRuntime:
             db_api,
             self._send_command,
             self._log,
+            lock_enabled=self.lock_available,
         )
         self._closed = False
         self._paused = False
@@ -202,6 +209,10 @@ class PiRuntime:
                 "actuator_feedback": self.actuator_feedback,
                 "actuator_control_available": self.actuator_control_available,
                 "simulated_actuators": self.simulated_actuators,
+                "lock_available": self.lock_available,
+                # A paired phone may lock (PIN); with lock_available false this
+                # sends SECURE, the only lock our system issues on the Accord.
+                "phone_lock_available": True,
                 "physical_state_confirmed": False,
                 "controller_state": (
                     self._esp32_link.controller_status()
@@ -821,6 +832,7 @@ class PiRuntime:
         reason: str = "manual_ui",
         *,
         actor_user_id: str | None = None,
+        manual: bool = False,
     ) -> dict[str, Any]:
         """Cancel work and report lock only after both commands are sent."""
         with self._lock:
@@ -836,6 +848,7 @@ class PiRuntime:
             reason,
             actor_user_id=actor_user_id,
             actor_kind="user" if actor_user_id else "system",
+            manual=manual,
         )
         # A stuck camera teardown must not delay STOP/LOCK command dispatch.
         camera_closed = self._close_camera()
@@ -1130,7 +1143,7 @@ class PiRuntime:
             return connection
 
     def _send_command(self, command: str, connect: bool = True) -> bool:
-        if command not in {"UNLOCK", "LOCK", "START", "STOP"}:
+        if command not in {"UNLOCK", "LOCK", "SECURE", "START", "STOP"}:
             self._record_error("Unknown actuator command", "serial")
             return False
         return self._write_serial(command, connect=connect)

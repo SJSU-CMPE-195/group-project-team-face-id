@@ -64,6 +64,11 @@ const unsigned long RESULT_SHOW_MS = 3000;
 // Bench testing from a laptop. Auth replies are only ever accepted from the Pi.
 const bool ALLOW_USB_COMMANDS = true;
 
+// Plain LOCK (what the Pi sends automatically) and USB ARM are ignored, so our
+// system never locks or arms this car on its own. SECURE is sent only for a
+// PIN-authorized phone Lock and runs lock + arm. The physical key is unaffected.
+const bool ALLOW_LOCK = false;
+
 LiquidCrystal lcd(LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
 
 // Last completed lock sequence, saved so a reset doesn't forget it. The car
@@ -166,6 +171,9 @@ void setup() {
 
   report("=== Accord Face Access ===");
   Serial.println("Commands: lock, unlock, stop, status (USB also: disarm, arm)");
+  if (!ALLOW_LOCK) {
+    Serial.println("Plain LOCK/ARM ignored (ALLOW_LOCK = false); SECURE (phone lock) locks and arms");
+  }
   Serial.println("Walking up sends START_AUTH UNLOCK <request_id> to the Pi");
   report(locked ? "Restored state: Locked" : "Restored state: Unlocked");
   updateLcd();
@@ -531,9 +539,19 @@ void handleLine(char* line, bool fromPi) {
     startSequence(SEQ_ENTRY);
     disarmSensor();
 
-  } else if (strcmp(start, "LOCK") == 0 || strcmp(start, "SECURE") == 0) {
-    cancelPendingAuth("manual LOCK");
+  } else if (strcmp(start, "SECURE") == 0) {
+    // Phone Lock (PIN-authorized on the Pi): lock the doors and arm the alarm
+    cancelPendingAuth("manual SECURE");
     startSequence(SEQ_SECURE);
+    disarmSensor();
+
+  } else if (strcmp(start, "LOCK") == 0) {
+    cancelPendingAuth("manual LOCK");
+    if (ALLOW_LOCK) {
+      startSequence(SEQ_SECURE);
+    } else {
+      report("Locking disabled; LOCK ignored");
+    }
     disarmSensor();
 
   } else if (strcmp(start, "STOP") == 0 || strcmp(start, "OFF") == 0) {
@@ -552,7 +570,11 @@ void handleLine(char* line, bool fromPi) {
     startSequence(SEQ_DISARM);
 
   } else if (!fromPi && strcmp(start, "ARM") == 0) {
-    startSequence(SEQ_ARM);
+    if (ALLOW_LOCK) {
+      startSequence(SEQ_ARM);
+    } else {
+      report("Locking disabled; ARM ignored");
+    }
 
   } else {
     char* separator = strchr(start, ' ');

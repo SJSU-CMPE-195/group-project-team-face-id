@@ -21,8 +21,10 @@ _ACTIONS = {
     "device_revoke": "device.revoke", "user_pin": "user.pin",
     "user_role": "user.role",
 }
+# Lock is allowed from paired phones (with a PIN grant); unlock/ignition/reset
+# stay on the host dashboard.
 _LOCAL_CONTROL_ENDPOINTS = {
-    "api_scan_start", "api_lock", "api_ignition_stop", "api_full_reset",
+    "api_scan_start", "api_ignition_stop", "api_full_reset",
 }
 _SESSION_ENDPOINTS = {
     "api_scan_status", "api_scan_cancel", "api_enroll_status", "api_enroll_cancel",

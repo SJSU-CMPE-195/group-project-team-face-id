@@ -574,7 +574,12 @@ Clients cannot submit an authoritative verification result.
 
 `POST /api/scan/start` starts host-camera unlock or same-person ignition
 verification through the local dashboard after a matching operation grant.
-Phone credentials cannot request vehicle controls or their operation grants. `POST /api/unlock` is retired
+Phone credentials cannot request vehicle controls or their operation grants,
+except **Lock**: any paired user may request a `device.lock` grant with their
+PIN and call `POST /api/lock` from the Console tab. On a vehicle started with
+`ESP32_LOCK_ENABLED=0` (the Accord) this is the only lock the system issues;
+the Pi sends `STOP` + `SECURE` (lock doors and arm the alarm), while the host
+dashboard Lock returns 409. `POST /api/unlock` is retired
 and returns 410. Poll `/api/scan/status` for the result. Client/phone
 verification sources and `/api/scan/sample` uploads are rejected. Legacy
 `pi_camera` request values remain compatible with the backend camera route.
@@ -709,8 +714,10 @@ Liveness/PAD is maintained separately and its existing policy is unchanged.
   result names the account and denies access without sending an actuator command.
 - Revoke a phone, including the current phone. Its next authenticated request
   must fail; other phones remain paired. Ordinary admin cannot revoke owner phones.
-- Phones have Status, Users and Logs only. No lock/unlock/ignition/reset or Settings
-  controls are offered; old phone API calls are denied at the host too.
+- Phones have Status, Users and Logs, plus a PIN-protected **Lock** button on the
+  Console tab (shown when the host reports `phone_lock_available`). No
+  unlock/ignition/reset or Settings controls are offered; those phone API calls
+  are denied at the host too.
 - Exercise local-dashboard vehicle behavior on Pi and PC development separately.
   PC results remain simulated; Pi command delivery does not confirm motor position.
   Face success remains dependent on the separately maintained liveness policy.

@@ -122,6 +122,13 @@ def format_event(
             _for_subject(action, subject),
             outcome,
         )
+    if stage == "lock" and result == "skipped":
+        # ESP32_LOCK_ENABLED=0: only STOP was sent, the vehicle was not locked.
+        return _event(
+            "Lock skipped",
+            "Locking is disabled on this vehicle; only stop was sent.",
+            outcome,
+        )
     if stage in {"unlock", "lock"}:
         action = "Unlock" if stage == "unlock" else "Lock"
         return _event(

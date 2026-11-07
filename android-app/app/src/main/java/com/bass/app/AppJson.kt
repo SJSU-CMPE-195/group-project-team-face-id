@@ -33,6 +33,7 @@ internal fun JSONObject.deviceStatus(
                 ?: capabilities.localControls,
         controller =
             runtime?.controllerState(requestedAtElapsedMillis) ?: ControllerState(),
+        phoneLockAvailable = runtime?.optBoolean("phone_lock_available") == true,
     )
 }
 

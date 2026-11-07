@@ -140,6 +140,7 @@ data class DeviceStatus(
     val cameraSource: String = "unknown",
     val localControls: Boolean = false,
     val controller: ControllerState = ControllerState(),
+    val phoneLockAvailable: Boolean = false,
 )
 
 data class Capabilities(

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -23,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.bass.app.AppViewModel
 import com.bass.app.BassState
+import com.bass.app.ConnectionPhase
 import com.bass.app.ControllerIgnitionState
 import com.bass.app.ControllerLockState
 import com.bass.app.ControllerState
@@ -58,7 +60,7 @@ fun ConsoleScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { CurrentStateCard(state, nowElapsedMillis) }
+        item { CurrentStateCard(state, nowElapsedMillis, viewModel::lock) }
         item { StatusMetrics(state) }
         item { CameraContextCard(state) }
         item { ConnectionCard(state, viewModel::requestForgetDevice) }
@@ -66,7 +68,11 @@ fun ConsoleScreen(
 }
 
 @Composable
-private fun CurrentStateCard(state: BassState, nowElapsedMillis: Long) {
+private fun CurrentStateCard(
+    state: BassState,
+    nowElapsedMillis: Long,
+    onLock: () -> Unit,
+) {
     val status = state.status
     val controller = status?.controller ?: ControllerState()
     val simulated = status?.simulatedActuator == true
@@ -141,6 +147,21 @@ private fun CurrentStateCard(state: BassState, nowElapsedMillis: Long) {
                             R.string.console_controller_unavailable
                         }
                     ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (status?.phoneLockAvailable == true && state.phase == ConnectionPhase.CONNECTED) {
+            // Locks the doors and arms the alarm; the view model asks for the PIN.
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !state.busy,
+                onClick = onLock,
+            ) {
+                Text(stringResource(R.string.console_lock))
+            }
+            Text(
+                text = stringResource(R.string.console_lock_hint),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )

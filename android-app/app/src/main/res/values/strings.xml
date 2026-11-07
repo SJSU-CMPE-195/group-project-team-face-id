@@ -75,7 +75,9 @@
     <string name="status_enrolled">Enrolled</string>
     <string name="status_not_enrolled">No face template</string>
     <string name="console_current_state">Current state</string>
-    <string name="console_host_controls_only">Vehicle controls are available only on the trusted host.</string>
+    <string name="console_host_controls_only">Other vehicle controls are available only on the trusted host.</string>
+    <string name="console_lock">Lock</string>
+    <string name="console_lock_hint">Locks the doors and arms the alarm. Your PIN is required.</string>
     <string name="console_controller_reported">Controller-reported state. Physical position is not confirmed.</string>
     <string name="console_controller_unavailable">Controller status is unavailable or stale. Physical position is not confirmed.</string>
     <string name="console_battery">Battery</string>

@@ -31,8 +31,13 @@ class RuntimeActuation:
         db_api: Any,
         send_command: CommandSender,
         log_event: EventLogger,
+        *,
+        lock_enabled: bool = True,
     ) -> None:
         self._db = db_api
+        # False on vehicles where our system must never lock (e.g. the Accord,
+        # where LOCK also arms the alarm): no LOCK command and no auto-relock.
+        self._lock_enabled = bool(lock_enabled)
         self._send_command = send_command
         self._log = log_event
         self._lock = threading.RLock()
@@ -208,7 +213,7 @@ class RuntimeActuation:
                     actor_kind=actor_kind,
                 )
             except Exception as exc:
-                compensating_lock_sent = self._send_command(
+                compensating_lock_sent = self._lock_enabled and self._send_command(
                     "LOCK",
                     connect=False,
                 )
@@ -218,7 +223,9 @@ class RuntimeActuation:
                 self._generation += 1
                 auto_relock_armed = self._auto_relock_timer is not None
                 error = f"unlock state could not be saved: {exc}"
-                if not compensating_lock_sent:
+                if not self._lock_enabled:
+                    error += "; locking is disabled, so no compensating LOCK was sent"
+                elif not compensating_lock_sent:
                     error += (
                         "; compensating LOCK command was not sent; "
                         "physical state is unknown"
@@ -258,6 +265,7 @@ class RuntimeActuation:
         *,
         actor_user_id: str | None = None,
         actor_kind: str = "system",
+        manual: bool = False,
     ) -> dict[str, Any]:
         with self._lock:
             if self._maintenance_requested.is_set() or self._maintenance:
@@ -266,6 +274,7 @@ class RuntimeActuation:
                 reason,
                 actor_user_id=actor_user_id,
                 actor_kind=actor_kind,
+                manual=manual,
             )
 
     def reset_connection(
@@ -366,6 +375,7 @@ class RuntimeActuation:
         user_id: str | None = None,
         actor_user_id: str | None = None,
         actor_kind: str = "system",
+        manual: bool = False,
     ) -> dict[str, Any]:
         self._generation += 1
         result = self._dispatch_lock(
@@ -373,6 +383,7 @@ class RuntimeActuation:
             user_id=user_id,
             actor_user_id=actor_user_id,
             actor_kind=actor_kind,
+            manual=manual,
         )
         if result.get("ok"):
             self._cancel_auto_relock()
@@ -387,10 +398,43 @@ class RuntimeActuation:
         user_id: str | None = None,
         actor_user_id: str | None = None,
         actor_kind: str = "system",
+        manual: bool = False,
     ) -> dict[str, Any]:
         event_user_id = user_id or self._unlock_owner_id or actor_user_id
         stop_ok = self._send_command("STOP")
-        lock_ok = self._send_command("LOCK")
+        if not self._lock_enabled and not manual:
+            if not stop_ok:
+                return {
+                    "ok": False,
+                    "error": "STOP command was not sent",
+                    "command_sent": False,
+                    "stop_command_sent": False,
+                    "lock_command_sent": False,
+                    "lock_disabled": True,
+                    "locked": False,
+                    "physical_state_confirmed": False,
+                }
+            self._log(
+                "lock",
+                "skipped",
+                f"locking disabled; {reason}: STOP only",
+                event_user_id,
+                actor_user_id=actor_user_id,
+                actor_kind=actor_kind,
+            )
+            return {
+                "ok": True,
+                "command_sent": True,
+                "stop_command_sent": True,
+                "lock_command_sent": False,
+                "lock_disabled": True,
+                "locked": False,
+                "physical_state_confirmed": False,
+            }
+        # With automatic locking disabled, a manual (phone) lock uses SECURE:
+        # firmware like the Accord ignores plain LOCK but runs SECURE.
+        lock_command = "LOCK" if self._lock_enabled else "SECURE"
+        lock_ok = self._send_command(lock_command)
         result = {
             "command_sent": bool(stop_ok and lock_ok),
             "stop_command_sent": bool(stop_ok),
@@ -400,7 +444,7 @@ class RuntimeActuation:
         if not stop_ok or not lock_ok:
             failed = [
                 command
-                for command, sent in (("STOP", stop_ok), ("LOCK", lock_ok))
+                for command, sent in (("STOP", stop_ok), (lock_command, lock_ok))
                 if not sent
             ]
             return {
@@ -431,7 +475,7 @@ class RuntimeActuation:
         *,
         user_id: str | None,
     ) -> None:
-        if seconds <= 0:
+        if seconds <= 0 or not self._lock_enabled:
             self._cancel_auto_relock()
             self._relock_seconds = 0
             self._relock_user_id = None

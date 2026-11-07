@@ -243,12 +243,26 @@ def create_app(*, db_module: Any, runtime: Any) -> Flask:
 
     @app.post("/api/lock")
     def api_lock():
+        manual = False
+        if not getattr(runtime_impl, "lock_available", True):
+            # Automatic and dashboard locks are disabled on this vehicle; only a
+            # PIN-authorized phone (not the host dashboard) may lock and arm it.
+            manual = not getattr(g, "local_controls", True)
+        if not getattr(runtime_impl, "lock_available", True) and not manual:
+            return jsonify({
+                "ok": False,
+                "error": "Locking is disabled on this vehicle",
+                "command_sent": False,
+                "physical_state_confirmed": False,
+            }), 409
         body = json_object()
         reason = _bounded_string(body.get("reason"), "reason", 64) or "manual_ui"
         actor = g.get("principal")
         lock_args = {"reason": reason}
         if actor:
             lock_args["actor_user_id"] = actor.user_id
+        if manual:
+            lock_args["manual"] = True
         result = runtime_impl.force_lock(**lock_args)
         return (jsonify(result), 200 if result.get("ok") else 503)
 

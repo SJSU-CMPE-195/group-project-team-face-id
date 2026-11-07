@@ -279,27 +279,36 @@ class WirelessAuthorizationTests(unittest.TestCase):
         body = {
             "pin": self.fixture.pin, "action": "device.lock", "target_user_id": "",
         }
+        # A paired phone may lock with its own PIN grant.
         remote = self.client.post(
             "/api/operation-grants",
             json=body,
             headers=self.fixture.headers(),
         )
-        self.assertEqual(remote.status_code, 403, remote.json)
-        self.assertEqual(remote.json["code"], "local_controls_required")
-
-        valid_remote_grant = self.fixture.grant(
-            "device.lock",
-            self.fixture.admin.user_id,
-        )
+        self.assertEqual(remote.status_code, 200, remote.json)
         remote_control = self.client.post(
             "/api/lock",
             json={},
-            headers=self.fixture.headers(valid_remote_grant),
+            headers=self.fixture.headers(remote.json["grant_token"]),
         )
-        self.assertEqual(remote_control.status_code, 403, remote_control.json)
-        self.assertEqual(remote_control.json["code"], "local_controls_required")
-        self.assertEqual(self.runtime.calls, [])
-        self.assertEqual(self.runtime.sessions, {})
+        self.assertEqual(remote_control.status_code, 200, remote_control.json)
+
+        # Without a grant the phone still cannot lock.
+        no_grant = self.client.post(
+            "/api/lock",
+            json={},
+            headers=self.fixture.headers(),
+        )
+        self.assertEqual(no_grant.status_code, 403, no_grant.json)
+
+        # Other vehicle controls remain host-only.
+        ignition = self.client.post(
+            "/api/operation-grants",
+            json={**body, "action": "ignition.stop"},
+            headers=self.fixture.headers(),
+        )
+        self.assertEqual(ignition.status_code, 403, ignition.json)
+        self.assertEqual(ignition.json["code"], "local_controls_required")
 
         grant = self.client.post(
             "/local/wireless/api/operation-grants",

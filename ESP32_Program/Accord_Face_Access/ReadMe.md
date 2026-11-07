@@ -53,10 +53,21 @@ empty on every relay.**
    `/dev/ttyAMA0`. Set `ESP32_SERIAL_PORT=/dev/ttyAMA0` to be explicit.
 3. Set `ESP32_IGNITION_ENABLED=0`. This car has no ignition relay, so the Pi
    refuses ignition requests instead of reporting an engine that never started.
-4. Run the wireless host in Pi mode (`bass_wireless.py --mode pi`); it starts
-   the ESP32 link that listens for walk-up requests.
-5. Set **Auto-relock** in Settings to `0` or a value long enough to get in
-   the car. Each relock runs SECURE, which also arms the alarm.
+4. Set `ESP32_LOCK_ENABLED=0`. Our system never locks or arms this car on its
+   own: the Pi sends no `LOCK` on startup, ESP32 connect, shutdown or as a
+   fail-safe (only `STOP`), never auto-relocks, and the host dashboard **Lock**
+   returns 409 "Locking is disabled on this vehicle". The **only** way our
+   system locks is the phone app's **Lock** button (Console tab, the user's
+   PIN): the Pi then sends `STOP` + `SECURE`, which locks the doors and arms
+   the alarm. The physical key or fob works as normal.
+5. Run the wireless host in Pi mode (`bass_wireless.py --mode pi`); it starts
+   the ESP32 link that listens for walk-up requests:
+
+   ```bash
+   export FACEID_DB_PATH=/home/bass/faceid/faceid.db
+   export ESP32_SERIAL_PORT=/dev/ttyAMA0 ESP32_IGNITION_ENABLED=0 ESP32_LOCK_ENABLED=0
+   .venv/bin/python bass_wireless.py --mode pi --port 5056 --dashboard-port 5057
+   ```
 
 ## Protocol
 
@@ -83,7 +94,8 @@ HMAC on `AUTHORIZED` and `LOCK` is still planned.
 | Pi → ESP32 | Action |
 |---|---|
 | `UNLOCK` (alias `ENTRY`) | DISARM 1000 ms, gap 500 ms, UNLOCK 500 ms |
-| `LOCK` (alias `SECURE`) | LOCK 500 ms, gap 500 ms, ARM 1000 ms |
+| `SECURE` | Phone Lock: LOCK 500 ms, gap 500 ms, ARM 1000 ms. Sent by the Pi only for a PIN-authorized phone Lock |
+| `LOCK` | **Ignored** while `ALLOW_LOCK = false` (default): replies `Locking disabled; LOCK ignored`. With `ALLOW_LOCK = true` it runs the same sequence as `SECURE` |
 | `STOP` | Cancel a pending scan and turn every relay off |
 | `START` | Ignored: no ignition relay |
 | `STATUS` | Replies `STATUS <LOCKED/UNLOCKED> SEQ:<name> AUTH:<IDLE/WAITING>` |
@@ -93,8 +105,11 @@ command replaces a running sequence instead of replying `BUSY`. The Pi sends
 `STOP` then `LOCK` back to back, and a compensating `LOCK` straight after a
 failed unlock, and neither may be dropped.
 
-The Pi sends `STOP` + `LOCK` whenever it (re)connects, on auto-relock and on
-shutdown. Starting the Pi service therefore locks and arms the car.
+With `ESP32_LOCK_ENABLED=0` the Pi sends only `STOP` when it (re)connects
+and on shutdown, and logs `lock skipped`. Starting or stopping the Pi service
+does not change the car. `ALLOW_LOCK = false` in the sketch is a second guard:
+even a `LOCK` from a misconfigured Pi does nothing. Only `SECURE` locks and
+arms, and the Pi sends it only for a phone Lock.
 
 ## Behaviour
 
@@ -114,7 +129,9 @@ measured state.
 
 115200 baud, Newline. Every line sent to the Pi is also echoed here. Typed
 commands: `lock`, `unlock`, `stop`, `status`, plus single pulses `disarm` and
-`arm` (USB only) for testing the ARM relay. Authentication replies are only
+`arm` (USB only) for testing the ARM relay; `lock` and `arm` are ignored while
+`ALLOW_LOCK = false`. Type `secure` to test the phone-lock sequence (LOCK then
+ARM relay). Authentication replies are only
 accepted from the Pi link. Set `ALLOW_USB_COMMANDS = false` for the showcase.
 
 Use only one power source at a time: unplug the PSU from the ESP32's 5V pin

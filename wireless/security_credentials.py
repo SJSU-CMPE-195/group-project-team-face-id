@@ -34,7 +34,6 @@ LOCAL_CONTROL_ACTIONS = frozenset(
     {
         "scan.unlock",
         "scan.ignition",
-        "device.lock",
         "ignition.stop",
         "device.reset",
     }

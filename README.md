@@ -108,7 +108,7 @@ Keep credentials, device identities and signing keys out of Git.
 |---|---|
 | `BASS_RUNTIME_MODE`, `BASS_HOST`, `BASS_PORT`, `BASS_DASHBOARD_PORT` | Host mode and listeners |
 | `FACEID_DB_PATH`, `BASS_DEVICE_CONFIG`, `BASS_STATE_DIR`, `BASS_DEVICE_NAME`, `BASS_OPENSSL` | Host storage, identity and TLS |
-| `ESP32_SERIAL_PORT`, `ESP32_TRIGGER_ENABLED`, `ESP32_IGNITION_ENABLED` | Serial connection (falls back to `/dev/ttyAMA0`), presence trigger, ignition (`0` for the Accord relay firmware) |
+| `ESP32_SERIAL_PORT`, `ESP32_TRIGGER_ENABLED`, `ESP32_IGNITION_ENABLED`, `ESP32_LOCK_ENABLED` | Serial connection (falls back to `/dev/ttyAMA0`), presence trigger, ignition and locking (both `0` for the Accord relay firmware; with locking `0` the system never locks on its own or from the dashboard, and only a PIN-authorized phone Lock sends `SECURE` to lock and arm) |
 | `PI_SCAN_TIMEOUT_SECONDS`, `PI_ENROLL_TIMEOUT_SECONDS`, `PI_ENROLL_SAMPLE_INTERVAL_SECONDS`, `PI_CAMERA_CLOSE_TIMEOUT_SECONDS` | Camera timing |
 | `PORT` | Mock listener |
 | `FACEID_SERVICE_USER`, `FACEID_DB_DIR`, `BASS_DEVICE_CONFIG_SOURCE` | Pi installation |
