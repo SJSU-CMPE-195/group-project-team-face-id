@@ -22,10 +22,10 @@ external PSU, not from the Pi.
 
 | ESP32 | Relay | Car wire on **NO** | **COM** to |
 |---|---|---|---|
-| GPIO26 | DISARM | Driver white (gray plug) | Driver black |
-| GPIO27 | UNLOCK | Passenger pink/blue | Passenger black |
-| GPIO32 | LOCK | Passenger pink/black | Passenger black |
-| GPIO33 | ARM | Driver white/red (gray plug) | Driver black |
+| GPIO26 | DISARM | Driver white (gray plug) | Driver black (GND) |
+| GPIO27 | UNLOCK | Passenger pink/blue | Passenger black (GND) |
+| GPIO32 | LOCK | Passenger pink/black | Passenger black (GND) |
+| GPIO33 | ARM | Driver white/red (gray plug) | Driver black (GND) |
 | 5V / GND | DC+ / DC− on all relays | — | — |
 
 Trigger jumpers on **H**. 10 kΩ pull-down from each IN to DC−. **NC stays
