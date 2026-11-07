@@ -139,6 +139,8 @@ while it is on USB, or use a data-only cable.
 
 ## Build
 
+These commands are used when the ESP32 is connected and communicating to your Raspberry Pi 5 through USB to flash the .ion file onto the ESP32, NOT when ESP32 and PI are communicating UART via TX and RX GPIO Pins.
+
 ```bash
 arduino-cli compile --profile accord ESP32_Program/Accord_Face_Access
 arduino-cli upload --profile accord -p /dev/ttyUSB0 ESP32_Program/Accord_Face_Access
