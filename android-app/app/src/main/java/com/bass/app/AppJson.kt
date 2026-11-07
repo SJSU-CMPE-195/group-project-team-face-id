@@ -195,12 +195,12 @@ private fun String.logTitle(): String =
 
 internal fun JSONObject.settings() =
     AppSettings(
-        autoRelockSeconds = optInt("autoRelockSeconds", 10),
-        ignitionAutoStopSeconds = optInt("ignitionAutoStopSeconds", 20),
-        promptAutoLockSeconds = optInt("promptAutoLockSeconds"),
-        liveness = optBoolean("liveness", true),
-        failLockout = optBoolean("failLockout", true),
-        lockoutAfter = optInt("lockoutAfter", 5),
+        autoRelockSeconds = getInt("autoRelockSeconds"),
+        ignitionAutoStopSeconds = getInt("ignitionAutoStopSeconds"),
+        promptAutoLockSeconds = getInt("promptAutoLockSeconds"),
+        liveness = getBoolean("liveness"),
+        failLockout = getBoolean("failLockout"),
+        lockoutAfter = getInt("lockoutAfter"),
     )
 
 internal fun AppSettings.json() =

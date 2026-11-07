@@ -5,8 +5,10 @@
     <string name="nav_console">Status</string>
     <string name="nav_users">Users</string>
     <string name="nav_logs">Logs</string>
+    <string name="nav_settings">Settings</string>
 
     <string name="action_refresh">Refresh</string>
+    <string name="action_refreshing">Refreshing…</string>
     <string name="action_retry">Try again</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_close">Close</string>
@@ -17,6 +19,8 @@
     <string name="action_enroll_face">Enroll face</string>
     <string name="action_replace_face">Replace face</string>
     <string name="action_add_user">Add user</string>
+    <string name="action_reset">Reset</string>
+    <string name="action_save">Save</string>
 
     <string name="forget_device_title">Sign out on this phone?</string>
     <string name="forget_device_description">Removes this phone’s saved account and pairing. It does not revoke the phone on BASS; use Users to revoke it.</string>
@@ -129,6 +133,27 @@
     <string name="logs_cancelled">Cancelled</string>
     <string name="logs_error">Error</string>
     <string name="logs_info">Info</string>
+
+    <string name="settings_core_title">Device settings</string>
+    <string name="settings_description">Changes apply to the paired BASS device after you save them.</string>
+    <string name="settings_auto_relock">Auto re-lock (seconds)</string>
+    <string name="settings_auto_relock_help">0 turns off automatic re-locking.</string>
+    <string name="settings_ignition_stop">Ignition auto-stop (seconds)</string>
+    <string name="settings_ignition_stop_help">0 turns off automatic stopping.</string>
+    <string name="settings_prompt_lock">Ignition prompt auto-lock (seconds)</string>
+    <string name="settings_prompt_lock_help">0 disables automatic locking from the ignition prompt.</string>
+    <string name="settings_liveness">Liveness detection</string>
+    <string name="settings_liveness_unavailable_title">Liveness unavailable</string>
+    <string name="settings_liveness_unavailable_description">Face verification is blocked while liveness detection is on. Turn it off only for prototype testing.</string>
+    <string name="settings_fail_lockout">Failed-attempt lockout</string>
+    <string name="settings_lockout_after">Lock out after (failures)</string>
+    <string name="settings_lockout_after_help">Allowed range: 1–20 failures.</string>
+    <string name="settings_number_range">Enter a value from %1$d to %2$d.</string>
+    <string name="settings_loading">Loading…</string>
+    <string name="settings_invalid">Check values</string>
+    <string name="settings_unsaved">Unsaved</string>
+    <string name="settings_saved">Saved</string>
+    <string name="settings_current">Loaded</string>
 
     <string name="export_material_title">Save security material</string>
     <string name="export_material_description">Save this recovery file in a secure place outside this phone. It contains a secret that grants access to the recovery flow.</string>

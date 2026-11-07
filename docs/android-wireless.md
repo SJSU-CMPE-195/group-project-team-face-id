@@ -87,15 +87,37 @@ in BASS Android and enter the invited account's PIN. This single scan supplies
 the device identity, TLS pin and invitation; the PIN stays separate. The host
 returns a distinct revocable credential for that phone. The dashboard and phone
 then share the host's users, scoped logs and vehicle status. Phones have no
-vehicle controls or Settings tab. Every signed-in user can view the active
+vehicle controls. Owners and administrators also have a **Settings** tab for
+the device timers and security settings. Every signed-in user can view the active
 account directory and can start host-camera enrollment for their own account;
 administrators retain their permitted account-management scope. Open **Users**,
-then select **Refresh** to load an account or enrollment change.
+then select **Refresh** above the bottom navigation to load an account or
+enrollment change. The header and bottom controls stay clear of Android system
+bars.
 Switching to a different Pi requires scanning that Pi's QR; proximity does not
 change the pairing. The version 3 public QR carries the device identity and
 TLS certificate fingerprint, with no authorization secret. BLE discovery selects
 a candidate; pinned TLS and `/health` confirm its identity. Bluetooth address
 changes do not require printing another QR.
+
+### Change device settings from Android
+
+Sign in as the owner or an administrator, then open **Settings**. The app loads
+the paired host's saved values before enabling edits. It offers auto re-lock
+(0–600 seconds), ignition auto-stop (0–1800 seconds), ignition prompt auto-lock
+(0–600 seconds), liveness detection, failed-attempt lockout, and the lockout
+threshold (1–20 failures). Zero disables the corresponding timer.
+
+Select **Save** and confirm the administrator PIN to apply changes to the host.
+**Reset** fills in the defaults; it does not save them. Refresh and automatic
+status polling preserve valid unsaved edits. Invalid or empty numeric fields
+disable Save. If liveness detection is unavailable, leaving it enabled blocks
+face verification, as explained in the tab.
+
+The host still requires administrator permission and a one-use
+`settings.update` grant. Regular users do not see the Settings tab, and losing
+administrator permission clears the draft and returns to Status. The public
+device pairing QR remains available from the local host dashboard only.
 
 The `/local/wireless/api/*` bridge accepts only trusted requests from a browser
 on the host. The dashboard uses a 15-minute HTTP-only, SameSite=Strict session
@@ -295,6 +317,23 @@ and scan that account's invitation. Already paired phones reuse their saved
 credentials; opening the Settings card does not issue or revoke credentials.
 
 ## Build the APK
+
+The [checked-in test APK](../android-app/apk/bass-debug.apk) was rebuilt on
+November 6, 2026 from the Android source committed alongside it. It includes
+administrator Settings and the Refresh button above bottom navigation, and
+uses BLE. The version remains 0.4.0 (`versionCode` 5).
+
+JDK 17 compilation, APK assembly, and Android lint passed with no new compiler
+diagnostics and the same 20 existing lint warnings. No tests, UI automation,
+phone installation, or physical-hardware acceptance were run for this build.
+APK SHA-256:
+`78C332FEC205998D2D0FE7BA6BE927DB35875935D7184E08A4B3486404204DA6`.
+
+This APK uses a different debug signing certificate from the APK added in
+`0260dbc`, so it cannot update that earlier APK in place. To preserve an
+installation's app data, build with its original signing key. The new certificate
+SHA-256 is
+`7EA239C88F5B588E1EF33BDAA49D7264CDE9DABC13BFAF5F934FCC4606178AD8`.
 
 Install JDK 17, Android SDK Platform 36, and Build Tools 35.0.0. Gradle Wrapper,
 Android Gradle Plugin, Kotlin, and library versions are pinned in `android-app/`.
@@ -527,8 +566,9 @@ the last host command. See the [firmware protocol](../ESP32_Program/ReadMe.md#se
 
 Android shows fresh controller reports on Pi. While connected it refreshes
 `/api/status` about every 1.5 seconds and the full snapshot (users, faces,
-devices, logs) about every 10 seconds, reading status last. Status-only refresh
-continues through the same serialized connection while an enrollment operation
+devices, logs, and administrator settings) about every 10 seconds, reading status
+last. Status-only refresh continues through the same serialized connection while
+an enrollment operation
 is busy. Missing, invalid, disconnected or expired reports show unknown status.
 Elapsed phone time since the status request began also ages a report, including
 request queuing, response delivery and full-snapshot assembly. A delayed request
@@ -709,8 +749,12 @@ Liveness/PAD is maintained separately and its existing policy is unchanged.
   result names the account and denies access without sending an actuator command.
 - Revoke a phone, including the current phone. Its next authenticated request
   must fail; other phones remain paired. Ordinary admin cannot revoke owner phones.
-- Phones have Status, Users and Logs only. No lock/unlock/ignition/reset or Settings
-  controls are offered; old phone API calls are denied at the host too.
+- Phones have Status, Users and Logs; owners and administrators also have Settings.
+  Check all setting bounds, Reset without saving, PIN cancellation, successful
+  Save, preservation of drafts on Refresh, and tab removal after demotion.
+  Confirm Refresh is reachable above navigation with both Android navigation
+  modes. No lock/unlock/ignition/reset controls are offered on phones; those API
+  calls remain denied at the host.
 - Exercise local-dashboard vehicle behavior on Pi and PC development separately.
   PC results remain simulated; Pi command delivery does not confirm motor position.
   Face success remains dependent on the separately maintained liveness policy.

@@ -5,13 +5,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -40,6 +49,7 @@ import com.bass.app.ui.screens.LogsScreen
 import com.bass.app.ui.screens.PairingScreen
 import com.bass.app.ui.screens.PairingCredentialsScreen
 import com.bass.app.ui.screens.PinScreen
+import com.bass.app.ui.screens.SettingsScreen
 import com.bass.app.ui.screens.UsersScreen
 import com.bass.app.ui.theme.BassTheme
 
@@ -183,32 +193,65 @@ private fun ConnectedApp(
     viewModel: AppViewModel,
 ) {
     Scaffold(
+        modifier = Modifier.imePadding(),
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = { AppHeader(state = state, onRefresh = viewModel::refresh) },
+        topBar = { AppHeader(state = state) },
         bottomBar = {
-            AppNavigation(
-                selectedTab = state.selectedTab,
-                onSelect = viewModel::selectTab,
-            )
+            Surface(color = MaterialTheme.colorScheme.surface) {
+                Column(
+                    modifier =
+                        Modifier.windowInsetsPadding(
+                            WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
+                        ),
+                ) {
+                    OutlinedButton(
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .heightIn(min = 48.dp),
+                        enabled = !state.busy && !state.refreshing,
+                        onClick = viewModel::refresh,
+                    ) {
+                        Text(
+                            stringResource(
+                                if (state.refreshing) R.string.action_refreshing
+                                else R.string.action_refresh,
+                            ),
+                        )
+                    }
+                    AppNavigation(
+                        selectedTab = state.selectedTab,
+                        isAdmin = state.identity?.user?.isAdmin == true,
+                        onSelect = viewModel::selectTab,
+                    )
+                }
+            }
         },
     ) { innerPadding ->
+        val contentModifier = Modifier.padding(innerPadding).consumeWindowInsets(innerPadding)
         when (state.selectedTab) {
             Tab.CONSOLE ->
                 ConsoleScreen(
                     state = state,
                     viewModel = viewModel,
-                    modifier = Modifier.padding(innerPadding),
+                    modifier = contentModifier,
                 )
             Tab.USERS ->
                 UsersScreen(
                     state = state,
                     viewModel = viewModel,
-                    modifier = Modifier.padding(innerPadding),
+                    modifier = contentModifier,
                 )
             Tab.LOGS ->
                 LogsScreen(
                     logs = state.logs,
-                    modifier = Modifier.padding(innerPadding),
+                    modifier = contentModifier,
+                )
+            Tab.SETTINGS ->
+                SettingsScreen(
+                    state = state,
+                    viewModel = viewModel,
+                    modifier = contentModifier,
                 )
         }
     }
@@ -217,11 +260,17 @@ private fun ConnectedApp(
 @Composable
 private fun AppHeader(
     state: BassState,
-    onRefresh: () -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.surface) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+            modifier =
+                Modifier.fillMaxWidth()
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing.only(
+                            WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
+                        ),
+                    )
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -238,12 +287,6 @@ private fun AppHeader(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            TextButton(
-                enabled = !state.busy,
-                onClick = onRefresh,
-            ) {
-                Text(stringResource(R.string.action_refresh))
-            }
         }
     }
 }
@@ -257,14 +300,16 @@ private data class NavigationDestination(
 @Composable
 private fun AppNavigation(
     selectedTab: Tab,
+    isAdmin: Boolean,
     onSelect: (Tab) -> Unit,
 ) {
     val destinations =
-        listOf(
-            NavigationDestination(Tab.CONSOLE, R.string.nav_console, "⌂"),
-            NavigationDestination(Tab.USERS, R.string.nav_users, "♙"),
-            NavigationDestination(Tab.LOGS, R.string.nav_logs, "≡"),
-        )
+        buildList {
+            add(NavigationDestination(Tab.CONSOLE, R.string.nav_console, "⌂"))
+            add(NavigationDestination(Tab.USERS, R.string.nav_users, "♙"))
+            add(NavigationDestination(Tab.LOGS, R.string.nav_logs, "≡"))
+            if (isAdmin) add(NavigationDestination(Tab.SETTINGS, R.string.nav_settings, "⚙"))
+        }
 
     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
         destinations.forEach { destination ->

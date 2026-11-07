@@ -51,7 +51,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var sessionLoginVerified = false
     private var commissioningSubmittedThisForeground = false
     private var session: ActiveSession? = null
-    private var refreshing = false
     private val snapshotMutex = Mutex()
     private var snapshotVersion = 0L
     private var pendingStart: PendingStart? = null
@@ -188,6 +187,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectTab(tab: Tab) {
+        if (tab == Tab.SETTINGS && state.value.identity?.user?.isAdmin != true) return
         if (tab != state.value.selectedTab) {
             pinProtection.cancel()
             stopSession(restorePrompt = true)
@@ -242,7 +242,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         stopSession()
         pendingPairingQr = parsed
         pendingPairingInviteToken = invitation?.inviteToken.orEmpty()
-        settingsDirty = false
         closeApi()
         mutableState.value =
             if (parsed.purpose == CommissioningPurpose.DEVICE) {
@@ -580,7 +579,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         pendingCommissioning = null
         pendingEnrollment = null
         pendingEnrollmentJournalScope = 0L
-        settingsDirty = false
         clearNewUserDraft()
         mutableState.value = BassState()
     }
@@ -897,6 +895,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 faceStatus = if (clearProtectedState) FaceStatus() else it.faceStatus,
                 logs = if (clearProtectedState) emptyList() else it.logs,
                 inviteMaterial = if (clearProtectedState) null else it.inviteMaterial,
+                settings = if (clearProtectedState) AppSettings() else it.settings,
+                settingsLoaded = !clearProtectedState && it.settingsLoaded,
+                settingsDirty = !clearProtectedState && it.settingsDirty,
+                settingsSaved = false,
+                refreshing = false,
             )
         }
         if (clearProtectedState) clearNewUserDraft()
@@ -926,14 +929,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val client = api ?: return
         val epoch = generation
         if (
-            refreshing ||
+            state.value.refreshing ||
                 !sessionLoginVerified ||
                 state.value.phase != ConnectionPhase.CONNECTED
         ) return
-        refreshing = true
+        mutableState.update { it.copy(refreshing = true) }
         viewModelScope.launch {
             try {
-                loadSnapshot(client, epoch)
+                loadSnapshot(client, epoch, waitForLock = true)
             } catch (error: Exception) {
                 if (error is ApiException && error.statusCode == 429) {
                     mutableState.update { it.copy(error = error.message) }
@@ -941,14 +944,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     failConnection(error, epoch)
                 }
             } finally {
-                refreshing = false
+                if (epoch == generation) mutableState.update { it.copy(refreshing = false) }
             }
         }
     }
 
-    private suspend fun loadSnapshot(client: DeviceApi, epoch: Long) {
-        if (!snapshotMutex.tryLock()) return
+    private suspend fun loadSnapshot(
+        client: DeviceApi,
+        epoch: Long,
+        waitForLock: Boolean = false,
+    ) {
+        if (waitForLock) snapshotMutex.lock()
+        else if (!snapshotMutex.tryLock()) return
         try {
+            if (epoch != generation || api !== client) return
             val snapshot = ++snapshotVersion
             val savedIdentity = pairing?.identity
                 ?: throw DeviceIdentityException(text(R.string.core_identity_mismatch))
@@ -1407,30 +1416,47 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(inviteMaterial = null) }
     }
 
-    private var settingsDirty = false
-
     fun updateSettings(settings: AppSettings) {
-        if (state.value.identity?.user?.isAdmin != true) return
-        settingsDirty = true
-        mutableState.update { it.copy(settings = settings) }
+        if (!canEditSettings()) return
+        mutableState.update {
+            it.copy(settings = settings, settingsDirty = true, settingsSaved = false)
+        }
     }
 
     fun resetSettings() = updateSettings(AppSettings())
 
     fun saveSettings() {
-        if (state.value.identity?.user?.isAdmin != true) return
-        val body = state.value.settings.json()
+        if (!canEditSettings() || !state.value.settingsDirty) return
+        val settings = state.value.settings
+        val body = settings.json()
+        val epoch = generation
         requestGrant(
             PinPurpose.SETTINGS,
             OperationRequest(OperationAction.SETTINGS_UPDATE),
+            refreshAfter = false,
         ) { grant ->
             command(
                 "/api/settings",
                 body = body,
                 operationGrant = grant,
-                after = { settingsDirty = false },
+                after = {
+                    if (epoch == generation) {
+                        // Discard any snapshot started before this acknowledged write.
+                        snapshotVersion++
+                        mutableState.update {
+                            it.copy(settingsDirty = false, settingsSaved = true)
+                        }
+                    }
+                },
             )
         }
+    }
+
+    private fun canEditSettings(): Boolean {
+        val current = state.value
+        return current.phase == ConnectionPhase.CONNECTED &&
+            current.identity?.user?.isAdmin == true &&
+            current.settingsLoaded && !current.busy && current.pinPrompt == null
     }
 
     fun clearError() {

@@ -6,6 +6,7 @@ enum class Tab {
     CONSOLE,
     USERS,
     LOGS,
+    SETTINGS,
 }
 
 enum class ConnectionPhase {
@@ -233,6 +234,10 @@ data class BassState(
     val faceStatus: FaceStatus = FaceStatus(),
     val logs: List<LogEntry> = emptyList(),
     val settings: AppSettings = AppSettings(),
+    val settingsLoaded: Boolean = false,
+    val settingsDirty: Boolean = false,
+    val settingsSaved: Boolean = false,
+    val refreshing: Boolean = false,
     val busy: Boolean = false,
     val captureFlow: CaptureFlow = CaptureFlow.NONE,
     val cameraSource: CameraSource = CameraSource.DEVICE,

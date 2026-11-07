@@ -13,6 +13,7 @@ internal data class DeviceSnapshot(
     val users: List<User>,
     val pairedDevices: List<PairedDevice>,
     val logs: List<LogEntry>,
+    val settings: AppSettings?,
 )
 
 internal data class SessionTransition(
@@ -60,6 +61,7 @@ internal fun BassState.afterBackground(
             if (hasPairing) ConnectionPhase.SIGN_IN_REQUIRED
             else ConnectionPhase.UNPAIRED,
         busy = false,
+        refreshing = false,
         unlockOwner = null,
         pairingCredentialsRequired = false,
         showForgetDeviceDialog = false,
@@ -140,6 +142,7 @@ internal suspend fun DeviceApi.readSnapshot(
     val pairedDevices =
         if (identity.user.isAdmin) array("/api/devices").devices() else emptyList()
     val logs = array("/api/logs").logs()
+    val settings = if (identity.user.isAdmin) json("/api/settings").settings() else null
     // Read status last so the other requests don't age the controller report.
     val statusRequestedAtElapsedMillis = SystemClock.elapsedRealtime()
     val status = json("/api/status")
@@ -151,10 +154,17 @@ internal suspend fun DeviceApi.readSnapshot(
         users = users,
         pairedDevices = pairedDevices,
         logs = logs,
+        settings = settings,
     )
 }
 
 internal fun BassState.withSnapshot(snapshot: DeviceSnapshot): BassState {
+    val previousUser = identity?.user
+    val currentUser = snapshot.identity.user
+    val sameUser = previousUser != null && previousUser.id == currentUser.id &&
+        previousUser.isAdmin == currentUser.isAdmin &&
+        previousUser.isOwner == currentUser.isOwner
+    val keepSettingsDraft = settingsDirty && sameUser && snapshot.settings != null
     return withDeviceStatus(
         snapshot.status,
         snapshot.statusRequestedAtElapsedMillis,
@@ -165,6 +175,13 @@ internal fun BassState.withSnapshot(snapshot: DeviceSnapshot): BassState {
         logs = snapshot.logs,
         identity = snapshot.identity,
         inviteMaterial = inviteMaterial.takeIf { snapshot.identity.user.isAdmin },
+        settings = if (keepSettingsDraft) settings else snapshot.settings ?: AppSettings(),
+        settingsLoaded = snapshot.settings != null,
+        settingsDirty = keepSettingsDraft,
+        settingsSaved = settingsSaved && sameUser && snapshot.settings == settings,
+        selectedTab =
+            if (selectedTab == Tab.SETTINGS && !snapshot.identity.user.isAdmin) Tab.CONSOLE
+            else selectedTab,
     )
 }
 
